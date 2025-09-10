@@ -17,6 +17,9 @@ import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Optional, Union
 import os
 from scipy.io import loadmat
+from csi import sinr_to_se_mcs
+from orbit import compute_geometry_and_beam
+from pc import pusch_open_loop_power
 
 # -----------------------
 # Utility conversions
@@ -122,65 +125,9 @@ def load_radio_map_from_mat(path: str,
     else:
         raise ValueError(f"Unsupported units: {units} (use 'mW', 'W', or 'dBm')")
     return R_dbm
+ 
 
-# -----------------------
-# Link & scheduling
-# -----------------------
-
-def fspl_db(distance_km: np.ndarray, freq_GHz: float) -> np.ndarray:
-    """
-    Free-space path loss (dB): FSPL = 32.45 + 20*log10(d_km) + 20*log10(f_MHz)
-    """
-    d = np.maximum(np.asarray(distance_km, dtype=float), 1e-6)
-    f_MHz = max(freq_GHz, 1e-9) * 1e3
-    return 32.45 + 20.0 * np.log10(d) + 20.0 * np.log10(f_MHz)
-
-def simple_beam_gain_db(offaxis_deg: np.ndarray,
-                        boresight_gain_db: float,
-                        half_bw_deg: float,
-                        edge_drop_db: float = 3.0) -> np.ndarray:
-    """
-    A simple rotationally symmetric beam pattern:
-    - Gain(0) = boresight_gain_db.
-    - Gain(half_bw_deg) = boresight_gain_db - edge_drop_db.
-    - For |theta| > ~3*half_bw, continue decaying smoothly (cos^m).
-    This is not a physical antenna model; it's a smooth proxy.
-    """
-    theta = np.asarray(offaxis_deg, dtype=float)
-    theta = np.abs(theta)
-    theta = np.minimum(theta, 89.9)
-    # Solve m such that cos(half_bw)^m = 10^(-edge_drop/10)
-    hb = max(half_bw_deg, 1e-3) * math.pi / 180.0
-    target = 10.0 ** (-edge_drop_db / 10.0)
-    c = max(math.cos(hb), 1e-6)
-    m = np.log(max(target, 1e-9)) / np.log(c)
-    # Pattern
-    th_rad = theta * math.pi / 180.0
-    patt = np.power(np.maximum(np.cos(th_rad), 1e-6), m)
-    gain = boresight_gain_db + 10.0 * np.log10(np.maximum(patt, 1e-9))
-    return gain
-
-def sinr_to_se_mcs(sinr_db: np.ndarray) -> np.ndarray:
-    """
-    Map SINR (dB) to spectral efficiency (bits/s/Hz) using an approximate 3GPP-like CQI table.
-    This is a coarse model for calibration, not standard-accurate.
-    """
-    # Thresholds (dB) and spectral efficiencies (bits/s/Hz) approximated from LTE CQI
-    thr_db = np.array([
-        -6.7, -4.7, -2.3, 0.2, 2.4, 4.3, 5.9, 8.1, 10.3, 11.7, 14.1, 16.3, 18.7, 21.0, 22.7
-    ], dtype=float)
-    se_vals = np.array([
-        0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
-        2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
-    ], dtype=float)
-    sinr_db = np.asarray(sinr_db, dtype=float)
-    # For each value, find highest threshold <= sinr_db
-    idx = np.searchsorted(thr_db, sinr_db, side='right') - 1
-    idx = np.clip(idx, 0, len(se_vals) - 1)
-    se = se_vals[idx]
-    # Below the first threshold, set to 0
-    se = np.where(sinr_db < thr_db[0], 0.0, se)
-    return se
+ 
 
 # -----------------------
 # Helper blocks (refactor run_once)
@@ -192,9 +139,22 @@ def se_from_snr(snr_lin: np.ndarray, use_mcs: bool, mcs_params: Optional[Dict] =
     - Else: Shannon log2(1+SNR).
     mcs_params reserved for future (BLER targets, code rates, etc.).
     """
+    # Apply optional frequency-offset induced ICI penalty (first-order approximation)
+    if mcs_params is not None:
+        eps_f = float(mcs_params.get("residual_freq_hz", 0.0) or 0.0)
+        if eps_f > 0.0:
+            scs_khz = float(mcs_params.get("scs_khz", 30.0) or 30.0)
+            T_sym = 1.0 / (scs_khz * 1e3)
+            ici_factor = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+            snr_lin = np.asarray(snr_lin) / ici_factor
     if use_mcs:
         sinr_db = 10.0 * np.log10(np.maximum(snr_lin, 1e-12))
-        return sinr_to_se_mcs(sinr_db)
+        if mcs_params is not None:
+            sinr_db = sinr_db + float(mcs_params.get("olla_offset_db", 0.0))
+            table = mcs_params.get("mcs_table", "legacy")
+        else:
+            table = "legacy"
+        return sinr_to_se_mcs(sinr_db, table=table)
     return np.log2(1.0 + np.maximum(snr_lin, 0.0))
 
 def se_from_snr_with_split(snr_base: Union[float, np.ndarray], k_prb: int, use_mcs: bool,
@@ -251,38 +211,7 @@ def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -
     """Uniform random UE grid indices of shape [N_UE, 2]."""
     return np.stack([rng.integers(0, X, size=N_UE), rng.integers(0, Y, size=N_UE)], axis=1)
 
-def compute_geometry_and_beam(config: Dict,
-                              X: int,
-                              Y: int,
-                              ue_pos: np.ndarray) -> Tuple[Union[np.ndarray, float], Union[np.ndarray, float]]:
-    """
-    Compute per-UE free-space loss and RX beam gain if geometry enabled; else return fixed values.
-    """
-    if config.get("enable_geometry", False):
-        bc = config.get("beam_center_xy", None)
-        if bc is None:
-            cx, cy = (X // 2, Y // 2)
-        else:
-            cx, cy = bc
-        dx = (ue_pos[:, 0] - cx) * config.get("cell_size_km", 1.0)
-        dy = (ue_pos[:, 1] - cy) * config.get("cell_size_km", 1.0)
-        r_ground = np.sqrt(dx * dx + dy * dy)  # km
-        alt_km = config.get("sat_altitude_km", 600.0)
-        slant_km = np.sqrt(r_ground * r_ground + alt_km * alt_km)
-        L_fs_per_ue = fspl_db(slant_km, config.get("carrier_freq_GHz", 2.0))
-        offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km))
-        G_rx_per_ue = simple_beam_gain_db(
-            offaxis_deg,
-            boresight_gain_db=config.get("G_rx_db", 32.0),
-            half_bw_deg=config.get("beam_half_bw_deg", 4.0),
-            edge_drop_db=config.get("beam_edge_drop_db", 3.0)
-        )
-    else:
-        L_fs_val = config.get("L_fs_db")
-        G_rx_val = config.get("G_rx_db")
-        L_fs_per_ue = float(L_fs_val) if isinstance(L_fs_val, (int, float)) else L_fs_val
-        G_rx_per_ue = float(G_rx_val) if isinstance(G_rx_val, (int, float)) else G_rx_val
-    return L_fs_per_ue, G_rx_per_ue
+ 
 
 def resolve_noise_and_prb_bw(config: Dict) -> Tuple[float, Optional[float]]:
     """
@@ -306,11 +235,14 @@ def apply_open_loop_power_control(config: Dict,
     """Compute per-UE P_tx if PC enabled; else return configured P_tx_dbm (scalar or array)."""
     if config.get("enable_power_control", False):
         PL_eff_db = np.asarray(L_fs_per_ue, dtype=float) - np.asarray(G_rx_per_ue, dtype=float)
-        P0 = config.get("pc_P0_dbm", -90.0)
-        alpha = config.get("pc_alpha", 0.8)
-        M_ref = max(1, int(config.get("pc_M_ref", 1)))
-        P_cmd = P0 + alpha * PL_eff_db + 10.0 * np.log10(M_ref)
-        return np.minimum(P_cmd, config.get("P_max_dbm", config.get("P_tx_dbm", 23.0)))
+        return pusch_open_loop_power(
+            P_cmax_dbm=config.get("P_max_dbm", config.get("P_tx_dbm", 23.0)),
+            P0_dbm=config.get("pc_P0_dbm", -90.0),
+            alpha=config.get("pc_alpha", 0.8),
+            PL_db=PL_eff_db,
+            M_prb=int(config.get("pc_M_ref", 1)),
+            delta_tf_db=0.0,
+        )
     return config["P_tx_dbm"]
 
 def compute_metric_override_static_if_needed(config: Dict,
@@ -346,7 +278,13 @@ def compute_metric_override_static_if_needed(config: Dict,
         impl_loss_db=config.get("impl_loss_db", 0.0),
         seed=config["seed"]
     )
-    return se_from_snr(snr_lin_pred, config.get("use_mcs", False)) if snr_lin_pred is not None else cap_pred
+    mcs_params = {
+        "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
+        "mcs_table": config.get("csi_mcs_table", "legacy"),
+        "residual_freq_hz": config.get("residual_freq_hz", 0.0),
+        "scs_khz": config.get("scs_khz", 30),
+    }
+    return se_from_snr(snr_lin_pred, config.get("use_mcs", False), mcs_params=mcs_params) if snr_lin_pred is not None else cap_pred
 
 def build_time_variation_if_enabled(config: Dict,
                                     R_xyz_dbm: np.ndarray,
@@ -415,12 +353,18 @@ def build_time_variation_if_enabled(config: Dict,
             impl_loss_db=config.get("impl_loss_db", 0.0),
             seed=config["seed"]
         )
+        mcs_params = {
+            "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
+            "mcs_table": config.get("csi_mcs_table", "legacy"),
+            "residual_freq_hz": config.get("residual_freq_hz", 0.0),
+            "scs_khz": config.get("scs_khz", 30),
+        }
         if snr_lin_pred_t is not None:
-            se_time_rm.append(se_from_snr(snr_lin_pred_t, config.get("use_mcs", False)))
-            se_time_wb.append(se_from_snr(snr_lin_wb_pred_t, config.get("use_mcs", False)))
+            se_time_rm.append(se_from_snr(snr_lin_pred_t, config.get("use_mcs", False), mcs_params=mcs_params))
+            se_time_wb.append(se_from_snr(snr_lin_wb_pred_t, config.get("use_mcs", False), mcs_params=mcs_params))
         else:
-            se_time_rm.append(se_from_snr(snr_lin_t, config.get("use_mcs", False)))
-            se_time_wb.append(se_from_snr(snr_lin_wb_t, config.get("use_mcs", False)))
+            se_time_rm.append(se_from_snr(snr_lin_t, config.get("use_mcs", False), mcs_params=mcs_params))
+            se_time_wb.append(se_from_snr(snr_lin_wb_t, config.get("use_mcs", False), mcs_params=mcs_params))
         snr_time.append(snr_lin_t)
         snr_wb_time.append(snr_lin_wb_t)
 
@@ -497,6 +441,7 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
                          overhead_eff: float = 1.0,
                          use_mcs: bool = False,
                          power_split: bool = False,
+                         mcs_params: Optional[Dict] = None,
                          se_metric_time: Optional[np.ndarray] = None,
                          snr_lin_wb_time: Optional[np.ndarray] = None) -> float:
     """
@@ -508,7 +453,7 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     N_UE = cap_wb.shape[0]
     # Use Shannon cap as metric by default; if use_mcs, convert to MCS SE (k=1) for metric
     if se_metric_time is None:
-        metric_se = se_metric_strategy(use_mcs, snr_lin=snr_lin_wb, cap_shannon=cap_wb)
+        metric_se = se_metric_strategy(use_mcs, snr_lin=snr_lin_wb, cap_shannon=cap_wb, mcs_params=mcs_params)
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
@@ -538,7 +483,7 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
             # Effective SNR per PRB with power split
             if snr_lin_wb is not None or snr_lin_wb_time is not None:
                 snr_base = snr_lin_wb_time[t_idx, ue] if snr_lin_wb_time is not None else snr_lin_wb[ue]
-                se_per_prb = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs)
+                se_per_prb = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
             else:
                 # Fallback (Shannon-only): adjust wideband SE by power split
                 se_per_prb = se_from_cap_shannon_with_split(metric_se_t[ue], k_prb if power_split else 1)
@@ -558,6 +503,7 @@ def pf_schedule_radiomap(cap: np.ndarray,
                          power_split: bool = False,
                          se_metric_override: Optional[np.ndarray] = None,
                          max_prbs_per_ue: Optional[int] = None,
+                         mcs_params: Optional[Dict] = None,
                          se_metric_time: Optional[np.ndarray] = None,
                          snr_lin_time: Optional[np.ndarray] = None) -> float:
     """
@@ -570,7 +516,7 @@ def pf_schedule_radiomap(cap: np.ndarray,
         if se_metric_override is not None:
             se_metric_arr = se_metric_override
         else:
-            se_metric_arr = se_metric_strategy(use_mcs, snr_lin=snr_lin, cap_shannon=cap)
+            se_metric_arr = se_metric_strategy(use_mcs, snr_lin=snr_lin, cap_shannon=cap, mcs_params=mcs_params)
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
@@ -615,7 +561,7 @@ def pf_schedule_radiomap(cap: np.ndarray,
             k_prb = int(counts[ue]) if power_split else 1
             if snr_lin is not None or snr_lin_time is not None:
                 snr_base = snr_lin_time[t_idx, ue, z] if snr_lin_time is not None else snr_lin[ue, z]
-                se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs)
+                se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
             else:
                 se = se_from_cap_shannon_with_split(cap[ue, z], k_prb if power_split else 1)
             thr_i[ue] += se * overhead_eff
@@ -664,15 +610,37 @@ def run_once(config: Dict) -> Dict:
     time_series = build_time_variation_if_enabled(
         config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng, metric_override
     )
+    mcs_params = {
+        "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
+        "mcs_table": config.get("csi_mcs_table", "legacy"),
+        "residual_freq_hz": config.get("residual_freq_hz", 0.0),
+        "scs_khz": config.get("scs_khz", 30),
+    }
 
     if time_series is not None:
+        # Apply optional CSI delay to scheduler metric (not to actual SNR)
+        csi_delay = int(config.get("csi_delay_ttis", 0))
+        if csi_delay > 0:
+            def delay_series(arr: np.ndarray, d: int) -> np.ndarray:
+                T0 = arr.shape[0]
+                out = np.empty_like(arr)
+                for t in range(T0):
+                    src = max(0, t - d)
+                    out[t] = arr[src]
+                return out
+            se_time_wb = delay_series(time_series["se_time_wb"], csi_delay)
+            se_time_rm = delay_series(time_series["se_time_rm"], csi_delay)
+        else:
+            se_time_wb = time_series["se_time_wb"]
+            se_time_rm = time_series["se_time_rm"]
         base_se = pf_schedule_baseline(
             cap_wb, Z, T, beta=config["pf_beta"],
             snr_lin_wb=snr_lin_wb,
             overhead_eff=config.get("overhead_eff", 1.0),
             use_mcs=config.get("use_mcs", False),
             power_split=config.get("power_split", False),
-            se_metric_time=time_series["se_time_wb"],
+            mcs_params=mcs_params,
+            se_metric_time=se_time_wb,
             snr_lin_wb_time=time_series["snr_wb_time"]
         )
         map_se = pf_schedule_radiomap(
@@ -683,7 +651,8 @@ def run_once(config: Dict) -> Dict:
             power_split=config.get("power_split", False),
             se_metric_override=None if metric_override is None else metric_override,
             max_prbs_per_ue=config.get("max_prbs_per_ue"),
-            se_metric_time=time_series["se_time_rm"],
+            mcs_params=mcs_params,
+            se_metric_time=se_time_rm,
             snr_lin_time=time_series["snr_time"]
         )
     else:
@@ -692,7 +661,8 @@ def run_once(config: Dict) -> Dict:
             snr_lin_wb=snr_lin_wb,
             overhead_eff=config.get("overhead_eff", 1.0),
             use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False)
+            power_split=config.get("power_split", False),
+            mcs_params=mcs_params,
         )
         map_se = pf_schedule_radiomap(
             cap, T, beta=config["pf_beta"],
@@ -700,6 +670,7 @@ def run_once(config: Dict) -> Dict:
             overhead_eff=config.get("overhead_eff", 1.0),
             use_mcs=config.get("use_mcs", False),
             power_split=config.get("power_split", False),
+            mcs_params=mcs_params,
             se_metric_override=metric_override,
             max_prbs_per_ue=config.get("max_prbs_per_ue")
         )
@@ -759,6 +730,9 @@ CONFIG = {
     "impl_loss_db": 2.0,  # implementation loss modeled as noise rise (dB)
     "overhead_eff": 0.8,  # PHY/MAC overhead efficiency factor
     "use_mcs": True,      # use MCS table instead of Shannon
+    "csi_mcs_table": "nr_64qam",  # use NR CQI Table 1-equivalent SE (same as legacy values)
+    "csi_olla_offset_db": 0.0,  # OLLA offset (dB), 0 keeps baseline
+    "csi_delay_ttis": 0,  # CSI report delay in TTIs (applies to metric only for now)
     "power_split": True,  # per-UE PRB power splitting (P/k per PRB)
     "max_prbs_per_ue": 4,  # optional cap per UE per TTI (int)
     # Uplink open-loop power control (optional)
@@ -788,74 +762,77 @@ CONFIG = {
     "radio_map_units": "mW",                        # Data.mat values are mW (per PRB external interference)
     # SCS / PRB bandwidth for noise
     "scs_khz": 30,  # PRB BW=12*30kHz=360 kHz used in kTB noise
+    # Residual impairments (frequency offset for ICI penalty)
+    "residual_freq_hz": 0.0,
     "seed": 1             # random seed
 }
 
-# -----------------------
-# Run single experiment
-# -----------------------
-single = run_once(CONFIG)
-print("Single-run results")
-print(f"  Baseline avg SE (bits/s/Hz): {single['avg_se_baseline']:.3f}")
-print(f"  RadioMap avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
-print(f"  Gain (%): {single['improvement_pct']:.2f}")
+if __name__ == '__main__':
+    # -----------------------
+    # Run single experiment
+    # -----------------------
+    single = run_once(CONFIG)
+    print("Single-run results")
+    print(f"  Baseline avg SE (bits/s/Hz): {single['avg_se_baseline']:.3f}")
+    print(f"  RadioMap avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
+    print(f"  Gain (%): {single['improvement_pct']:.2f}")
 
-# -----------------------
-# Run multiple seeds to show robustness
-# -----------------------
-seeds = np.arange(1, 21)
-multi = run_many(CONFIG, seeds)
-print("\nMulti-seed summary (N=20)")
-print(f"  Baseline avg SE: {multi['baseline'].mean():.3f} ± {multi['baseline'].std():.3f}")
-print(f"  RadioMap avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
-print(f"  Gain median: {np.median(multi['improvement_pct']):.2f}% (min={multi['improvement_pct'].min():.2f}%, max={multi['improvement_pct'].max():.2f}%)")
+    # -----------------------
+    # Run multiple seeds to show robustness
+    # -----------------------
+    seeds = np.arange(1, 21)
+    multi = run_many(CONFIG, seeds)
+    print("\nMulti-seed summary (N=20)")
+    print(f"  Baseline avg SE: {multi['baseline'].mean():.3f} ± {multi['baseline'].std():.3f}")
+    print(f"  RadioMap avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
+    print(f"  Gain median: {np.median(multi['improvement_pct']):.2f}% (min={multi['improvement_pct'].min():.2f}%, max={multi['improvement_pct'].max():.2f}%)")
 
-# -----------------------
-# Plots
-# -----------------------
-save_plots = CONFIG.get("save_plots", True)
-show_plots = CONFIG.get("show_plots", False)
-plot_dir = CONFIG.get("plot_dir", "output")
-if save_plots and not os.path.exists(plot_dir):
-    os.makedirs(plot_dir, exist_ok=True)
+    # -----------------------
+    # Plots
+    # -----------------------
+    save_plots = CONFIG.get("save_plots", True)
+    show_plots = CONFIG.get("show_plots", False)
+    plot_dir = CONFIG.get("plot_dir", "output")
+    if save_plots and not os.path.exists(plot_dir):
+        os.makedirs(plot_dir, exist_ok=True)
 
-def maybe_finalize(fig_name: str):
-    if save_plots:
-        plt.savefig(os.path.join(plot_dir, fig_name), dpi=140, bbox_inches='tight')
-    if show_plots:
-        plt.show()
-    else:
-        plt.close()
+    def maybe_finalize(fig_name: str):
+        if save_plots:
+            plt.savefig(os.path.join(plot_dir, fig_name), dpi=140, bbox_inches='tight')
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
 
-# 1) Improvement distribution
-plt.figure(figsize=(6,4))
-plt.hist(multi["improvement_pct"], bins=10, edgecolor='black')
-plt.title("Radio Map–aware gain distribution across seeds")
-plt.xlabel("Gain vs. baseline (%)")
-plt.ylabel("Count")
-plt.tight_layout()
-maybe_finalize("gain_distribution.png")
+    # 1) Improvement distribution
+    plt.figure(figsize=(6,4))
+    plt.hist(multi["improvement_pct"], bins=10, edgecolor='black')
+    plt.title("Radio Map–aware gain distribution across seeds")
+    plt.xlabel("Gain vs. baseline (%)")
+    plt.ylabel("Count")
+    plt.tight_layout()
+    maybe_finalize("gain_distribution.png")
 
-# 2) Example Interference Map slice (median over frequency)
-R_med = np.median(single["R_xyz_dbm"], axis=2)
-plt.figure(figsize=(5,5))
-plt.imshow(R_med.T, origin='lower', aspect='equal')
-plt.title("Interference Map (median over frequency), dBm")
-plt.colorbar(label='dBm')
-plt.tight_layout()
-maybe_finalize("interference_map_median.png")
+    # 2) Example Interference Map slice (median over frequency)
+    R_med = np.median(single["R_xyz_dbm"], axis=2)
+    plt.figure(figsize=(5,5))
+    plt.imshow(R_med.T, origin='lower', aspect='equal')
+    plt.title("Interference Map (median over frequency), dBm")
+    plt.colorbar(label='dBm')
+    plt.tight_layout()
+    maybe_finalize("interference_map_median.png")
 
-# 3) Example per-UE wideband vs best-subband capacity (first 10 UEs)
-ue = np.arange(min(10, CONFIG["N_UE"]))
-best_subband = single["cap"][ue].max(axis=1)
-wb = single["cap_wb"][ue]
-x = np.arange(ue.size)
-plt.figure(figsize=(6,4))
-plt.bar(x - 0.2, wb, width=0.4, label='Wideband (baseline)')
-plt.bar(x + 0.2, best_subband, width=0.4, label='Best subband (RadioMap)')
-plt.xticks(x, [f"UE{int(i)}" for i in ue])
-plt.ylabel("Spectral efficiency (bits/s/Hz)")
-plt.title("Per-UE: wideband vs best subband opportunity")
-plt.legend()
-plt.tight_layout()
-maybe_finalize("per_ue_wb_vs_best_subband.png")
+    # 3) Example per-UE wideband vs best-subband capacity (first 10 UEs)
+    ue = np.arange(min(10, CONFIG["N_UE"]))
+    best_subband = single["cap"][ue].max(axis=1)
+    wb = single["cap_wb"][ue]
+    x = np.arange(ue.size)
+    plt.figure(figsize=(6,4))
+    plt.bar(x - 0.2, wb, width=0.4, label='Wideband (baseline)')
+    plt.bar(x + 0.2, best_subband, width=0.4, label='Best subband (RadioMap)')
+    plt.xticks(x, [f"UE{int(i)}" for i in ue])
+    plt.ylabel("Spectral efficiency (bits/s/Hz)")
+    plt.title("Per-UE: wideband vs best subband opportunity")
+    plt.legend()
+    plt.tight_layout()
+    maybe_finalize("per_ue_wb_vs_best_subband.png")
