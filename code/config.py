@@ -44,7 +44,7 @@ CONFIG = {
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
     "csi_delay_ttis": 0,            # CSI report delay (TTIs)
     "power_split": True,            # per-UE PRB power split
-    "max_prbs_per_ue": 12,          # cap per UE per TTI (keeps allocations phone-like)
+    "max_prbs_per_ue": 9,           # cap per UE per TTI (~Z/sqrt(N)), mitigates power-split loss
 
     # Uplink fractional open-loop power control (TS 38.213)
     "enable_power_control": True,

@@ -446,8 +446,9 @@ def compute_caps(R_xyz_dbm: np.ndarray,
     snr_lin = 10.0 ** (gamma_db / 10.0)
     cap = np.log2(1.0 + snr_lin)                                  # [UE,Z]
 
-    # Wideband (3GPP-like) interference (median across subbands)
-    I_wb_mw = np.median(I_total_mw, axis=1)                       # [UE]
+    # Wideband (3GPP-like) interference. Use mean across subbands for a more
+    # conservative and realistic CQI statistic vs median.
+    I_wb_mw = np.mean(I_total_mw, axis=1)                          # [UE]
     I_wb_dbm = mw_to_dbm(I_wb_mw)
     gamma_db_wb = P_rx_dbm - I_wb_dbm
     snr_lin_wb = 10.0 ** (gamma_db_wb / 10.0)
@@ -465,7 +466,10 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
                          power_split: bool = False,
                          mcs_params: Optional[Dict] = None,
                          se_metric_time: Optional[np.ndarray] = None,
-                         snr_lin_wb_time: Optional[np.ndarray] = None) -> float:
+                         snr_lin_wb_time: Optional[np.ndarray] = None,
+                         snr_lin_prb: Optional[np.ndarray] = None,
+                         cap_prb: Optional[np.ndarray] = None,
+                         snr_lin_time_prb: Optional[np.ndarray] = None) -> float:
     """
     3GPP-like baseline: proportional fair with wideband CQI (same cap on every PRB).
     To avoid one-UE monopolization, assign PRBs in each TTI across the top sqrt(N) UEs 
@@ -492,24 +496,54 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
         else:
             selected = np.argsort(-metric)
 
-        alloc_counts = np.full(U_select, Z // U_select)
-        remainder = Z - alloc_counts.sum()
+        # Determine number of PRBs per selected UE
+        alloc_counts = np.full(U_select, Z // U_select, dtype=int)
+        remainder = Z - int(alloc_counts.sum())
         if remainder > 0:
             alloc_counts[:remainder] += 1
 
+        # Build per-PRB winners by round-robin across selected set (no subband awareness)
+        winners = np.full(Z, -1, dtype=int)
+        rem = alloc_counts.copy()
+        k_ptr = 0
+        for z in range(Z):
+            # find next selected UE with remaining quota
+            for _ in range(U_select):
+                if rem[k_ptr] > 0:
+                    winners[z] = selected[k_ptr]
+                    rem[k_ptr] -= 1
+                    k_ptr = (k_ptr + 1) % U_select
+                    break
+                k_ptr = (k_ptr + 1) % U_select
+            if winners[z] < 0:
+                winners[z] = selected[0]
+
         thr_i = np.zeros(N_UE)
-        for k_idx, ue in enumerate(selected):
-            k_prb = int(alloc_counts[k_idx])
-            if k_prb <= 0:
-                continue
-            # Effective SNR per PRB with power split
-            if snr_lin_wb is not None or snr_lin_wb_time is not None:
-                snr_base = snr_lin_wb_time[t_idx, ue] if snr_lin_wb_time is not None else snr_lin_wb[ue]
-                se_per_prb = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
+        # Count PRBs per UE for power split
+        if power_split:
+            counts = np.bincount(winners, minlength=N_UE)
+        else:
+            counts = np.ones(N_UE, dtype=int)
+        for z in range(Z):
+            ue = winners[z]
+            k_prb = int(counts[ue]) if power_split else 1
+            # Prefer per-PRB SNR/SE if available for fairness
+            if (snr_lin_prb is not None) or (snr_lin_time_prb is not None):
+                if snr_lin_time_prb is not None:
+                    snr_base = snr_lin_time_prb[t_idx, ue, z]
+                else:
+                    snr_base = snr_lin_prb[ue, z]
+                se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
+            elif cap_prb is not None and (not use_mcs):
+                se = se_from_cap_shannon_with_split(cap_prb[ue, z], k_prb if power_split else 1)
             else:
-                # Fallback (Shannon-only): adjust wideband SE by power split
-                se_per_prb = se_from_cap_shannon_with_split(metric_se_t[ue], k_prb if power_split else 1)
-            thr_i[ue] = k_prb * se_per_prb * overhead_eff
+                # Fallback to wideband
+                if (snr_lin_wb is not None) or (snr_lin_wb_time is not None):
+                    snr_base = snr_lin_wb_time[t_idx, ue] if snr_lin_wb_time is not None else snr_lin_wb[ue]
+                    se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
+                else:
+                    se = se_from_cap_shannon_with_split(metric_se_t[ue], k_prb if power_split else 1)
+            thr_i[ue] += se * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
 
@@ -666,7 +700,10 @@ def run_once(config: Dict) -> Dict:
             power_split=config.get("power_split", False),
             mcs_params=mcs_params,
             se_metric_time=se_time_wb,
-            snr_lin_wb_time=time_series["snr_wb_time"]
+            snr_lin_wb_time=time_series["snr_wb_time"],
+            snr_lin_prb=snr_lin,
+            cap_prb=cap,
+            snr_lin_time_prb=time_series["snr_time"]
         )
         map_se = pf_schedule_radiomap(
             cap, T, beta=config["pf_beta"],
@@ -688,6 +725,8 @@ def run_once(config: Dict) -> Dict:
             use_mcs=config.get("use_mcs", False),
             power_split=config.get("power_split", False),
             mcs_params=mcs_params,
+            snr_lin_prb=snr_lin,
+            cap_prb=cap,
         )
         map_se = pf_schedule_radiomap(
             cap, T, beta=config["pf_beta"],
