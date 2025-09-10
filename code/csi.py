@@ -138,39 +138,3 @@ def effective_sinr_eesm(sinr_db: np.ndarray, beta_db: float = 1.0, axis: int = -
     m = np.maximum(m, 1e-30)
     sinr_eff_db = -beta * np.log(m)
     return sinr_eff_db
-
-
-def _default_eesm_beta_table(table: str = "nr_64qam") -> np.ndarray:
-    """
-    Returns a simple per-CQI EESM beta lookup (dB) for CQI 0..15.
-    Placeholder calibration: small-to-moderate beta growing with CQI.
-    """
-    # CQI 0..15; CQI=0 unused
-    if table in ("legacy", "nr_64qam", "nr_256qam"):
-        return np.array([
-            1.0,  # CQI 0 (unused)
-            1.0, 1.0, 1.0, 1.2, 1.2, 1.4, 1.5, 1.7,
-            1.8, 2.0, 2.2, 2.4, 2.6, 3.0, 3.5, 4.0
-        ], dtype=float)
-    return np.full(16, 1.0, dtype=float)
-
-
-def pick_eesm_beta_from_cqi(cqi: np.ndarray,
-                            table: str = "nr_64qam",
-                            custom_table: Optional[np.ndarray] = None) -> np.ndarray:
-    """
-    Map CQI (0..15) to an EESM beta (dB). If custom_table is provided (len>=16), use it;
-    otherwise use the default placeholder table above.
-    """
-    cqi = np.asarray(cqi, dtype=int)
-    if custom_table is not None:
-        bt = np.asarray(custom_table, dtype=float)
-        if bt.size < 16:
-            # pad/repeat to length 16
-            pad = np.full(16, float(bt.flat[0]), dtype=float)
-            pad[:bt.size] = bt
-            bt = pad
-    else:
-        bt = _default_eesm_beta_table(table)
-    idx = np.clip(cqi, 0, 15)
-    return bt[idx]
