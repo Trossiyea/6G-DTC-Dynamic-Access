@@ -98,4 +98,5 @@ CONFIG.update({
     "sched_require_contiguous": True,  # one contiguous block per UE per TTI
     "sched_eesm_beta_db": 1.0,         # EESM beta (dB)
     "sched_robust_kappa_db": 0.0,      # robustness factor (subtract kappa*sigma_dB from SINR)
+    "baseline_block_mode": True,       # use strong baseline: contiguous-block PF using instantaneous per-PRB metric
 })

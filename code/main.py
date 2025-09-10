@@ -941,25 +941,52 @@ def run_once(config: Dict) -> Dict:
                 return out
             se_time_wb = delay_series(time_series["se_time_wb"], csi_delay)
             se_time_rm = delay_series(time_series["se_time_rm"], csi_delay)
+            # Build baseline per-PRB SE metric from instantaneous snr_time and apply same delay
+            se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
+            for tt in range(time_series["snr_time"].shape[0]):
+                se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
+            se_time_base = delay_series(se_time_base, csi_delay)
         else:
             se_time_wb = time_series["se_time_wb"]
             se_time_rm = time_series["se_time_rm"]
+            se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
+            for tt in range(time_series["snr_time"].shape[0]):
+                se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
         # Keep tau/fd for downstream users (HARQ/deferral to be added)
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
-        base_se = pf_schedule_baseline(
-            cap_wb, Z, T, beta=config["pf_beta"],
-            snr_lin_wb=snr_lin_wb,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            mcs_params=mcs_params,
-            se_metric_time=se_time_wb,
-            snr_lin_wb_time=time_series["snr_wb_time"],
-            snr_lin_prb=snr_lin,
-            cap_prb=cap,
-            snr_lin_time_prb=time_series["snr_time"]
-        )
+        if config.get("baseline_block_mode", True):
+            base_se = pf_schedule_radiomap_blocks(
+                cap, T, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None,
+                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                mcs_params=mcs_params,
+                se_metric_time=se_time_base,
+                snr_lin_time=time_series["snr_time"],
+                eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
+                robust_kappa_db=0.0,
+                robust_sigma_db=0.0,
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                rng=rng,
+            )
+        else:
+            base_se = pf_schedule_baseline(
+                cap_wb, Z, T, beta=config["pf_beta"],
+                snr_lin_wb=snr_lin_wb,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                mcs_params=mcs_params,
+                se_metric_time=se_time_wb,
+                snr_lin_wb_time=time_series["snr_wb_time"],
+                snr_lin_prb=snr_lin,
+                cap_prb=cap,
+                snr_lin_time_prb=time_series["snr_time"]
+            )
         if config.get("sched_block_mode", False):
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -994,16 +1021,35 @@ def run_once(config: Dict) -> Dict:
             )
             sched_stats = None
     else:
-        base_se = pf_schedule_baseline(
-            cap_wb, Z, T, beta=config["pf_beta"],
-            snr_lin_wb=snr_lin_wb,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            mcs_params=mcs_params,
-            snr_lin_prb=snr_lin,
-            cap_prb=cap,
-        )
+        if config.get("baseline_block_mode", True):
+            base_se = pf_schedule_radiomap_blocks(
+                cap, T, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None,
+                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                mcs_params=mcs_params,
+                se_metric_time=None,
+                snr_lin_time=None,
+                eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
+                robust_kappa_db=0.0,
+                robust_sigma_db=0.0,
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                rng=rng,
+            )
+        else:
+            base_se = pf_schedule_baseline(
+                cap_wb, Z, T, beta=config["pf_beta"],
+                snr_lin_wb=snr_lin_wb,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                mcs_params=mcs_params,
+                snr_lin_prb=snr_lin,
+                cap_prb=cap,
+            )
         if config.get("sched_block_mode", False):
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
