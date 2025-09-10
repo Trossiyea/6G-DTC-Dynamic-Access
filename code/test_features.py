@@ -1,7 +1,8 @@
 import numpy as np
 from copy import deepcopy
 
-from main import run_once, CONFIG
+from main import run_once
+from config import CONFIG
 from csi import sinr_to_cqi, cqi_to_se
 
 
