@@ -18,7 +18,7 @@ from typing import Tuple, Dict, Optional, Union
 import os
 from scipy.io import loadmat
 from csi import sinr_to_se_mcs
-from orbit import compute_geometry_and_beam
+from orbit import compute_geometry_and_beam, OrbitModel
 from pc import pusch_open_loop_power
 
 # -----------------------
@@ -310,7 +310,10 @@ def build_time_variation_if_enabled(config: Dict,
     se_time_wb: list = []
     snr_time: list = []
     snr_wb_time: list = []
+    tau_time: list = []
+    fd_time: list = []
     R_t = R_xyz_dbm.copy()
+    orbit_model = OrbitModel(config, R_xyz_dbm.shape[0], R_xyz_dbm.shape[1]) if config.get("enable_orbit_dynamics", False) else None
     for t in range(T):
         if t > 0:
             if vx or vy:
@@ -330,11 +333,15 @@ def build_time_variation_if_enabled(config: Dict,
                 if k > 1:
                     R_hat_dbm = blur1d(R_hat_dbm, k, axis=0)
                     R_hat_dbm = blur1d(R_hat_dbm, k, axis=1)
+            if orbit_model is not None:
+                L_fs_hat, G_rx_hat, _, _ = orbit_model.get_geometry(ue_pos, t)
+            else:
+                L_fs_hat, G_rx_hat = L_fs_per_ue, G_rx_per_ue
             cap_pred_t, cap_wb_pred_t, _, _, snr_lin_pred_t, snr_lin_wb_pred_t = compute_caps(
                 R_hat_dbm, ue_pos,
                 P_tx_dbm=P_tx_per_ue_dbm,
-                L_fs_db=L_fs_per_ue,
-                G_rx_db=G_rx_per_ue,
+                L_fs_db=L_fs_hat,
+                G_rx_db=G_rx_hat,
                 shadow_db_std=config["shadow_std_db"],
                 N0_dbm=noise_dbm,
                 rx_nf_db=config.get("rx_nf_db", 0.0),
@@ -342,17 +349,29 @@ def build_time_variation_if_enabled(config: Dict,
                 seed=config["seed"]
             )
 
+        if orbit_model is not None:
+            L_fs_t, G_rx_t, tau_s_t, fd_hz_t = orbit_model.get_geometry(ue_pos, t)
+            tau_time.append(tau_s_t)
+            fd_time.append(fd_hz_t)
+        else:
+            L_fs_t, G_rx_t = L_fs_per_ue, G_rx_per_ue
         cap_t, cap_wb_t, _, _, snr_lin_t, snr_lin_wb_t = compute_caps(
             R_t, ue_pos,
             P_tx_dbm=P_tx_per_ue_dbm,
-            L_fs_db=L_fs_per_ue,
-            G_rx_db=G_rx_per_ue,
+            L_fs_db=L_fs_t,
+            G_rx_db=G_rx_t,
             shadow_db_std=config["shadow_std_db"],
             N0_dbm=noise_dbm,
             rx_nf_db=config.get("rx_nf_db", 0.0),
             impl_loss_db=config.get("impl_loss_db", 0.0),
             seed=config["seed"]
         )
+        if orbit_model is not None and config.get("doppler_residual_fraction", 0.0) > 0.0:
+            eps_f = np.abs(fd_hz_t) * float(config.get("doppler_residual_fraction", 0.0))
+            T_sym = 1.0 / (float(config.get("scs_khz", 30)) * 1e3)
+            ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+            snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
+            snr_lin_wb_t = snr_lin_wb_t / ici_fac
         mcs_params = {
             "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
             "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -373,6 +392,8 @@ def build_time_variation_if_enabled(config: Dict,
         "se_time_wb": np.stack(se_time_wb, axis=0),      # [T, UE]
         "snr_time": np.stack(snr_time, axis=0),          # [T, UE, Z]
         "snr_wb_time": np.stack(snr_wb_time, axis=0),    # [T, UE]
+        "tau_time": None if len(tau_time) == 0 else np.stack(tau_time, axis=0),   # [T, UE]
+        "fd_time": None if len(fd_time) == 0 else np.stack(fd_time, axis=0),      # [T, UE]
     }
 def compute_caps(R_xyz_dbm: np.ndarray,
                  ue_pos_xy: np.ndarray,
@@ -633,6 +654,9 @@ def run_once(config: Dict) -> Dict:
         else:
             se_time_wb = time_series["se_time_wb"]
             se_time_rm = time_series["se_time_rm"]
+        # Keep tau/fd for downstream users (HARQ/deferral to be added)
+        tau_time = time_series.get("tau_time")
+        fd_time = time_series.get("fd_time")
         base_se = pf_schedule_baseline(
             cap_wb, Z, T, beta=config["pf_beta"],
             snr_lin_wb=snr_lin_wb,
@@ -685,6 +709,9 @@ def run_once(config: Dict) -> Dict:
         "cap_wb": cap_wb,
         "snr_lin": snr_lin,
         "snr_lin_wb": snr_lin_wb,
+        # Optional dynamics for downstream consumers
+        "tau_time": None if time_series is None else time_series.get("tau_time"),
+        "fd_time": None if time_series is None else time_series.get("fd_time"),
     }
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
@@ -749,6 +776,12 @@ CONFIG = {
     "beam_half_bw_deg": 4.0,
     "beam_edge_drop_db": 3.0,
     "cell_size_km": 5.0,      # ground resolution per pixel
+    # Orbit dynamics (optional realism)
+    "enable_orbit_dynamics": False,
+    "tti_ms": 1.0,
+    "sat_ground_speed_kms": 7.5,
+    "sat_heading_deg": 0.0,   # 0: +x direction in map grid
+    "doppler_residual_fraction": 0.0,  # fraction of Doppler left after precompensation (0..1)
     # Time-varying Radio Map (optional realism)
     "enable_time_varying": False,
     "rm_drift_px": (0, 0),

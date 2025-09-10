@@ -9,7 +9,7 @@ This first version keeps the existing behavior (legacy thresholds)
 to avoid regressions.
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 import numpy as np
 
 
@@ -32,6 +32,57 @@ def _legacy_sinr_to_se_mcs(sinr_db: np.ndarray) -> np.ndarray:
     return se
 
 
+def _nr_cqi_table(table: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Returns (thresholds_dB[15], se_vals[15]) for CQI 1..15 at 10% BLER AWGN.
+    - For now, thresholds are the common industry set used for 64QAM (legacy LTE-like),
+      which is a reasonable baseline for NR Table 1 (64QAM).
+    - For Table 2 (256QAM), we reuse thresholds initially and keep SE equal to Table 1
+      until calibrated values are provided.
+    """
+    thr_db = np.array([
+        -6.7, -4.7, -2.3, 0.2, 2.4, 4.3, 5.9, 8.1, 10.3, 11.7, 14.1, 16.3, 18.7, 21.0, 22.7
+    ], dtype=float)
+    if table in ("legacy", "nr_64qam"):
+        se_vals = np.array([
+            0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
+            2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
+        ], dtype=float)
+        return thr_db, se_vals
+    if table == "nr_256qam":
+        # Placeholder: same thresholds and SE as 64QAM until calibrated values are supplied.
+        se_vals = np.array([
+            0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
+            2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
+        ], dtype=float)
+        return thr_db, se_vals
+    raise ValueError(f"Unknown CQI table: {table}")
+
+
+def sinr_to_cqi(sinr_db: np.ndarray, table: str = "nr_64qam") -> np.ndarray:
+    """
+    Map SINR to CQI (0..15), with 0 indicating out of coverage.
+    """
+    sinr_db = np.asarray(sinr_db, dtype=float)
+    thr_db, _ = _nr_cqi_table(table)
+    idx = np.searchsorted(thr_db, sinr_db, side='right')
+    cqi = np.clip(idx, 0, 15)
+    return cqi
+
+
+def cqi_to_se(cqi: np.ndarray, table: str = "nr_64qam") -> np.ndarray:
+    """
+    Map CQI (0..15) to spectral efficiency (bits/s/Hz). CQI=0 -> SE=0.
+    """
+    cqi = np.asarray(cqi, dtype=int)
+    _, se_vals = _nr_cqi_table(table)
+    # cqi 1..15 map to se_vals[0..14]
+    se = np.zeros_like(cqi, dtype=float)
+    mask = (cqi > 0)
+    se[mask] = se_vals[np.clip(cqi[mask] - 1, 0, len(se_vals) - 1)]
+    return se
+
+
 def sinr_to_se_mcs(sinr_db: np.ndarray, table: str = "legacy") -> np.ndarray:
     """
     Public API: map SINR (dB) to spectral efficiency (bits/s/Hz).
@@ -41,9 +92,9 @@ def sinr_to_se_mcs(sinr_db: np.ndarray, table: str = "legacy") -> np.ndarray:
     sinr_db = np.asarray(sinr_db, dtype=float)
     if table == "legacy":
         return _legacy_sinr_to_se_mcs(sinr_db)
-    if table == "nr_64qam":
-        # NR CQI Table 1 spectral efficiencies align with legacy list; thresholds are vendor-specific.
-        return _legacy_sinr_to_se_mcs(sinr_db)
+    if table in ("nr_64qam", "nr_256qam"):
+        cqi = sinr_to_cqi(sinr_db, table="nr_64qam" if table == "nr_64qam" else "nr_256qam")
+        return cqi_to_se(cqi, table=table)
     raise ValueError(f"Unknown MCS table: {table}")
 
 

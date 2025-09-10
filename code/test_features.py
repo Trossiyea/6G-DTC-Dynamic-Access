@@ -2,6 +2,7 @@ import numpy as np
 from copy import deepcopy
 
 from main import run_once, CONFIG
+from csi import sinr_to_cqi, cqi_to_se
 
 
 def run_with(overrides):
@@ -53,6 +54,41 @@ def test_residual_freq_penalty():
     assert ici["avg_se_radiomap"] <= no_ici["avg_se_radiomap"] + 1e-9
 
 
+def test_orbit_dynamics_and_doppler():
+    # With zero speed, Doppler should be ~0 and tau in [~1ms, ~10ms]
+    zero = run_with({
+        "enable_time_varying": True,
+        "enable_orbit_dynamics": True,
+        "sat_ground_speed_kms": 0.0,
+        "doppler_residual_fraction": 0.0,
+        "seed": 66,
+    })
+    assert zero["tau_time"] is not None and zero["fd_time"] is not None
+    tau_ms = zero["tau_time"][0] * 1e3
+    fd_abs = np.abs(zero["fd_time"][0])
+    print("[Orbit] tau_ms range:", tau_ms.min(), tau_ms.max(), "fd max:", fd_abs.max())
+    assert tau_ms.min() > 0.5 and tau_ms.max() < 15.0
+    assert fd_abs.max() < 1e-6
+
+    # Non-zero speed with residual Doppler should reduce SE (ICI penalty)
+    no_resid = run_with({
+        "enable_time_varying": True,
+        "enable_orbit_dynamics": True,
+        "sat_ground_speed_kms": 7.5,
+        "doppler_residual_fraction": 0.0,
+        "seed": 67,
+    })
+    resid = run_with({
+        "enable_time_varying": True,
+        "enable_orbit_dynamics": True,
+        "sat_ground_speed_kms": 7.5,
+        "doppler_residual_fraction": 0.1,
+        "seed": 67,
+    })
+    print("[Orbit Doppler] 0 vs 10% residual:", no_resid["avg_se_radiomap"], resid["avg_se_radiomap"])
+    assert resid["avg_se_radiomap"] <= no_resid["avg_se_radiomap"] + 1e-9
+
+
 def test_mcs_table_equivalence():
     # Legacy and nr_64qam are identical in this initial drop
     leg = run_with({"csi_mcs_table": "legacy", "seed": 55})
@@ -61,11 +97,22 @@ def test_mcs_table_equivalence():
     assert abs(leg["avg_se_radiomap"] - nr["avg_se_radiomap"]) < 1e-12
 
 
+def test_cqi_mapping_boundaries():
+    # Check a few thresholds for NR 64QAM table
+    thr = [-6.8, -6.7, -2.3, 22.7, 25.0]
+    c = sinr_to_cqi(np.array(thr), table="nr_64qam")
+    # Below first threshold -> CQI 0; equal to threshold -> CQI >=1
+    assert c[0] == 0 and c[1] >= 1 and c[-2] <= 15 and c[-1] == 15
+    se = cqi_to_se(c, table="nr_64qam")
+    assert se[0] == 0.0 and se[-1] > 5.0
+
+
 if __name__ == "__main__":
     test_power_control_effect()
     test_csi_delay_changes_outcome()
     test_olla_offset()
     test_residual_freq_penalty()
+    test_orbit_dynamics_and_doppler()
     test_mcs_table_equivalence()
+    test_cqi_mapping_boundaries()
     print("All feature tests passed.")
-

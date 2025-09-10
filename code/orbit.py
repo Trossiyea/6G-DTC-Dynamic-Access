@@ -77,14 +77,71 @@ class OrbitModel:
         self.config = dict(config)
         self.X = X
         self.Y = Y
-        self.cx, self.cy = (X // 2, Y // 2) if config.get("beam_center_xy") is None else config["beam_center_xy"]
+        self.cell_km = float(config.get("cell_size_km", 1.0))
+        bc = config.get("beam_center_xy")
+        self.cx0 = float(X // 2) if bc is None else float(bc[0])
+        self.cy0 = float(Y // 2) if bc is None else float(bc[1])
         self.alt_km = float(config.get("sat_altitude_km", 600.0))
+        # Ground-track dynamics
+        self.tti_s = float(config.get("tti_ms", 1.0)) * 1e-3
+        v_kmps = float(config.get("sat_ground_speed_kms", 7.5))
+        head_deg = float(config.get("sat_heading_deg", 0.0))
+        head_rad = math.radians(head_deg)
+        self.vx_kmps = v_kmps * math.cos(head_rad)
+        self.vy_kmps = v_kmps * math.sin(head_rad)
+
+    def beam_center_at(self, t: int) -> Tuple[float, float]:
+        # Advance beam center with wrap-around on the tile
+        step_km = self.tti_s
+        cx = self.cx0 + (self.vx_kmps * step_km / self.cell_km) * t
+        cy = self.cy0 + (self.vy_kmps * step_km / self.cell_km) * t
+        # wrap around to keep within [0, X), [0, Y)
+        cx = cx % self.X
+        cy = cy % self.Y
+        return cx, cy
 
     def get_slant_and_offaxis(self, ue_pos: np.ndarray, t: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-        dx = (ue_pos[:, 0] - self.cx) * self.config.get("cell_size_km", 1.0)
-        dy = (ue_pos[:, 1] - self.cy) * self.config.get("cell_size_km", 1.0)
+        cx, cy = self.beam_center_at(t)
+        dx = (ue_pos[:, 0].astype(float) - cx) * self.cell_km
+        dy = (ue_pos[:, 1].astype(float) - cy) * self.cell_km
         r_ground = np.sqrt(dx * dx + dy * dy)
         slant_km = np.sqrt(r_ground * r_ground + self.alt_km * self.alt_km)
         offaxis_deg = np.rad2deg(np.arctan2(r_ground, self.alt_km))
         return slant_km, offaxis_deg
 
+    def get_geometry(self, ue_pos: np.ndarray, t: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Returns per-UE at time t:
+        - L_fs_db [UE]
+        - G_rx_db [UE]
+        - tau_s [UE]
+        - f_d_hz [UE]
+        """
+        cx, cy = self.beam_center_at(t)
+        x_ue_km = ue_pos[:, 0].astype(float) * self.cell_km
+        y_ue_km = ue_pos[:, 1].astype(float) * self.cell_km
+        x_sat_km = cx * self.cell_km
+        y_sat_km = cy * self.cell_km
+        dx = x_sat_km - x_ue_km
+        dy = y_sat_km - y_ue_km
+        r_ground = np.sqrt(dx * dx + dy * dy)
+        slant_km = np.sqrt(r_ground * r_ground + self.alt_km * self.alt_km)
+        offaxis_deg = np.rad2deg(np.arctan2(r_ground, self.alt_km))
+        L_fs = fspl_db(slant_km, self.config.get("carrier_freq_GHz", 2.0))
+        G_rx = simple_beam_gain_db(
+            offaxis_deg,
+            boresight_gain_db=self.config.get("G_rx_db", 32.0),
+            half_bw_deg=self.config.get("beam_half_bw_deg", 4.0),
+            edge_drop_db=self.config.get("beam_edge_drop_db", 3.0),
+        )
+        # Propagation delay (s)
+        c_kmps = 299792.458
+        tau_s = slant_km / c_kmps
+        # Doppler: project sat ground velocity onto LoS unit vector
+        # LoS unit vector from UE to Sat: u = [dx, dy, alt] / slant
+        u_x = dx / slant_km
+        u_y = dy / slant_km
+        v_r_kmps = self.vx_kmps * u_x + self.vy_kmps * u_y
+        f_c_hz = float(self.config.get("carrier_freq_GHz", 2.0)) * 1e9
+        f_d_hz = (v_r_kmps / c_kmps) * f_c_hz
+        return L_fs, G_rx, tau_s, f_d_hz
