@@ -88,3 +88,21 @@ CONFIG = {
 
     "seed": 1                   # random seed
 }
+
+# Scheduler enhancements (P1–P3)
+# - Block scheduling with contiguous RBs and EESM-based single-MCS evaluation
+# - Power-aware greedy allocation (marginal SE with power split)
+# - Robust metric and light exploration for map uncertainty
+CONFIG.update({
+    "sched_block_mode": True,          # enable enhanced block-based scheduler
+    "sched_require_contiguous": True,  # one contiguous block per UE per TTI
+    "sched_eesm_beta_db": 1.0,         # EESM beta (dB)
+    "sched_explore_epsilon": 0.05,     # small probability to explore a random PRB
+    "sched_robust_kappa_db": 0.0,      # robustness factor (subtract kappa*sigma_dB from SINR)
+    "sched_eesm_beta_by_mcs": False,   # use per-CQI beta when estimating block SINR
+    "eesm_beta_table": None,           # optional custom [16] beta table for CQI 0..15
+    "freq_slices": 1,                  # number of frequency slices for per-UE slice preference
+    "freq_slice_method": "score_diff", # slice by large score jumps or 'equal'
+    "sched_collect_stats": True,       # collect aggregated block/CQI histograms
+    "sched_collect_stats_full": False, # collect per-TTI details (memory heavy)
+})

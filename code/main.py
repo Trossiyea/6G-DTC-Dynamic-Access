@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Optional, Union
 import os
 from scipy.io import loadmat
-from csi import sinr_to_se_mcs
+from csi import sinr_to_se_mcs, effective_sinr_eesm, sinr_to_cqi, pick_eesm_beta_from_cqi
 from config import CONFIG
 from orbit import compute_geometry_and_beam, OrbitModel
 from pc import pusch_open_loop_power
@@ -172,6 +172,48 @@ def se_from_cap_shannon_with_split(cap_se: Union[float, np.ndarray], k_prb: int)
     k = max(1, int(k_prb))
     gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap_se)) - 1.0) / float(k)
     return np.log2(1.0 + gamma)
+
+def _apply_ici_penalty_lin(snr_lin: np.ndarray, mcs_params: Optional[Dict]) -> np.ndarray:
+    """Apply residual CFO/ICI penalty on linear SNR if configured in mcs_params."""
+    if mcs_params is None:
+        return np.asarray(snr_lin)
+    eps_f = float(mcs_params.get("residual_freq_hz", 0.0) or 0.0)
+    if eps_f <= 0.0:
+        return np.asarray(snr_lin)
+    scs_khz = float(mcs_params.get("scs_khz", 30.0) or 30.0)
+    T_sym = 1.0 / (scs_khz * 1e3)
+    ici_factor = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+    return np.asarray(snr_lin) / ici_factor
+
+def _block_se_from_snr_vec(
+    snr_lin_vec: np.ndarray,
+    k_prb: int,
+    use_mcs: bool,
+    mcs_params: Optional[Dict],
+    eesm_beta_db: float,
+    beta_override: Optional[float] = None,
+) -> float:
+    """
+    Compute per-PRB SE for a contiguous RB block using power split over k_prb PRBs.
+    - If use_mcs: apply ICI penalty, divide SNR by k, map vector to effective SINR via EESM, then to SE via MCS.
+    - Else (Shannon): average log2(1+SNR/k) across the block.
+    Returns per-PRB SE (not the block sum).
+    """
+    k = max(1, int(k_prb))
+    s = np.asarray(snr_lin_vec, dtype=float)
+    s = _apply_ici_penalty_lin(s, mcs_params)
+    if use_mcs:
+        sinr_db_vec = 10.0 * np.log10(np.maximum(s / float(k), 1e-12))
+        beta_eff = float(beta_override) if (beta_override is not None) else float(eesm_beta_db)
+        sinr_eff_db = effective_sinr_eesm(sinr_db_vec, beta_db=beta_eff, axis=-1)
+        # Apply OLLA offset if present
+        if mcs_params is not None:
+            sinr_eff_db = sinr_eff_db + float(mcs_params.get("olla_offset_db", 0.0))
+        se = float(np.asarray(sinr_to_se_mcs(sinr_eff_db, table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy")))
+        return se
+    else:
+        se_vec = np.log2(1.0 + np.maximum(s / float(k), 0.0))
+        return float(np.mean(se_vec))
 
 def se_metric_strategy(use_mcs: bool,
               snr_lin: Optional[np.ndarray] = None,
@@ -627,6 +669,356 @@ def pf_schedule_radiomap(cap: np.ndarray,
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
 
+
+def pf_schedule_radiomap_blocks(
+    cap: np.ndarray,
+    T: int,
+    beta: float,
+    snr_lin: Optional[np.ndarray],
+    overhead_eff: float,
+    use_mcs: bool,
+    power_split: bool,
+    se_metric_override: Optional[np.ndarray],
+    max_prbs_per_ue: Optional[int],
+    mcs_params: Optional[Dict],
+    se_metric_time: Optional[np.ndarray],
+    snr_lin_time: Optional[np.ndarray],
+    eesm_beta_db: float = 1.0,
+    robust_kappa_db: float = 0.0,
+    robust_sigma_db: float = 0.0,
+    require_contiguous: bool = True,
+    explore_epsilon: float = 0.05,
+    rng: Optional[np.random.Generator] = None,
+    beta_by_mcs: bool = False,
+    beta_table: Optional[np.ndarray] = None,
+    freq_slices: int = 1,
+    slice_method: str = "score_diff",
+    return_stats: bool = False,
+) -> Union[float, Tuple[float, Dict]]:
+    """
+    Enhanced Radio Map–aware PF with contiguous RB blocks (single-MCS via EESM),
+    power-aware greedy allocation (marginal ΔSE with power split), and robust/exploration.
+    Returns average sum spectral efficiency per PRB (bits/s/Hz).
+    """
+    N_UE, Z = cap.shape
+    rng = np.random.default_rng(0) if rng is None else rng
+
+    def to_robust_sinr_db(arr_snr_lin: np.ndarray) -> np.ndarray:
+        sinr_db = 10.0 * np.log10(np.maximum(arr_snr_lin, 1e-12))
+        if robust_kappa_db > 0.0 and robust_sigma_db > 0.0:
+            sinr_db = sinr_db - float(robust_kappa_db) * float(robust_sigma_db)
+        return sinr_db
+
+    Rbar = np.full(N_UE, 1e-3)
+    sum_rate = 0.0
+
+    # Stats containers
+    cqi_hist = np.zeros(16, dtype=int)
+    blk_len_hist = None
+    per_tti_stats = []
+
+    for t_idx in range(T):
+        # Prepare predicted per-PRB seed scores (k=1) and robust inputs
+        if se_metric_time is not None:
+            # Use given per-PRB SE predictions directly as seed scores
+            se_pred_k1 = np.asarray(se_metric_time[t_idx], dtype=float)  # [UE,Z]
+            sinr_db_pred = None
+        else:
+            # Derive from snr_lin (preferred) or from cap via Shannon inversion
+            if snr_lin_time is not None:
+                snr_mat = np.asarray(snr_lin_time[t_idx], dtype=float)
+            elif snr_lin is not None:
+                snr_mat = np.asarray(snr_lin, dtype=float)
+            else:
+                # Invert Shannon to get SNR from cap
+                gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap)) - 1.0)
+                snr_mat = gamma
+            # Apply robust offset in dB if requested when building seed SE
+            sinr_db_pred = to_robust_sinr_db(snr_mat)
+            # For seeds we use per-PRB k=1
+            if use_mcs:
+                table = mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy"
+                se_pred_k1 = sinr_to_se_mcs(sinr_db_pred, table=table)
+            else:
+                se_pred_k1 = np.log2(1.0 + snr_mat)
+
+        # If override provided, prefer it for the scheduler metric (P3: imperfect map)
+        if se_metric_time is None and (se_metric_override is not None):
+            se_pred_k1 = np.asarray(se_metric_override, dtype=float)
+
+        # Winners and blocks
+        winners = np.full(Z, -1, dtype=int)
+        l_idx = np.full(N_UE, -1, dtype=int)
+        r_idx = np.full(N_UE, -1, dtype=int)
+        k_assigned = np.zeros(N_UE, dtype=int)
+        block_se_pred = np.zeros(N_UE, dtype=float)  # per-PRB SE of current block (predicted, for scheduling)
+
+        # Precompute PRB order per UE for fast seeding
+        order_per_ue = np.argsort(-se_pred_k1, axis=1)
+        ptr_per_ue = np.zeros(N_UE, dtype=int)
+
+        # Frequency slicing: build boundaries and each UE's preferred slice
+        if freq_slices and freq_slices > 1:
+            # Build slices from global score profile across UE average
+            scores = se_pred_k1.mean(axis=0)  # [Z]
+            if slice_method == "score_diff":
+                diffs = np.abs(np.diff(scores))
+                if freq_slices - 1 <= 0:
+                    cuts = []
+                else:
+                    cuts = np.argsort(-diffs)[:max(0, min(freq_slices - 1, Z - 1))]
+                    cuts = np.sort(cuts)
+                bnds = [0] + [int(c + 1) for c in cuts.tolist()] + [Z]
+            else:
+                step = max(1, Z // int(freq_slices))
+                bnds = list(range(0, Z, step)) + [Z]
+                bnds = sorted(set(bnds))
+                if bnds[-1] != Z:
+                    bnds.append(Z)
+            slices = [(bnds[i], bnds[i + 1] - 1) for i in range(len(bnds) - 1)]
+            ue_pref_slice = np.zeros(N_UE, dtype=int)
+            for ue in range(N_UE):
+                best_s, best_val = 0, -1e9
+                for sidx, (a, b) in enumerate(slices):
+                    val = float(se_pred_k1[ue, a:b + 1].mean())
+                    if val > best_val:
+                        best_val = val
+                        best_s = sidx
+                ue_pref_slice[ue] = best_s
+        else:
+            slices = [(0, Z - 1)]
+            ue_pref_slice = np.zeros(N_UE, dtype=int)
+
+        def in_pref_slice(ue: int, z: int) -> bool:
+            sidx = int(ue_pref_slice[ue])
+            a, b = slices[sidx]
+            return (z >= a) and (z <= b)
+
+        def next_unassigned_best(ue: int) -> Optional[int]:
+            ptr = int(ptr_per_ue[ue])
+            ord_row = order_per_ue[ue]
+            while ptr < ord_row.size:
+                z = int(ord_row[ptr])
+                if winners[z] < 0 and in_pref_slice(ue, z):
+                    ptr_per_ue[ue] = ptr + 1
+                    return z
+                ptr += 1
+            return None
+
+        def can_grow_left(ue: int) -> bool:
+            if l_idx[ue] <= 0:
+                return False
+            z = l_idx[ue] - 1
+            if require_contiguous and (not in_pref_slice(ue, z)):
+                return False
+            return winners[z] < 0
+
+        def can_grow_right(ue: int) -> bool:
+            if r_idx[ue] < 0 or r_idx[ue] >= (Z - 1):
+                return False
+            z = r_idx[ue] + 1
+            if require_contiguous and (not in_pref_slice(ue, z)):
+                return False
+            return winners[z] < 0
+
+        def pred_block_se(ue: int, li: int, ri: int) -> float:
+            """Predicted per-PRB SE for UE over [li..ri] used for scheduling metric."""
+            if se_metric_time is None and (se_metric_override is None) and (sinr_db_pred is not None):
+                # Use robust SINR + EESM if MCS; else Shannon mean
+                snr_lin_vec = 10.0 ** (sinr_db_pred[ue, li:ri + 1] / 10.0)
+                # Optional per-MCS beta selection using median SINR->CQI
+                beta_eff = None
+                if beta_by_mcs and use_mcs:
+                    med_db = float(np.median(sinr_db_pred[ue, li:ri + 1]))
+                    cqi = int(np.asarray(sinr_to_cqi(np.array([med_db]), table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy"))[0])
+                    beta_eff = float(pick_eesm_beta_from_cqi(np.array([cqi]), table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy", custom_table=beta_table)[0])
+                return _block_se_from_snr_vec(snr_lin_vec, ri - li + 1 if power_split else 1, use_mcs, mcs_params, eesm_beta_db, beta_override=beta_eff)
+            elif se_metric_time is not None:
+                return float(np.mean(se_metric_time[t_idx, ue, li:ri + 1]))
+            else:
+                # Fall back to override mean (k=1 assumption)
+                return float(np.mean(se_pred_k1[ue, li:ri + 1]))
+
+        def apply_assign(ue: int, z: int) -> None:
+            nonlocal winners, l_idx, r_idx, k_assigned, block_se_pred
+            winners[z] = ue
+            if k_assigned[ue] == 0:
+                l_idx[ue] = r_idx[ue] = z
+            else:
+                if z == l_idx[ue] - 1:
+                    l_idx[ue] = z
+                elif z == r_idx[ue] + 1:
+                    r_idx[ue] = z
+                else:
+                    # Non-contiguous assignment; if required, do nothing (should not happen)
+                    l_idx[ue] = min(l_idx[ue], z) if l_idx[ue] >= 0 else z
+                    r_idx[ue] = max(r_idx[ue], z) if r_idx[ue] >= 0 else z
+            k_assigned[ue] += 1
+            # Update predicted block SE for scheduling metric
+            li, ri = int(l_idx[ue]), int(r_idx[ue])
+            block_se_pred[ue] = pred_block_se(ue, li, ri)
+
+        # Greedy allocation until all PRBs assigned
+        assigned_cnt = 0
+        while assigned_cnt < Z:
+            # Optional exploration step
+            if explore_epsilon > 0.0 and rng.random() < float(explore_epsilon):
+                # Pick a random unassigned PRB and best UE for it
+                available = np.flatnonzero(winners < 0)
+                if available.size == 0:
+                    break
+                z = int(rng.choice(available))
+                # Respect per-UE PRB cap
+                cap_left = np.arange(N_UE) if max_prbs_per_ue is None else np.flatnonzero(k_assigned < int(max_prbs_per_ue))
+                if cap_left.size == 0:
+                    break
+                # Only allow UE whose preferred slice contains z when contiguity is required
+                if require_contiguous and freq_slices and freq_slices > 1:
+                    cap_left = np.array([u for u in cap_left if in_pref_slice(int(u), z)], dtype=int)
+                    if cap_left.size == 0:
+                        continue
+                metrics = se_pred_k1[cap_left, z] / Rbar[cap_left]
+                ue_pick = int(cap_left[np.argmax(metrics)])
+                # If contiguity is required and non-adjacent, try to pick adjacent PRB instead
+                if require_contiguous and k_assigned[ue_pick] > 0:
+                    can_l = can_grow_left(ue_pick)
+                    can_r = can_grow_right(ue_pick)
+                    if not can_l and not can_r:
+                        # Skip this exploration action
+                        pass
+                    else:
+                        if can_l and (not can_r):
+                            z2 = l_idx[ue_pick] - 1
+                        elif can_r and (not can_l):
+                            z2 = r_idx[ue_pick] + 1
+                        else:
+                            # Choose side with larger se_pred
+                            lz, rz = l_idx[ue_pick] - 1, r_idx[ue_pick] + 1
+                            if se_pred_k1[ue_pick, lz] >= se_pred_k1[ue_pick, rz]:
+                                z2 = lz
+                            else:
+                                z2 = rz
+                        apply_assign(ue_pick, int(z2))
+                        assigned_cnt += 1
+                        continue
+                # Seed or non-contiguous allowed
+                apply_assign(ue_pick, z)
+                assigned_cnt += 1
+                continue
+
+            # Build best action per UE: seed or grow L/R
+            best_delta = -1e9
+            best_action = None  # (ue, z_to_assign)
+            for ue in range(N_UE):
+                # Respect per-UE PRB cap
+                if (max_prbs_per_ue is not None) and (k_assigned[ue] >= int(max_prbs_per_ue)):
+                    continue
+                k0 = int(k_assigned[ue])
+                # Seed action
+                if k0 == 0:
+                    z0 = next_unassigned_best(ue)
+                    if z0 is not None:
+                        se_new = float(se_pred_k1[ue, z0])
+                        delta = se_new  # block sum gain for first PRB
+                        metric = delta / Rbar[ue]
+                        if metric > best_delta:
+                            best_delta = metric
+                            best_action = (ue, int(z0))
+                    continue
+
+                # Grow actions (contiguous if required)
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                se_old = float(block_se_pred[ue])
+                # Left growth
+                if (not require_contiguous) or can_grow_left(ue):
+                    zl = li - 1 if k0 > 0 else None
+                    if zl is not None and zl >= 0 and winners[zl] < 0:
+                        se_new = pred_block_se(ue, zl, ri)
+                        k_new = k0 + 1
+                        delta = k_new * se_new - k0 * se_old
+                        metric = delta / Rbar[ue]
+                        if metric > best_delta:
+                            best_delta = metric
+                            best_action = (ue, int(zl))
+                # Right growth
+                if (not require_contiguous) or can_grow_right(ue):
+                    zr = ri + 1 if k0 > 0 else None
+                    if zr is not None and zr < Z and winners[zr] < 0:
+                        se_new = pred_block_se(ue, li, zr)
+                        k_new = k0 + 1
+                        delta = k_new * se_new - k0 * se_old
+                        metric = delta / Rbar[ue]
+                        if metric > best_delta:
+                            best_delta = metric
+                            best_action = (ue, int(zr))
+
+            # Fallback: if no action found (e.g., all capped), assign highest remaining PRB to best UE
+            if best_action is None:
+                remaining = np.flatnonzero(winners < 0)
+                if remaining.size == 0:
+                    break
+                z = int(remaining[0])
+                cand = np.arange(N_UE) if max_prbs_per_ue is None else np.flatnonzero(k_assigned < int(max_prbs_per_ue))
+                if cand.size == 0:
+                    break
+                ue = int(cand[np.argmax(se_pred_k1[cand, z] / Rbar[cand])])
+                best_action = (ue, z)
+
+            ue_sel, z_sel = best_action
+            apply_assign(int(ue_sel), int(z_sel))
+            assigned_cnt += 1
+
+        # Compute actual throughput with true SINR (no robust offset) and power split over final blocks
+        thr_i = np.zeros(N_UE, dtype=float)
+        if blk_len_hist is None:
+            blk_len_hist = np.zeros(Z + 1, dtype=int)
+        if snr_lin_time is not None:
+            snr_true = np.asarray(snr_lin_time[t_idx], dtype=float)
+        elif snr_lin is not None:
+            snr_true = np.asarray(snr_lin, dtype=float)
+        else:
+            gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap)) - 1.0)
+            snr_true = gamma
+        # For each UE, compute per-PRB SE of its block and sum
+        tti_stat = []
+        for ue in range(N_UE):
+            k0 = int(k_assigned[ue])
+            if k0 <= 0:
+                continue
+            li, ri = int(l_idx[ue]), int(r_idx[ue])
+            snr_vec = snr_true[ue, li:ri + 1]
+            # Optional per-MCS beta by CQI using median predicted SINR if available
+            beta_eff = None
+            if beta_by_mcs and use_mcs and (sinr_db_pred is not None):
+                med_db = float(np.median(sinr_db_pred[ue, li:ri + 1]))
+                cqi_med = int(np.asarray(sinr_to_cqi(np.array([med_db]), table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy"))[0])
+                beta_eff = float(pick_eesm_beta_from_cqi(np.array([cqi_med]), table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy", custom_table=beta_table)[0])
+            se_per_prb = _block_se_from_snr_vec(snr_vec, k0 if power_split else 1, use_mcs, mcs_params, eesm_beta_db, beta_override=beta_eff)
+            thr_i[ue] = k0 * se_per_prb * overhead_eff
+            blk_len_hist[k0] += 1
+            if use_mcs:
+                sinr_db_vec_true = 10.0 * np.log10(np.maximum(_apply_ici_penalty_lin(snr_vec, mcs_params) / float(k0 if power_split else 1), 1e-12))
+                beta_eff2 = float(beta_eff) if (beta_eff is not None) else float(eesm_beta_db)
+                sinr_eff_db_true = effective_sinr_eesm(sinr_db_vec_true, beta_db=beta_eff2, axis=-1)
+                if mcs_params is not None:
+                    sinr_eff_db_true = sinr_eff_db_true + float(mcs_params.get("olla_offset_db", 0.0))
+                cqi_sel = int(np.asarray(sinr_to_cqi(np.array([sinr_eff_db_true]), table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy"))[0])
+                cqi_hist[np.clip(cqi_sel, 0, 15)] += 1
+                tti_stat.append((ue, li, ri, k0, float(sinr_eff_db_true), cqi_sel, float(se_per_prb)))
+
+        sum_rate += thr_i.sum()
+        Rbar = (1 - beta) * Rbar + beta * thr_i
+
+    avg_sum_rate_per_prb = sum_rate / (T * Z)
+    if return_stats:
+        stats = {
+            "cqi_hist": cqi_hist,
+            "block_len_hist": blk_len_hist if blk_len_hist is not None else np.zeros(Z + 1, dtype=int),
+            "per_tti": per_tti_stats if return_stats else None,
+        }
+        return avg_sum_rate_per_prb, stats
+    return avg_sum_rate_per_prb
+
 # -----------------------
 # Experiment harness
 # -----------------------
@@ -671,6 +1063,7 @@ def run_once(config: Dict) -> Dict:
         "mcs_table": config.get("csi_mcs_table", "legacy"),
         "residual_freq_hz": config.get("residual_freq_hz", 0.0),
         "scs_khz": config.get("scs_khz", 30),
+        "eesm_beta_table": config.get("eesm_beta_table", None),
     }
 
     if time_series is not None:
@@ -705,18 +1098,48 @@ def run_once(config: Dict) -> Dict:
             cap_prb=cap,
             snr_lin_time_prb=time_series["snr_time"]
         )
-        map_se = pf_schedule_radiomap(
-            cap, T, beta=config["pf_beta"],
-            snr_lin=snr_lin,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            se_metric_override=None if metric_override is None else metric_override,
-            max_prbs_per_ue=config.get("max_prbs_per_ue"),
-            mcs_params=mcs_params,
-            se_metric_time=se_time_rm,
-            snr_lin_time=time_series["snr_time"]
-        )
+        if config.get("sched_block_mode", False):
+            map_se = pf_schedule_radiomap_blocks(
+                cap, T, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None if metric_override is None else metric_override,
+                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                mcs_params=mcs_params,
+                se_metric_time=se_time_rm,
+                snr_lin_time=time_series["snr_time"],
+                eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
+                robust_kappa_db=float(config.get("sched_robust_kappa_db", 0.0)),
+                robust_sigma_db=float(config.get("radiomap_est_error_db", 0.0)),
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                explore_epsilon=float(config.get("sched_explore_epsilon", 0.0)),
+                rng=rng,
+                beta_by_mcs=bool(config.get("sched_eesm_beta_by_mcs", False)),
+                beta_table=mcs_params.get("eesm_beta_table"),
+                freq_slices=int(config.get("freq_slices", 1)),
+                slice_method=str(config.get("freq_slice_method", "score_diff")),
+                return_stats=bool(config.get("sched_collect_stats", False)),
+            )
+            if isinstance(map_se, tuple):
+                map_se, sched_stats = map_se
+            else:
+                sched_stats = None
+        else:
+            map_se = pf_schedule_radiomap(
+                cap, T, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None if metric_override is None else metric_override,
+                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                mcs_params=mcs_params,
+                se_metric_time=se_time_rm,
+                snr_lin_time=time_series["snr_time"]
+            )
+            sched_stats = None
     else:
         base_se = pf_schedule_baseline(
             cap_wb, Z, T, beta=config["pf_beta"],
@@ -728,16 +1151,46 @@ def run_once(config: Dict) -> Dict:
             snr_lin_prb=snr_lin,
             cap_prb=cap,
         )
-        map_se = pf_schedule_radiomap(
-            cap, T, beta=config["pf_beta"],
-            snr_lin=snr_lin,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            mcs_params=mcs_params,
-            se_metric_override=metric_override,
-            max_prbs_per_ue=config.get("max_prbs_per_ue")
-        )
+        if config.get("sched_block_mode", False):
+            map_se = pf_schedule_radiomap_blocks(
+                cap, T, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=metric_override,
+                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                mcs_params=mcs_params,
+                se_metric_time=None,
+                snr_lin_time=None,
+                eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
+                robust_kappa_db=float(config.get("sched_robust_kappa_db", 0.0)),
+                robust_sigma_db=float(config.get("radiomap_est_error_db", 0.0)),
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                explore_epsilon=float(config.get("sched_explore_epsilon", 0.0)),
+                rng=rng,
+                beta_by_mcs=bool(config.get("sched_eesm_beta_by_mcs", False)),
+                beta_table=mcs_params.get("eesm_beta_table"),
+                freq_slices=int(config.get("freq_slices", 1)),
+                slice_method=str(config.get("freq_slice_method", "score_diff")),
+                return_stats=bool(config.get("sched_collect_stats", False)),
+            )
+            if isinstance(map_se, tuple):
+                map_se, sched_stats = map_se
+            else:
+                sched_stats = None
+        else:
+            map_se = pf_schedule_radiomap(
+                cap, T, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                mcs_params=mcs_params,
+                se_metric_override=metric_override,
+                max_prbs_per_ue=config.get("max_prbs_per_ue")
+            )
+            sched_stats = None
 
     return {
         "avg_se_baseline": base_se,
@@ -752,6 +1205,7 @@ def run_once(config: Dict) -> Dict:
         # Optional dynamics for downstream consumers
         "tau_time": None if time_series is None else time_series.get("tau_time"),
         "fd_time": None if time_series is None else time_series.get("fd_time"),
+        "sched_stats": None if not config.get("sched_collect_stats", False) else sched_stats,
     }
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
