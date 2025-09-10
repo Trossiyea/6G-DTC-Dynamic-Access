@@ -37,6 +37,29 @@ def thermal_noise_dbm(bw_hz: float, temp_K: float = 290.0) -> float:
     return per_hz_dbm + 10.0 * np.log10(max(bw_hz, 1.0))
 
 # -----------------------
+# Common smoothing util
+# -----------------------
+def blur1d(a: np.ndarray, k: int, axis: int = 0) -> np.ndarray:
+    """
+    Separable box blur of radius k (window size 2k) along a specified axis.
+    Edge handling via 'edge' pad; returns array with same shape as input.
+    """
+    if k <= 0:
+        return a
+    a = np.asarray(a)
+    if axis < 0:
+        axis = a.ndim + axis
+    pad_width = [(0, 0)] * a.ndim
+    pad_width[axis] = (k, k)
+    padded = np.pad(a, pad_width, mode='edge').cumsum(axis=axis)
+    slicer_hi = [slice(None)] * a.ndim
+    slicer_lo = [slice(None)] * a.ndim
+    slicer_hi[axis] = slice(2 * k, None)
+    slicer_lo[axis] = slice(None, -2 * k)
+    window_sum = padded[tuple(slicer_hi)] - padded[tuple(slicer_lo)]
+    return window_sum / float(2 * k)
+
+# -----------------------
 # Radio Map generator
 # -----------------------
 def gen_radio_map(X: int, Y: int, Z: int,
@@ -158,6 +181,255 @@ def sinr_to_se_mcs(sinr_db: np.ndarray) -> np.ndarray:
     # Below the first threshold, set to 0
     se = np.where(sinr_db < thr_db[0], 0.0, se)
     return se
+
+# -----------------------
+# Helper blocks (refactor run_once)
+# -----------------------
+def se_from_snr(snr_lin: np.ndarray, use_mcs: bool, mcs_params: Optional[Dict] = None) -> np.ndarray:
+    """
+    Strategy function: map SNR (linear) to SE (bits/s/Hz).
+    - If use_mcs: use an MCS mapping (approximate table for now).
+    - Else: Shannon log2(1+SNR).
+    mcs_params reserved for future (BLER targets, code rates, etc.).
+    """
+    if use_mcs:
+        sinr_db = 10.0 * np.log10(np.maximum(snr_lin, 1e-12))
+        return sinr_to_se_mcs(sinr_db)
+    return np.log2(1.0 + np.maximum(snr_lin, 0.0))
+
+def se_from_snr_with_split(snr_base: Union[float, np.ndarray], k_prb: int, use_mcs: bool,
+                           mcs_params: Optional[Dict] = None) -> np.ndarray:
+    """Apply power-split (if k_prb>1) and map via strategy."""
+    k = max(1, int(k_prb))
+    return se_from_snr(np.asarray(snr_base) / float(k), use_mcs, mcs_params)
+
+def se_from_cap_shannon_with_split(cap_se: Union[float, np.ndarray], k_prb: int) -> np.ndarray:
+    """
+    Fallback when only Shannon SE is available (no SNR): adjust for power split.
+    gamma = (2^SE - 1)/k; SE' = log2(1+gamma)
+    """
+    k = max(1, int(k_prb))
+    gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap_se)) - 1.0) / float(k)
+    return np.log2(1.0 + gamma)
+
+def se_metric_strategy(use_mcs: bool,
+              snr_lin: Optional[np.ndarray] = None,
+              cap_shannon: Optional[np.ndarray] = None,
+              mcs_params: Optional[Dict] = None) -> np.ndarray:
+    """
+    Strategy for scheduling metric SE:
+    - prefer mapping from snr_lin if provided;
+    - otherwise, if not using MCS and Shannon SE is provided, return it.
+    """
+    if snr_lin is not None:
+        return se_from_snr(snr_lin, use_mcs, mcs_params)
+    if (not use_mcs) and (cap_shannon is not None):
+        return cap_shannon
+    raise ValueError("se_metric_strategy requires snr_lin or (cap_shannon with use_mcs=False)")
+
+def select_radio_map(config: Dict) -> Tuple[np.ndarray, int, int, int]:
+    """
+    Load external Radio Map if provided; else generate synthetic interference-only map.
+    Returns (R_xyz_dbm, X, Y, Z).
+    """
+    if config.get("radio_map_mat_path"):
+        R_xyz_dbm = load_radio_map_from_mat(
+            config["radio_map_mat_path"],
+            var_name=config.get("radio_map_mat_var", "X_true"),
+            units=config.get("radio_map_units", "mW")
+        )
+        if R_xyz_dbm.ndim != 3:
+            raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
+        X, Y, Z = R_xyz_dbm.shape
+    else:
+        X, Y, Z = config["X"], config["Y"], config["Z"]
+        R_xyz_dbm = gen_radio_map(X, Y, Z, K=config["K_interferers"],
+                                  base_noise_dbm=config["noise_dbm"], seed=config["seed"])
+    return R_xyz_dbm, X, Y, Z
+
+def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -> np.ndarray:
+    """Uniform random UE grid indices of shape [N_UE, 2]."""
+    return np.stack([rng.integers(0, X, size=N_UE), rng.integers(0, Y, size=N_UE)], axis=1)
+
+def compute_geometry_and_beam(config: Dict,
+                              X: int,
+                              Y: int,
+                              ue_pos: np.ndarray) -> Tuple[Union[np.ndarray, float], Union[np.ndarray, float]]:
+    """
+    Compute per-UE free-space loss and RX beam gain if geometry enabled; else return fixed values.
+    """
+    if config.get("enable_geometry", False):
+        bc = config.get("beam_center_xy", None)
+        if bc is None:
+            cx, cy = (X // 2, Y // 2)
+        else:
+            cx, cy = bc
+        dx = (ue_pos[:, 0] - cx) * config.get("cell_size_km", 1.0)
+        dy = (ue_pos[:, 1] - cy) * config.get("cell_size_km", 1.0)
+        r_ground = np.sqrt(dx * dx + dy * dy)  # km
+        alt_km = config.get("sat_altitude_km", 600.0)
+        slant_km = np.sqrt(r_ground * r_ground + alt_km * alt_km)
+        L_fs_per_ue = fspl_db(slant_km, config.get("carrier_freq_GHz", 2.0))
+        offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km))
+        G_rx_per_ue = simple_beam_gain_db(
+            offaxis_deg,
+            boresight_gain_db=config.get("G_rx_db", 32.0),
+            half_bw_deg=config.get("beam_half_bw_deg", 4.0),
+            edge_drop_db=config.get("beam_edge_drop_db", 3.0)
+        )
+    else:
+        L_fs_val = config.get("L_fs_db")
+        G_rx_val = config.get("G_rx_db")
+        L_fs_per_ue = float(L_fs_val) if isinstance(L_fs_val, (int, float)) else L_fs_val
+        G_rx_per_ue = float(G_rx_val) if isinstance(G_rx_val, (int, float)) else G_rx_val
+    return L_fs_per_ue, G_rx_per_ue
+
+def resolve_noise_and_prb_bw(config: Dict) -> Tuple[float, Optional[float]]:
+    """
+    Resolve thermal noise level (dBm) and PRB bandwidth (Hz) based on config.
+    Prefers explicit PRB bandwidth; else SCS; else fixed noise_dbm.
+    """
+    if "prb_bw_hz" in config and config["prb_bw_hz"] is not None:
+        prb_bw_hz = float(config["prb_bw_hz"])
+        noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
+    elif "scs_khz" in config and config["scs_khz"] is not None:
+        prb_bw_hz = float(config["scs_khz"]) * 1e3 * 12.0
+        noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
+    else:
+        prb_bw_hz = None
+        noise_dbm = config["noise_dbm"]
+    return noise_dbm, prb_bw_hz
+
+def apply_open_loop_power_control(config: Dict,
+                                  L_fs_per_ue: Union[np.ndarray, float],
+                                  G_rx_per_ue: Union[np.ndarray, float]) -> Union[np.ndarray, float]:
+    """Compute per-UE P_tx if PC enabled; else return configured P_tx_dbm (scalar or array)."""
+    if config.get("enable_power_control", False):
+        PL_eff_db = np.asarray(L_fs_per_ue, dtype=float) - np.asarray(G_rx_per_ue, dtype=float)
+        P0 = config.get("pc_P0_dbm", -90.0)
+        alpha = config.get("pc_alpha", 0.8)
+        M_ref = max(1, int(config.get("pc_M_ref", 1)))
+        P_cmd = P0 + alpha * PL_eff_db + 10.0 * np.log10(M_ref)
+        return np.minimum(P_cmd, config.get("P_max_dbm", config.get("P_tx_dbm", 23.0)))
+    return config["P_tx_dbm"]
+
+def compute_metric_override_static_if_needed(config: Dict,
+                                             R_xyz_dbm: np.ndarray,
+                                             ue_pos: np.ndarray,
+                                             L_fs_per_ue,
+                                             G_rx_per_ue,
+                                             noise_dbm: float) -> Optional[np.ndarray]:
+    """
+    If estimation error/blur configured, compute a static predicted per-PRB SE metric to
+    override instantaneous metric in RadioMap scheduler (matches original behavior).
+    """
+    if config.get("radiomap_est_error_db", 0.0) <= 0.0 and config.get("radiomap_blur_sigma", 0.0) <= 0.0:
+        return None
+    rng = np.random.default_rng(config["seed"])
+    R_hat_dbm = R_xyz_dbm.copy()
+    err_db = rng.normal(0.0, config.get("radiomap_est_error_db", 0.0), size=R_hat_dbm.shape)
+    R_hat_dbm = R_hat_dbm + err_db
+    sig = config.get("radiomap_blur_sigma", 0.0)
+    if sig and sig > 0.0:
+        k = int(max(1, round(sig)))
+        if k > 1:
+            R_hat_dbm = blur1d(R_hat_dbm, k, axis=0)
+            R_hat_dbm = blur1d(R_hat_dbm, k, axis=1)
+    cap_pred, _, _, _, snr_lin_pred, _ = compute_caps(
+        R_hat_dbm, ue_pos,
+        P_tx_dbm=config["P_tx_dbm"],  # keep original semantics (no PC here)
+        L_fs_db=L_fs_per_ue,
+        G_rx_db=G_rx_per_ue,
+        shadow_db_std=config["shadow_std_db"],
+        N0_dbm=noise_dbm,
+        rx_nf_db=config.get("rx_nf_db", 0.0),
+        impl_loss_db=config.get("impl_loss_db", 0.0),
+        seed=config["seed"]
+    )
+    return se_from_snr(snr_lin_pred, config.get("use_mcs", False)) if snr_lin_pred is not None else cap_pred
+
+def build_time_variation_if_enabled(config: Dict,
+                                    R_xyz_dbm: np.ndarray,
+                                    ue_pos: np.ndarray,
+                                    L_fs_per_ue,
+                                    G_rx_per_ue,
+                                    P_tx_per_ue_dbm,
+                                    noise_dbm: float,
+                                    rng: np.random.Generator,
+                                    metric_override: Optional[np.ndarray]) -> Optional[Dict[str, np.ndarray]]:
+    """
+    If time variation is enabled, build time series of per-PRB and wideband metrics
+    (both SE and SNR). Mirrors the original behavior including optional prediction
+    under estimation error/blur.
+    Returns a dict with keys: 'se_time_rm', 'se_time_wb', 'snr_time', 'snr_wb_time'.
+    """
+    if not config.get("enable_time_varying", False):
+        return None
+    T = config["T"]
+    vx, vy = config.get("rm_drift_px", (0, 0))
+    flicker = float(config.get("rm_flicker_db_std", 0.0))
+    se_time_rm: list = []
+    se_time_wb: list = []
+    snr_time: list = []
+    snr_wb_time: list = []
+    R_t = R_xyz_dbm.copy()
+    for t in range(T):
+        if t > 0:
+            if vx or vy:
+                R_t = np.roll(R_t, shift=(int(vx), int(vy), 0), axis=(0, 1, 2))
+            if flicker > 0.0:
+                R_t = R_t + rng.normal(0.0, flicker, size=R_t.shape)
+
+        # Predictive schedule metric under imperfect map (optional, matches original gating)
+        cap_pred_t = cap_wb_pred_t = snr_lin_pred_t = snr_lin_wb_pred_t = None
+        if (metric_override is None) and (config.get("radiomap_est_error_db", 0.0) > 0.0 or config.get("radiomap_blur_sigma", 0.0) > 0.0):
+            R_hat_dbm = R_t.copy()
+            err_db = rng.normal(0.0, config.get("radiomap_est_error_db", 0.0), size=R_hat_dbm.shape)
+            R_hat_dbm = R_hat_dbm + err_db
+            sig = config.get("radiomap_blur_sigma", 0.0)
+            if sig and sig > 0.0:
+                k = int(max(1, round(sig)))
+                if k > 1:
+                    R_hat_dbm = blur1d(R_hat_dbm, k, axis=0)
+                    R_hat_dbm = blur1d(R_hat_dbm, k, axis=1)
+            cap_pred_t, cap_wb_pred_t, _, _, snr_lin_pred_t, snr_lin_wb_pred_t = compute_caps(
+                R_hat_dbm, ue_pos,
+                P_tx_dbm=P_tx_per_ue_dbm,
+                L_fs_db=L_fs_per_ue,
+                G_rx_db=G_rx_per_ue,
+                shadow_db_std=config["shadow_std_db"],
+                N0_dbm=noise_dbm,
+                rx_nf_db=config.get("rx_nf_db", 0.0),
+                impl_loss_db=config.get("impl_loss_db", 0.0),
+                seed=config["seed"]
+            )
+
+        cap_t, cap_wb_t, _, _, snr_lin_t, snr_lin_wb_t = compute_caps(
+            R_t, ue_pos,
+            P_tx_dbm=P_tx_per_ue_dbm,
+            L_fs_db=L_fs_per_ue,
+            G_rx_db=G_rx_per_ue,
+            shadow_db_std=config["shadow_std_db"],
+            N0_dbm=noise_dbm,
+            rx_nf_db=config.get("rx_nf_db", 0.0),
+            impl_loss_db=config.get("impl_loss_db", 0.0),
+            seed=config["seed"]
+        )
+        if snr_lin_pred_t is not None:
+            se_time_rm.append(se_from_snr(snr_lin_pred_t, config.get("use_mcs", False)))
+            se_time_wb.append(se_from_snr(snr_lin_wb_pred_t, config.get("use_mcs", False)))
+        else:
+            se_time_rm.append(se_from_snr(snr_lin_t, config.get("use_mcs", False)))
+            se_time_wb.append(se_from_snr(snr_lin_wb_t, config.get("use_mcs", False)))
+        snr_time.append(snr_lin_t)
+        snr_wb_time.append(snr_lin_wb_t)
+
+    return {
+        "se_time_rm": np.stack(se_time_rm, axis=0),      # [T, UE, Z]
+        "se_time_wb": np.stack(se_time_wb, axis=0),      # [T, UE]
+        "snr_time": np.stack(snr_time, axis=0),          # [T, UE, Z]
+        "snr_wb_time": np.stack(snr_wb_time, axis=0),    # [T, UE]
+    }
 def compute_caps(R_xyz_dbm: np.ndarray,
                  ue_pos_xy: np.ndarray,
                  P_tx_dbm: Union[np.ndarray, float],
@@ -236,10 +508,7 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     N_UE = cap_wb.shape[0]
     # Use Shannon cap as metric by default; if use_mcs, convert to MCS SE (k=1) for metric
     if se_metric_time is None:
-        if use_mcs and snr_lin_wb is not None:
-            metric_se = sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin_wb, 1e-12)))
-        else:
-            metric_se = cap_wb
+        metric_se = se_metric_strategy(use_mcs, snr_lin=snr_lin_wb, cap_shannon=cap_wb)
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
@@ -248,9 +517,13 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
         else:
             metric_se_t = metric_se
         metric = metric_se_t / Rbar
-        order = np.argsort(-metric)
         U_select = min(N_UE, max(3, int(np.sqrt(N_UE))))
-        selected = order[:U_select]
+        if U_select < N_UE:
+            top_idx = np.argpartition(-metric, U_select - 1)[:U_select]
+            top_idx = top_idx[np.argsort(-metric[top_idx])]
+            selected = top_idx
+        else:
+            selected = np.argsort(-metric)
 
         alloc_counts = np.full(U_select, Z // U_select)
         remainder = Z - alloc_counts.sum()
@@ -265,12 +538,10 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
             # Effective SNR per PRB with power split
             if snr_lin_wb is not None or snr_lin_wb_time is not None:
                 snr_base = snr_lin_wb_time[t_idx, ue] if snr_lin_wb_time is not None else snr_lin_wb[ue]
-                snr_eff = snr_base / (k_prb if power_split else 1.0)
-                se_per_prb = sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_eff, 1e-12))) if use_mcs else np.log2(1.0 + snr_eff)
+                se_per_prb = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs)
             else:
-                # Fallback: scale Shannon-based cap using k (approximate via inverse SNR mapping)
-                gamma = max(0.0, (2.0 ** metric_se_t[ue]) - 1.0) / (k_prb if power_split else 1.0)
-                se_per_prb = np.log2(1.0 + gamma)
+                # Fallback (Shannon-only): adjust wideband SE by power split
+                se_per_prb = se_from_cap_shannon_with_split(metric_se_t[ue], k_prb if power_split else 1)
             thr_i[ue] = k_prb * se_per_prb * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
@@ -294,19 +565,16 @@ def pf_schedule_radiomap(cap: np.ndarray,
     Returns average sum spectral efficiency per PRB (bits/s/Hz).
     """
     N_UE, Z = cap.shape
-    # Metric per PRB: Shannon by default; if use_mcs, convert SNR to SE (k=1)
+    # Metric per PRB: use strategy (Shannon or MCS); allow override
     if se_metric_time is None:
         if se_metric_override is not None:
-            se_metric = se_metric_override
+            se_metric_arr = se_metric_override
         else:
-            if use_mcs and snr_lin is not None:
-                se_metric = sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin, 1e-12)))
-            else:
-                se_metric = cap
+            se_metric_arr = se_metric_strategy(use_mcs, snr_lin=snr_lin, cap_shannon=cap)
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
-        metric_base = se_metric_time[t_idx] if se_metric_time is not None else se_metric
+        metric_base = se_metric_time[t_idx] if se_metric_time is not None else se_metric_arr
         metric = metric_base / Rbar.reshape(-1, 1)  # [UE,Z]
         # Winner selection with optional per-UE PRB cap
         if max_prbs_per_ue is None:
@@ -314,19 +582,26 @@ def pf_schedule_radiomap(cap: np.ndarray,
         else:
             winners = np.full(Z, -1, dtype=int)
             counts = np.zeros(N_UE, dtype=int)
-            # Process PRBs by descending best metric to stabilize selection
             best_vals = metric.max(axis=0)
             order_z = np.argsort(-best_vals)
+            top_k = min(N_UE, max(8, int(np.sqrt(N_UE))))
+            kth = max(0, N_UE - top_k)
+            topk_idx = np.argpartition(metric, kth, axis=0)[kth:, :] if top_k < N_UE else np.tile(np.arange(N_UE).reshape(-1, 1), (1, Z))
             for idx in order_z:
-                # Try assign UE with highest metric under cap
-                ue_rank = np.argsort(-metric[:, idx])
+                cands = topk_idx[:, idx]
+                vals = metric[cands, idx]
+                cands = cands[np.argsort(-vals)]
                 chosen = -1
-                for ue in ue_rank:
+                for ue in cands:
                     if counts[ue] < max_prbs_per_ue:
-                        chosen = ue
+                        chosen = int(ue)
                         break
                 if chosen < 0:
-                    chosen = int(ue_rank[0])  # fallback if all capped
+                    avail = np.flatnonzero(counts < max_prbs_per_ue)
+                    if avail.size > 0:
+                        chosen = int(avail[np.argmax(metric[avail, idx])])
+                    else:
+                        chosen = int(np.argmax(metric[:, idx]))
                 winners[idx] = chosen
                 counts[chosen] += 1
         thr_i = np.zeros(N_UE)
@@ -339,15 +614,10 @@ def pf_schedule_radiomap(cap: np.ndarray,
             ue = winners[z]
             k_prb = int(counts[ue]) if power_split else 1
             if snr_lin is not None or snr_lin_time is not None:
-                if snr_lin_time is not None:
-                    snr_base = snr_lin_time[t_idx, ue, z]
-                else:
-                    snr_base = snr_lin[ue, z]
-                snr_eff = snr_base / (k_prb if power_split else 1.0)
-                se = sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_eff, 1e-12))) if use_mcs else np.log2(1.0 + snr_eff)
+                snr_base = snr_lin_time[t_idx, ue, z] if snr_lin_time is not None else snr_lin[ue, z]
+                se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs)
             else:
-                gamma = max(0.0, (2.0 ** cap[ue, z]) - 1.0) / (k_prb if power_split else 1.0)
-                se = np.log2(1.0 + gamma)
+                se = se_from_cap_shannon_with_split(cap[ue, z], k_prb if power_split else 1)
             thr_i[ue] += se * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
@@ -359,75 +629,20 @@ def pf_schedule_radiomap(cap: np.ndarray,
 # Experiment harness
 # -----------------------
 def run_once(config: Dict) -> Dict:
+    """Single experiment orchestration with lower cyclomatic complexity."""
     rng = np.random.default_rng(config["seed"])
     N_UE, T = config["N_UE"], config["T"]
 
-    # Load external Radio Map if provided; else generate synthetic interference-only map
-    if config.get("radio_map_mat_path"):
-        R_xyz_dbm = load_radio_map_from_mat(
-            config["radio_map_mat_path"],
-            var_name=config.get("radio_map_mat_var", "X_true"),
-            units=config.get("radio_map_units", "mW")
-        )
-        if R_xyz_dbm.ndim != 3:
-            raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
-        X, Y, Z = R_xyz_dbm.shape
-    else:
-        X, Y, Z = config["X"], config["Y"], config["Z"]
-        R_xyz_dbm = gen_radio_map(X, Y, Z, K=config["K_interferers"],
-                                  base_noise_dbm=config["noise_dbm"], seed=config["seed"])
-    ue_pos = np.stack([rng.integers(0, X, size=N_UE),
-                       rng.integers(0, Y, size=N_UE)], axis=1)
+    # Radio map and UEs
+    R_xyz_dbm, X, Y, Z = select_radio_map(config)
+    ue_pos = generate_ue_positions(N_UE, X, Y, rng)
 
-    # Geometry and beam pattern (optional)
-    if config.get("enable_geometry", False):
-        # Map geometry to distances
-        bc = config.get("beam_center_xy", None)
-        if bc is None:
-            cx, cy = (X // 2, Y // 2)
-        else:
-            cx, cy = bc
-        dx = (ue_pos[:, 0] - cx) * config.get("cell_size_km", 1.0)
-        dy = (ue_pos[:, 1] - cy) * config.get("cell_size_km", 1.0)
-        r_ground = np.sqrt(dx * dx + dy * dy)  # km
-        alt_km = config.get("sat_altitude_km", 600.0)
-        slant_km = np.sqrt(r_ground * r_ground + alt_km * alt_km)
-        L_fs_per_ue = fspl_db(slant_km, config.get("carrier_freq_GHz", 2.0))
-        offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km))
-        G_rx_per_ue = simple_beam_gain_db(
-            offaxis_deg,
-            boresight_gain_db=config.get("G_rx_db", 32.0),
-            half_bw_deg=config.get("beam_half_bw_deg", 4.0),
-            edge_drop_db=config.get("beam_edge_drop_db", 3.0)
-        )
-    else:
-        L_fs_per_ue = float(config["L_fs_db"]) if isinstance(config.get("L_fs_db"), (int, float)) else config.get("L_fs_db")
-        G_rx_per_ue = float(config["G_rx_db"]) if isinstance(config.get("G_rx_db"), (int, float)) else config.get("G_rx_db")
+    # Geometry/beam, noise/bandwidth, power control
+    L_fs_per_ue, G_rx_per_ue = compute_geometry_and_beam(config, X, Y, ue_pos)
+    noise_dbm, prb_bw_hz = resolve_noise_and_prb_bw(config)
+    P_tx_per_ue_dbm = apply_open_loop_power_control(config, L_fs_per_ue, G_rx_per_ue)
 
-    # Thermal noise from PRB bandwidth if provided; else from SCS if provided; else fixed
-    if "prb_bw_hz" in config and config["prb_bw_hz"] is not None:
-        prb_bw_hz = float(config["prb_bw_hz"])
-        noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
-    elif "scs_khz" in config and config["scs_khz"] is not None:
-        prb_bw_hz = float(config["scs_khz"]) * 1e3 * 12.0
-        noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
-    else:
-        prb_bw_hz = None
-        noise_dbm = config["noise_dbm"]
-
-    # Uplink open-loop power control (optional)
-    if config.get("enable_power_control", False):
-        # Effective pathloss (dB) that PC tries to compensate
-        PL_eff_db = L_fs_per_ue - G_rx_per_ue
-        P0 = config.get("pc_P0_dbm", -90.0)
-        alpha = config.get("pc_alpha", 0.8)
-        M_ref = max(1, int(config.get("pc_M_ref", 1)))
-        P_cmd = P0 + alpha * PL_eff_db + 10.0 * np.log10(M_ref)
-        P_tx_per_ue_dbm = np.minimum(P_cmd, config.get("P_max_dbm", config.get("P_tx_dbm", 23.0)))
-    else:
-        P_tx_per_ue_dbm = config["P_tx_dbm"]
-
-    # Static-link snapshot (used if no time variation)
+    # Static snapshot (also used as reference when no time-variation)
     cap, cap_wb, P_rx_dbm, I_total_dbm, snr_lin, snr_lin_wb = compute_caps(
         R_xyz_dbm, ue_pos,
         P_tx_dbm=P_tx_per_ue_dbm,
@@ -440,123 +655,25 @@ def run_once(config: Dict) -> Dict:
         seed=config["seed"]
     )
 
-    # Radio Map estimation error for predictive scheduling (optional)
-    metric_override = None
-    if config.get("radiomap_est_error_db", 0.0) > 0.0 or config.get("radiomap_blur_sigma", 0.0) > 0.0:
-        R_hat_dbm = R_xyz_dbm.copy()
-        # Add Gaussian error in dB
-        err_db = rng.normal(0.0, config.get("radiomap_est_error_db", 0.0), size=R_hat_dbm.shape)
-        R_hat_dbm = R_hat_dbm + err_db
-        # Optional spatial blur (very lightweight via separable box filter)
-        sig = config.get("radiomap_blur_sigma", 0.0)
-        if sig and sig > 0.0:
-            k = int(max(1, round(sig)))
-            if k > 1:
-                # box blur along x then y
-                def blur1d(a, k):
-                    pad = ((k, k), (0, 0), (0, 0))
-                    b = np.pad(a, pad, mode='edge').cumsum(axis=0)
-                    return (b[2*k:, :, :] - b[:-2*k, :, :]) / (2*k)
-                R_hat_dbm = blur1d(R_hat_dbm, k)
-                R_hat_dbm = np.transpose(blur1d(np.transpose(R_hat_dbm, (1,0,2)), k), (1,0,2))
-        # Compute predicted per-PRB SE for metric
-        cap_pred, _, _, _, snr_lin_pred, _ = compute_caps(
-            R_hat_dbm, ue_pos,
-            P_tx_dbm=config["P_tx_dbm"],
-            L_fs_db=L_fs_per_ue,
-            G_rx_db=G_rx_per_ue,
-            shadow_db_std=config["shadow_std_db"],
-            N0_dbm=noise_dbm,
-            rx_nf_db=config.get("rx_nf_db", 0.0),
-            impl_loss_db=config.get("impl_loss_db", 0.0),
-            seed=config["seed"]
-        )
-        if config.get("use_mcs", False):
-            metric_override = sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin_pred, 1e-12)))
-        else:
-            metric_override = cap_pred
-    # Time-varying Radio Map (optional)
-    if config.get("enable_time_varying", False):
-        vx, vy = config.get("rm_drift_px", (0, 0))
-        flicker = float(config.get("rm_flicker_db_std", 0.0))
-        se_time_rm = []
-        se_time_wb = []
-        snr_time = []
-        snr_wb_time = []
-        R_t = R_xyz_dbm.copy()
-        for t in range(T):
-            if t > 0:
-                if vx or vy:
-                    R_t = np.roll(R_t, shift=(int(vx), int(vy), 0), axis=(0, 1, 2))
-                if flicker > 0.0:
-                    R_t = R_t + rng.normal(0.0, flicker, size=R_t.shape)
+    # Estimation error: optional static predicted metric for RadioMap scheduler
+    metric_override = compute_metric_override_static_if_needed(
+        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, noise_dbm
+    )
 
-            # Predictive schedule metric under imperfect map (optional)
-            if metric_override is None and (config.get("radiomap_est_error_db", 0.0) > 0.0 or config.get("radiomap_blur_sigma", 0.0) > 0.0):
-                R_hat_dbm = R_t.copy()
-                err_db = rng.normal(0.0, config.get("radiomap_est_error_db", 0.0), size=R_hat_dbm.shape)
-                R_hat_dbm = R_hat_dbm + err_db
-                sig = config.get("radiomap_blur_sigma", 0.0)
-                if sig and sig > 0.0:
-                    k = int(max(1, round(sig)))
-                    if k > 1:
-                        def blur1d(a, k):
-                            pad = ((k, k), (0, 0), (0, 0))
-                            b = np.pad(a, pad, mode='edge').cumsum(axis=0)
-                            return (b[2*k:, :, :] - b[:-2*k, :, :]) / (2*k)
-                        R_hat_dbm = blur1d(R_hat_dbm, k)
-                        R_hat_dbm = np.transpose(blur1d(np.transpose(R_hat_dbm, (1,0,2)), k), (1,0,2))
-                cap_pred_t, cap_wb_pred_t, _, _, snr_lin_pred_t, snr_lin_wb_pred_t = compute_caps(
-                    R_hat_dbm, ue_pos,
-                    P_tx_dbm=P_tx_per_ue_dbm,
-                    L_fs_db=L_fs_per_ue,
-                    G_rx_db=G_rx_per_ue,
-                    shadow_db_std=config["shadow_std_db"],
-                    N0_dbm=noise_dbm,
-                    rx_nf_db=config.get("rx_nf_db", 0.0),
-                    impl_loss_db=config.get("impl_loss_db", 0.0),
-                    seed=config["seed"]
-                )
-            else:
-                cap_pred_t, cap_wb_pred_t, snr_lin_pred_t, snr_lin_wb_pred_t = None, None, None, None
+    # Optional time variation
+    time_series = build_time_variation_if_enabled(
+        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng, metric_override
+    )
 
-            cap_t, cap_wb_t, _, _, snr_lin_t, snr_lin_wb_t = compute_caps(
-                R_t, ue_pos,
-                P_tx_dbm=P_tx_per_ue_dbm,
-                L_fs_db=L_fs_per_ue,
-                G_rx_db=G_rx_per_ue,
-                shadow_db_std=config["shadow_std_db"],
-                N0_dbm=noise_dbm,
-                rx_nf_db=config.get("rx_nf_db", 0.0),
-                impl_loss_db=config.get("impl_loss_db", 0.0),
-                seed=config["seed"]
-            )
-            if config.get("use_mcs", False):
-                if cap_pred_t is not None:
-                    se_time_rm.append(sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin_pred_t, 1e-12))))
-                    se_time_wb.append(sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin_wb_pred_t, 1e-12))))
-                else:
-                    se_time_rm.append(sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin_t, 1e-12))))
-                    se_time_wb.append(sinr_to_se_mcs(10.0 * np.log10(np.maximum(snr_lin_wb_t, 1e-12))))
-            else:
-                se_time_rm.append(cap_pred_t if cap_pred_t is not None else cap_t)
-                se_time_wb.append(cap_wb_pred_t if cap_wb_pred_t is not None else cap_wb_t)
-            snr_time.append(snr_lin_t)
-            snr_wb_time.append(snr_lin_wb_t)
-
-        se_time_rm = np.stack(se_time_rm, axis=0)        # [T, UE, Z]
-        se_time_wb = np.stack(se_time_wb, axis=0)        # [T, UE]
-        snr_time = np.stack(snr_time, axis=0)            # [T, UE, Z]
-        snr_wb_time = np.stack(snr_wb_time, axis=0)      # [T, UE]
-
+    if time_series is not None:
         base_se = pf_schedule_baseline(
             cap_wb, Z, T, beta=config["pf_beta"],
             snr_lin_wb=snr_lin_wb,
             overhead_eff=config.get("overhead_eff", 1.0),
             use_mcs=config.get("use_mcs", False),
             power_split=config.get("power_split", False),
-            se_metric_time=se_time_wb,
-            snr_lin_wb_time=snr_wb_time
+            se_metric_time=time_series["se_time_wb"],
+            snr_lin_wb_time=time_series["snr_wb_time"]
         )
         map_se = pf_schedule_radiomap(
             cap, T, beta=config["pf_beta"],
@@ -566,8 +683,8 @@ def run_once(config: Dict) -> Dict:
             power_split=config.get("power_split", False),
             se_metric_override=None if metric_override is None else metric_override,
             max_prbs_per_ue=config.get("max_prbs_per_ue"),
-            se_metric_time=se_time_rm,
-            snr_lin_time=snr_time
+            se_metric_time=time_series["se_time_rm"],
+            snr_lin_time=time_series["snr_time"]
         )
     else:
         base_se = pf_schedule_baseline(
@@ -586,6 +703,7 @@ def run_once(config: Dict) -> Dict:
             se_metric_override=metric_override,
             max_prbs_per_ue=config.get("max_prbs_per_ue")
         )
+
     return {
         "avg_se_baseline": base_se,
         "avg_se_radiomap": map_se,
