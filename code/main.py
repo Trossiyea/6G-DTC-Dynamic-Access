@@ -21,6 +21,9 @@ from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
 from orbit import compute_geometry_and_beam, OrbitModel
 from pc import pusch_open_loop_power
+from ntn_ta import ta_step_us as ntn_ta_step_us, effective_cp_us as ntn_effective_cp_us, quantize_ta_s, misalignment_penalty
+from ntn_cfo import compute_residual_cfo_hz, ici_factor_from_cfo
+from ntn_csi import snr_to_se_sched
 
 # -----------------------
 # Utility conversions
@@ -368,14 +371,24 @@ def build_time_variation_if_enabled(config: Dict,
         precomp_quant_hz = config.get("freq_precomp_quant_hz", None)
         precomp_quant_hz = None if precomp_quant_hz in (None, 0, 0.0) else float(precomp_quant_hz)
         f_pred = np.zeros(N_UE, dtype=float)
+        # CFO budget
+        fc_hz = float(config.get("carrier_freq_GHz", 2.0)) * 1e9
+        ue_ppm = float(config.get("ue_lo_ppm", 0.1))
+        gnb_ppm = float(config.get("gnb_lo_ppm", 0.05))
+        lo_mis_ppm = config.get("lo_mismatch_ppm", None)
+        ptrs_track_hz = float(config.get("ptrs_cfo_track_hz", 0.0))
+        residual_cfo_const = float(config.get("residual_freq_hz", 0.0))
 
     # -----------------------
     # Timing Advance (TA) model state
     # -----------------------
     enable_ta = bool(config.get("enable_ta_model", False)) and (orbit_model is not None)
     if enable_ta:
-        cp_us = float(config.get("cp_us", 2.34))
-        ta_step_us = float(config.get("ta_granularity_us", 1.04))
+        scs_khz = float(config.get("scs_khz", 30))
+        cp_us_cfg = config.get("cp_us", None)
+        cp_us = float(cp_us_cfg) if cp_us_cfg is not None else ntn_effective_cp_us(scs_khz, cp_type=str(config.get("cp_type", "normal")), symbol_index=1)
+        ta_step_cfg = config.get("ta_granularity_us", None)
+        ta_step_us = float(ta_step_cfg) if ta_step_cfg is not None else ntn_ta_step_us(scs_khz)
         ta_update = max(1, int(config.get("ta_update_ttis", 20)))
         ta_latency = max(0, int(config.get("ta_latency_ttis", 0)))
         ta_margin_us = max(0.0, float(config.get("ta_margin_us", 0.0)))
@@ -434,28 +447,35 @@ def build_time_variation_if_enabled(config: Dict,
             impl_loss_db=config.get("impl_loss_db", 0.0),
             seed=config["seed"]
         )
-        # Apply residual frequency error induced ICI (either via explicit precomp model or legacy fraction)
+        # Apply residual frequency error induced ICI (explicit precomp + CFO budget or legacy fraction)
         if orbit_model is not None:
             if enable_precomp:
                 # Periodic Doppler prediction with latency and imperfections
                 if (t % precomp_update) == 0:
                     t_src = max(0, t - precomp_latency)
-                    # Use orbit model to obtain the delayed Doppler reference
                     _, _, _, fd_src = orbit_model.get_geometry(ue_pos, t_src)
                     f_pred = fd_src.copy()
                     if precomp_err_std_hz > 0.0:
                         f_pred = f_pred + rng.normal(0.0, precomp_err_std_hz, size=f_pred.shape)
                     if precomp_quant_hz is not None and precomp_quant_hz > 0.0:
                         f_pred = np.round(f_pred / precomp_quant_hz) * precomp_quant_hz
-                eps_f = np.abs(fd_hz_t - f_pred)
-                T_sym = 1.0 / (float(config.get("scs_khz", 30)) * 1e3)
-                ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+                # Combine Doppler residual + LO mismatch + constant CFO, minus PTRS tracking capability
+                eps_f = compute_residual_cfo_hz(
+                    fd_true_hz=fd_hz_t,
+                    f_pred_hz=f_pred,
+                    fc_hz=fc_hz,
+                    ue_lo_ppm=ue_ppm,
+                    gnb_lo_ppm=gnb_ppm,
+                    residual_freq_hz=residual_cfo_const,
+                    ptrs_cfo_track_hz=ptrs_track_hz,
+                    override_mismatch_ppm=lo_mis_ppm,
+                )
+                ici_fac = ici_factor_from_cfo(eps_f, float(config.get("scs_khz", 30)))
                 snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
                 snr_lin_wb_t = snr_lin_wb_t / ici_fac
             elif config.get("doppler_residual_fraction", 0.0) > 0.0:
                 eps_f = np.abs(fd_hz_t) * float(config.get("doppler_residual_fraction", 0.0))
-                T_sym = 1.0 / (float(config.get("scs_khz", 30)) * 1e3)
-                ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+                ici_fac = ici_factor_from_cfo(eps_f, float(config.get("scs_khz", 30)))
                 snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
                 snr_lin_wb_t = snr_lin_wb_t / ici_fac
 
@@ -465,27 +485,14 @@ def build_time_variation_if_enabled(config: Dict,
             if (t % ta_update) == 0:
                 t_src = max(0, t - ta_latency)
                 _, _, tau_src, _ = orbit_model.get_geometry(ue_pos, t_src)
-                # Quantize to TA step
-                step_s = max(ta_step_us, 1e-9) * 1e-6
-                ta_cmd_s = np.round(tau_src / step_s) * step_s
+                ta_cmd_s = quantize_ta_s(tau_src, ta_step_us)
             # Compute misalignment
             e_us = np.abs(tau_s_t - ta_cmd_s) * 1e6
-            # Threshold beyond which CP cannot fully absorb
-            thr_us = max(0.0, cp_us - ta_margin_us)
-            if np.any(e_us > thr_us):
-                if ta_drop:
-                    # Zero out SNRs for offending UEs
-                    mask = (e_us > thr_us)
-                    if np.any(mask):
-                        snr_lin_t[mask, :] = 0.0
-                        snr_lin_wb_t[mask] = 0.0
-                else:
-                    # Smooth penalty proportional to excess beyond threshold
-                    excess = np.maximum(0.0, e_us - thr_us)
-                    # Penalty factor in [0,1]; stronger with larger exponent
-                    factor = np.clip(1.0 - (excess / max(cp_us, 1e-6)), 0.0, 1.0) ** max(ta_exp, 1.0)
-                    snr_lin_t = snr_lin_t * factor.reshape(-1, 1)
-                    snr_lin_wb_t = snr_lin_wb_t * factor
+            # Apply penalty factor according to CP budget
+            fac = misalignment_penalty(e_us, cp_us, ta_margin_us, drop_if_exceed=ta_drop, exponent=ta_exp)
+            if np.any(fac < 1.0):
+                snr_lin_t = snr_lin_t * fac.reshape(-1, 1)
+                snr_lin_wb_t = snr_lin_wb_t * fac
         mcs_params = {
             "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
             "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -1018,14 +1025,25 @@ def run_once(config: Dict) -> Dict:
             # Build baseline per-PRB SE metric from instantaneous snr_time and apply same delay
             se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
             for tt in range(time_series["snr_time"].shape[0]):
-                se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
+                # Optional CQI quantization for scheduler metric
+                if bool(config.get("enable_cqi_quantization", False)):
+                    se_time_base[tt] = snr_to_se_sched(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
+                                                       enable_cqi_quant=True,
+                                                       cqi_table=config.get("csi_mcs_table", "nr_64qam"))
+                else:
+                    se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
             se_time_base = delay_series(se_time_base, csi_delay)
         else:
             se_time_wb = time_series["se_time_wb"]
             se_time_rm = time_series["se_time_rm"]
             se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
             for tt in range(time_series["snr_time"].shape[0]):
-                se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
+                if bool(config.get("enable_cqi_quantization", False)):
+                    se_time_base[tt] = snr_to_se_sched(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
+                                                       enable_cqi_quant=True,
+                                                       cqi_table=config.get("csi_mcs_table", "nr_64qam"))
+                else:
+                    se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
         # Keep tau/fd for downstream users (HARQ/deferral to be added)
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")

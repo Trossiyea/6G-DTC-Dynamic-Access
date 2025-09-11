@@ -23,6 +23,7 @@ CONFIG = {
     # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
     # 3GPP FR1 SCS: 15/30 kHz typical; keep 30 kHz for NTN robustness
     "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz
+    "cp_type": "normal",      # cyclic prefix type (FR1 normal)
     "noise_dbm": -121.45,     # fallback if PRB BW not set
     "noise_temp_K": 290.0,    # thermal noise temperature
     # Alternatively you can set: "prb_bw_hz": 360000.0
@@ -31,10 +32,10 @@ CONFIG = {
     "P_tx_dbm": 23.0,         # UE EIRP when PC disabled (dBm), class-3 maximum
     # If geometry disabled, use fixed path loss + gain (kept for backward compat)
     "L_fs_db": 154.0,         # ~600 km @ 2 GHz FSPL (dB)
-    "G_rx_db": 35.0,          # satellite RX boresight gain (dBi), modest phased array
+    "G_rx_db": 38.0,          # satellite RX boresight gain (dBi), stronger phased array
     "shadow_std_db": 7.0,     # lognormal shadowing std (dB), closer to 3GPP UMa
-    "rx_nf_db": 5.0,          # receiver noise figure (dB)
-    "impl_loss_db": 2.0,      # implementation loss as noise rise (dB)
+    "rx_nf_db": 4.0,          # receiver noise figure (dB)
+    "impl_loss_db": 1.5,      # implementation loss as noise rise (dB)
     "overhead_eff": 0.8,      # PHY/MAC overhead efficiency factor (0.75–0.85 typical)
     "pf_beta": 0.1,           # PF averaging factor
 
@@ -44,7 +45,7 @@ CONFIG = {
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
     "csi_delay_ttis": 5,            # CSI report delay (TTIs)
     "power_split": True,            # per-UE PRB power split
-    "max_prbs_per_ue": 9,           # cap per UE per TTI (~Z/sqrt(N)), mitigates power-split loss
+    "max_prbs_per_ue": 6,           # tighter cap per UE to reduce power-split loss
 
     # Uplink fractional open-loop power control (TS 38.213)
     "enable_power_control": True,
@@ -56,9 +57,9 @@ CONFIG = {
     # Geometry + beam (NR-NTN smartphone to LEO S-band)
     "enable_geometry": True,  # enable per-UE FSPL and beam gain
     "sat_altitude_km": 600.0,
-    "carrier_freq_GHz": 2.0,  # S-band NTN (e.g., n256 vicinity)
+    "carrier_freq_GHz": 1.995,  # FR1 n255 uplink mid-band (~1980–2010 MHz)
     "beam_center_xy": None,   # default: map center
-    "beam_half_bw_deg": 20.0,
+    "beam_half_bw_deg": 8.0,
     "beam_edge_drop_db": 3.0,
     "cell_size_km": 5.0,      # ground resolution per pixel
 
@@ -77,18 +78,24 @@ CONFIG = {
     "enable_ntn_freq_precomp": True,
     "freq_precomp_update_ttis": 1,     # update every TTI
     "freq_precomp_latency_ttis": 1,    # 1 TTI latency
-    "freq_precomp_error_std_hz": 100.0,
+    "freq_precomp_error_std_hz": 50.0,
     "freq_precomp_quant_hz": 10.0,
+    # LO/CFO budget and PTRS/DMRS tracking capability (Hz)
+    "ue_lo_ppm": 0.05,
+    "gnb_lo_ppm": 0.02,
+    "lo_mismatch_ppm": None,          # if set, overrides ue/gnb ppm difference
+    "ptrs_cfo_track_hz": 500.0,       # stronger PTRS/DMRS CFO tracking
 
     # NTN uplink Timing Advance (TA) model
     # Disabled by default; when enabled, TA is periodically commanded with latency
     # and granularity, and misalignment beyond CP-margins causes strong degradation.
     "enable_ta_model": True,
-    "cp_us": 2.34,                 # approx CP for SCS=30 kHz normal symbols
-    "ta_granularity_us": 1.04,     # NR TA step at SCS=30 kHz
-    "ta_update_ttis": 20,
-    "ta_latency_ttis": 2,
-    "ta_margin_us": 0.3,
+    # CP and TA will be derived from SCS when possible; the following allow overrides
+    "cp_us": None,                  # if None, derived from SCS and cp_type
+    "ta_granularity_us": None,     # if None, derived from SCS (ΔTA=16*Ts*2^μ)
+    "ta_update_ttis": 10,
+    "ta_latency_ttis": 1,
+    "ta_margin_us": 0.2,
     "ta_drop_if_exceed": True,
     "ta_penalty_exponent": 2.0,
 
@@ -107,7 +114,12 @@ CONFIG = {
     "radio_map_units": "mW",                               # dataset values are mW per PRB
 
     # Residual impairments (frequency offset for ICI penalty)
-    "residual_freq_hz": 200.0,  # small constant CFO
+    "residual_freq_hz": 200.0,  # small constant CFO (e.g., uncompensated LO drift)
+
+    # CSI/CQI quantization for scheduler metric (optional standard-like)
+    "enable_cqi_quantization": True,
+    "cqi_period_ttis": 5,
+    "cqi_offset_ttis": 0,
 
     "seed": 1                   # random seed
 }
