@@ -589,7 +589,8 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
                          snr_lin_wb_time: Optional[np.ndarray] = None,
                          snr_lin_prb: Optional[np.ndarray] = None,
                          cap_prb: Optional[np.ndarray] = None,
-                         snr_lin_time_prb: Optional[np.ndarray] = None) -> float:
+                         snr_lin_time_prb: Optional[np.ndarray] = None,
+                         force_wideband_throughput: bool = False) -> float:
     """
     3GPP-like baseline: proportional fair with wideband CQI (same cap on every PRB).
     To avoid one-UE monopolization, assign PRBs in each TTI across the top sqrt(N) UEs 
@@ -647,22 +648,30 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
         for z in range(Z):
             ue = winners[z]
             k_prb = int(counts[ue]) if power_split else 1
-            # Prefer per-PRB SNR/SE if available for fairness
-            if (snr_lin_prb is not None) or (snr_lin_time_prb is not None):
-                if snr_lin_time_prb is not None:
-                    snr_base = snr_lin_time_prb[t_idx, ue, z]
-                else:
-                    snr_base = snr_lin_prb[ue, z]
-                se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
-            elif cap_prb is not None and (not use_mcs):
-                se = se_from_cap_shannon_with_split(cap_prb[ue, z], k_prb if power_split else 1)
-            else:
-                # Fallback to wideband
+            # Strict wideband-only throughput (ignore PRB-level info)
+            if force_wideband_throughput:
                 if (snr_lin_wb is not None) or (snr_lin_wb_time is not None):
                     snr_base = snr_lin_wb_time[t_idx, ue] if snr_lin_wb_time is not None else snr_lin_wb[ue]
                     se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
                 else:
                     se = se_from_cap_shannon_with_split(metric_se_t[ue], k_prb if power_split else 1)
+            else:
+                # Prefer per-PRB SNR/SE if available for fairness
+                if (snr_lin_prb is not None) or (snr_lin_time_prb is not None):
+                    if snr_lin_time_prb is not None:
+                        snr_base = snr_lin_time_prb[t_idx, ue, z]
+                    else:
+                        snr_base = snr_lin_prb[ue, z]
+                    se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
+                elif cap_prb is not None and (not use_mcs):
+                    se = se_from_cap_shannon_with_split(cap_prb[ue, z], k_prb if power_split else 1)
+                else:
+                    # Fallback to wideband
+                    if (snr_lin_wb is not None) or (snr_lin_wb_time is not None):
+                        snr_base = snr_lin_wb_time[t_idx, ue] if snr_lin_wb_time is not None else snr_lin_wb[ue]
+                        se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
+                    else:
+                        se = se_from_cap_shannon_with_split(metric_se_t[ue], k_prb if power_split else 1)
             thr_i[ue] += se * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
@@ -962,6 +971,236 @@ def pf_schedule_radiomap_blocks(
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
 
+
+def _group_ranges(Z: int, num_groups: int) -> list:
+    """Split Z PRBs into num_groups contiguous groups; last group may be larger by at most 1 PRB."""
+    num_groups = max(1, int(num_groups))
+    base = Z // num_groups
+    rem = Z % num_groups
+    ranges = []
+    start = 0
+    for g in range(num_groups):
+        size = base + (1 if g < rem else 0)
+        end = start + size - 1
+        ranges.append((start, end))
+        start = end + 1
+    return ranges
+
+
+def pf_schedule_baseline_subband(
+    Z: int,
+    T: int,
+    beta: float,
+    overhead_eff: float,
+    use_mcs: bool,
+    power_split: bool,
+    mcs_params: Optional[Dict],
+    num_groups: int,
+    eesm_beta_db: float = 1.0,
+    max_groups_per_ue: Optional[int] = None,
+    use_marginal_delta: bool = True,
+    # Inputs for scheduling metric and throughput
+    snr_lin_prb: Optional[np.ndarray] = None,                      # [UE,Z]
+    cap_prb: Optional[np.ndarray] = None,                          # [UE,Z] (Shannon)
+    snr_lin_time_prb_metric: Optional[np.ndarray] = None,          # [T,UE,Z] metric (delayed) SNR
+    snr_lin_time_prb_true: Optional[np.ndarray] = None,            # [T,UE,Z] true instantaneous SNR (for throughput)
+    se_metric_time_subband: Optional[np.ndarray] = None,           # [T,UE,S] optional precomputed subband metric
+) -> float:
+    """
+    Baseline with subband-level CQI: split Z PRBs into S groups, compute per-group SE metric
+    (EESM+MCS if use_mcs else Shannon mean), then PF-allocate groups each TTI. Each assigned
+    group uses a single MCS evaluated over the group's PRBs. If power_split is enabled, the
+    UE's total PRB count across all assigned groups divides its SNR.
+    Returns average sum SE per PRB (bits/s/Hz).
+    """
+    # Build groups
+    groups = _group_ranges(Z, num_groups)
+    S = len(groups)
+
+    # Helper: compute subband metric from per-PRB SNR/SE
+    def _metric_from_snr_mat(snr_mat: np.ndarray) -> np.ndarray:
+        out = np.zeros((snr_mat.shape[0], S), dtype=float)
+        for gi, (li, ri) in enumerate(groups):
+            vec = snr_mat[:, li:ri + 1]
+            # Per-group per-PRB SE at k=1
+            if use_mcs:
+                # EESM then MCS mapping
+                sinr_db_vec = 10.0 * np.log10(np.maximum(vec, 1e-12))
+                sinr_eff_db = effective_sinr_eesm(sinr_db_vec, beta_db=float(eesm_beta_db), axis=-1)
+                out[:, gi] = sinr_to_se_mcs(sinr_eff_db, table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy")
+            else:
+                out[:, gi] = np.log2(1.0 + np.maximum(vec, 0.0)).mean(axis=1)
+        return out
+
+    # Prepare static subband metric if no time series given
+    if se_metric_time_subband is None:
+        if snr_lin_prb is not None:
+            se_metric_sub = _metric_from_snr_mat(np.asarray(snr_lin_prb, dtype=float))  # [UE,S]
+        elif cap_prb is not None and (not use_mcs):
+            # Average Shannon per group
+            se_metric_sub = np.zeros((cap_prb.shape[0], S), dtype=float)
+            for gi, (li, ri) in enumerate(groups):
+                se_metric_sub[:, gi] = np.asarray(cap_prb[:, li:ri + 1]).mean(axis=1)
+        else:
+            # Fallback: invert Shannon from cap to get SNR
+            if cap_prb is None:
+                raise ValueError("pf_schedule_baseline_subband requires snr_lin_prb or cap_prb")
+            gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap_prb)) - 1.0)
+            se_metric_sub = _metric_from_snr_mat(gamma)
+
+    # Resolve N_UE
+    if se_metric_time_subband is not None:
+        N_UE = se_metric_time_subband.shape[1]
+    elif snr_lin_prb is not None:
+        N_UE = int(np.asarray(snr_lin_prb).shape[0])
+    elif cap_prb is not None:
+        N_UE = int(np.asarray(cap_prb).shape[0])
+    else:
+        # Time-varying but metric is to be built from snr_lin_time_prb_metric per TTI
+        if snr_lin_time_prb_metric is None:
+            raise ValueError("Need snr_lin_time_prb_metric or se_metric_time_subband or static snr/cap")
+        N_UE = int(np.asarray(snr_lin_time_prb_metric).shape[1])
+    Rbar = np.full(N_UE, 1e-3)
+    sum_rate = 0.0
+
+    for t_idx in range(T):
+        # Scheduling metric for this TTI
+        if se_metric_time_subband is not None:
+            metric_se = se_metric_time_subband[t_idx]  # [UE,S]
+            snr_metric_mat = None
+        elif snr_lin_time_prb_metric is not None:
+            # Build subband metric from delayed SNR for this TTI
+            snr_metric_mat = np.asarray(snr_lin_time_prb_metric[t_idx], dtype=float)
+            metric_se = _metric_from_snr_mat(snr_metric_mat)
+        else:
+            metric_se = se_metric_sub
+            snr_metric_mat = None
+
+        # Allocate groups with PF using either per-group metric or marginal ΔSE
+        winners = np.full(S, -1, dtype=int)
+        if not use_marginal_delta:
+            metric = metric_se / Rbar.reshape(-1, 1)
+            if max_groups_per_ue is None:
+                winners = np.argmax(metric, axis=0)
+            else:
+                counts = np.zeros(N_UE, dtype=int)
+                best_vals = metric.max(axis=0)
+                order_g = np.argsort(-best_vals)
+                for idx in order_g:
+                    ue_best = int(np.argmax(metric[:, idx]))
+                    if counts[ue_best] < int(max_groups_per_ue):
+                        winners[idx] = ue_best
+                        counts[ue_best] += 1
+                    else:
+                        sorted_ues = np.argsort(-metric[:, idx])
+                        chosen = -1
+                        for u in sorted_ues:
+                            if counts[u] < int(max_groups_per_ue):
+                                chosen = int(u)
+                                break
+                        if chosen < 0:
+                            chosen = int(np.argmax(metric[:, idx]))
+                        winners[idx] = chosen
+                        counts[chosen] += 1
+        else:
+            # Marginal ΔSE allocation using predicted SNR mat if available
+            assigned_groups = [[] for _ in range(N_UE)]
+            k_prb_assigned = np.zeros(N_UE, dtype=int)
+            block_se_pred = np.zeros(N_UE, dtype=float)
+            counts = np.zeros(N_UE, dtype=int)
+            remaining = set(range(S))
+            while remaining:
+                best_delta = -1e9
+                best_pair = None  # (ue, gi)
+                # Try each remaining group, pick best PF metric (Δ/Rbar)
+                for gi in list(remaining):
+                    li, ri = groups[gi]
+                    size_g = ri - li + 1
+                    for ue in range(N_UE):
+                        if (max_groups_per_ue is not None) and (counts[ue] >= int(max_groups_per_ue)):
+                            continue
+                        k0 = int(k_prb_assigned[ue])
+                        # Predicted SNR vector for UE on union of assigned PRBs (+candidate group)
+                        if snr_metric_mat is not None:
+                            if k0 > 0:
+                                # Build current mask
+                                mask = np.zeros(Z, dtype=bool)
+                                for gprev in assigned_groups[ue]:
+                                    l0, r0 = groups[gprev]
+                                    mask[l0:r0+1] = True
+                                snr_vec_old = snr_metric_mat[ue, mask]
+                            else:
+                                snr_vec_old = None
+                            # New vector includes candidate group
+                            mask_new = np.zeros(Z, dtype=bool)
+                            if k0 > 0:
+                                for gprev in assigned_groups[ue]:
+                                    l0, r0 = groups[gprev]
+                                    mask_new[l0:r0+1] = True
+                            mask_new[li:ri+1] = True
+                            snr_vec_new = snr_metric_mat[ue, mask_new]
+                            se_old = _block_se_from_snr_vec(snr_vec_old, k0 if (k0>0 and power_split) else 1, use_mcs, mcs_params, eesm_beta_db) if (k0>0) else 0.0
+                            k_new = k0 + size_g
+                            se_new = _block_se_from_snr_vec(snr_vec_new, k_new if power_split else 1, use_mcs, mcs_params, eesm_beta_db)
+                        else:
+                            # Fallback: use per-group metric only
+                            se_old = float(block_se_pred[ue]) if k0>0 else 0.0
+                            k_new = k0 + size_g
+                            # Approximate new per-PRB SE as average of existing block_se_pred and this group's per-PRB metric
+                            se_g = float(metric_se[ue, gi])
+                            se_new = (k0 * se_old + size_g * se_g) / float(k_new)
+                            if power_split and use_mcs:
+                                # Rough penalty for power split in absence of SNR
+                                pass
+                        delta = k_new * se_new - k0 * se_old
+                        metric_pf = delta / Rbar[ue]
+                        if metric_pf > best_delta:
+                            best_delta = metric_pf
+                            best_pair = (ue, gi, k_new, se_new)
+                if best_pair is None:
+                    break
+                ue_sel, gi_sel, k_new_sel, se_new_sel = best_pair
+                winners[gi_sel] = ue_sel
+                remaining.remove(gi_sel)
+                counts[ue_sel] += 1
+                # Update assigned sets
+                assigned_groups[ue_sel].append(gi_sel)
+                k_prb_assigned[ue_sel] = k_new_sel
+                block_se_pred[ue_sel] = se_new_sel
+
+        # Throughput accumulation
+        thr_i = np.zeros(N_UE, dtype=float)
+        # Count total PRBs per UE for power split
+        if power_split:
+            prbs_per_ue = np.zeros(N_UE, dtype=int)
+            for gi, (li, ri) in enumerate(groups):
+                prbs_per_ue[winners[gi]] += (ri - li + 1)
+        else:
+            prbs_per_ue = np.ones(N_UE, dtype=int)
+
+        # Select SNR field for this TTI (true for throughput)
+        if snr_lin_time_prb_true is not None:
+            snr_true = np.asarray(snr_lin_time_prb_true[t_idx], dtype=float)  # [UE,Z]
+        elif snr_lin_prb is not None:
+            snr_true = np.asarray(snr_lin_prb, dtype=float)
+        else:
+            # Invert Shannon
+            gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap_prb)) - 1.0)
+            snr_true = gamma
+
+        for gi, (li, ri) in enumerate(groups):
+            ue = int(winners[gi])
+            k_prb = int(prbs_per_ue[ue]) if power_split else 1
+            snr_vec = snr_true[ue, li:ri + 1]
+            se_per_prb = _block_se_from_snr_vec(snr_vec, k_prb, use_mcs, mcs_params, eesm_beta_db)
+            thr_i[ue] += (ri - li + 1) * se_per_prb * overhead_eff
+
+        sum_rate += thr_i.sum()
+        Rbar = (1 - beta) * Rbar + beta * thr_i
+
+    avg_sum_rate_per_prb = sum_rate / (T * Z)
+    return avg_sum_rate_per_prb
+
 # -----------------------
 # Experiment harness
 # -----------------------
@@ -1010,40 +1249,36 @@ def run_once(config: Dict) -> Dict:
     }
 
     if time_series is not None:
-        # Apply optional CSI delay to scheduler metric (not to actual SNR)
-        csi_delay = int(config.get("csi_delay_ttis", 0))
-        if csi_delay > 0:
-            def delay_series(arr: np.ndarray, d: int) -> np.ndarray:
-                T0 = arr.shape[0]
-                out = np.empty_like(arr)
-                for t in range(T0):
-                    src = max(0, t - d)
-                    out[t] = arr[src]
-                return out
-            se_time_wb = delay_series(time_series["se_time_wb"], csi_delay)
-            se_time_rm = delay_series(time_series["se_time_rm"], csi_delay)
-            # Build baseline per-PRB SE metric from instantaneous snr_time and apply same delay
-            se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
-            for tt in range(time_series["snr_time"].shape[0]):
-                # Optional CQI quantization for scheduler metric
-                if bool(config.get("enable_cqi_quantization", False)):
-                    se_time_base[tt] = snr_to_se_sched(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
-                                                       enable_cqi_quant=True,
-                                                       cqi_table=config.get("csi_mcs_table", "nr_64qam"))
-                else:
-                    se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
-            se_time_base = delay_series(se_time_base, csi_delay)
-        else:
-            se_time_wb = time_series["se_time_wb"]
-            se_time_rm = time_series["se_time_rm"]
-            se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
-            for tt in range(time_series["snr_time"].shape[0]):
-                if bool(config.get("enable_cqi_quantization", False)):
-                    se_time_base[tt] = snr_to_se_sched(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
-                                                       enable_cqi_quant=True,
-                                                       cqi_table=config.get("csi_mcs_table", "nr_64qam"))
-                else:
-                    se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
+        # Apply CSI delay to scheduler metrics (not to actual SNR)
+        def delay_series(arr: np.ndarray, d: int) -> np.ndarray:
+            if d <= 0:
+                return arr
+            T0 = arr.shape[0]
+            out = np.empty_like(arr)
+            for t in range(T0):
+                src = max(0, t - d)
+                out[t] = arr[src]
+            return out
+
+        baseline_delay = int(config.get("baseline_csi_delay_ttis", config.get("csi_delay_ttis", 0)))
+        rm_delay = int(config.get("rm_csi_delay_ttis", config.get("csi_delay_ttis", 0)))
+
+        # Wideband metric (baseline)
+        se_time_wb = delay_series(time_series["se_time_wb"], baseline_delay)
+
+        # RadioMap metric (per PRB)
+        se_time_rm = delay_series(time_series["se_time_rm"], rm_delay)
+
+        # Baseline per-PRB SE metric derived from instantaneous SNR, then delay and optional CQI quant
+        se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
+        for tt in range(time_series["snr_time"].shape[0]):
+            if bool(config.get("enable_cqi_quantization", False)):
+                se_time_base[tt] = snr_to_se_sched(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
+                                                   enable_cqi_quant=True,
+                                                   cqi_table=config.get("csi_mcs_table", "nr_64qam"))
+            else:
+                se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
+        se_time_base = delay_series(se_time_base, baseline_delay)
         # Keep tau/fd for downstream users (HARQ/deferral to be added)
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
@@ -1077,7 +1312,8 @@ def run_once(config: Dict) -> Dict:
                 snr_lin_wb_time=time_series["snr_wb_time"],
                 snr_lin_prb=snr_lin,
                 cap_prb=cap,
-                snr_lin_time_prb=time_series["snr_time"]
+                snr_lin_time_prb=time_series["snr_time"],
+                force_wideband_throughput=bool(config.get("baseline_force_wideband_throughput", False)),
             )
         # Always compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
@@ -1092,7 +1328,35 @@ def run_once(config: Dict) -> Dict:
             snr_lin_prb=None,
             cap_prb=None,
             snr_lin_time_prb=None,
+            force_wideband_throughput=True,
         )
+
+        # Optional subband baseline (time-varying)
+        if bool(config.get("enable_baseline_subband", False)):
+            # Build per-TTI subband metric from instantaneous per-PRB SNR (then apply delay)
+            num_g = int(config.get("baseline_subband_groups", 8))
+            # Use delayed per-PRB SNR for the subband scheduling metric
+            snr_time_delayed = delay_series(time_series["snr_time"], baseline_delay)
+            base_se_subband = pf_schedule_baseline_subband(
+                Z=Z,
+                T=T,
+                beta=config["pf_beta"],
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                mcs_params=mcs_params,
+                num_groups=num_g,
+                eesm_beta_db=float(config.get("baseline_eesm_beta_db", 1.0)),
+                max_groups_per_ue=config.get("baseline_max_groups_per_ue"),
+                use_marginal_delta=True,
+                snr_lin_prb=snr_lin,
+                cap_prb=cap,
+                snr_lin_time_prb_metric=snr_time_delayed,
+                snr_lin_time_prb_true=time_series["snr_time"],
+                se_metric_time_subband=None,
+            )
+        else:
+            base_se_subband = None
         if config.get("sched_block_mode", False):
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -1155,6 +1419,7 @@ def run_once(config: Dict) -> Dict:
                 mcs_params=mcs_params,
                 snr_lin_prb=snr_lin,
                 cap_prb=cap,
+                force_wideband_throughput=bool(config.get("baseline_force_wideband_throughput", False)),
             )
         # Simple wideband PF baseline for static snapshot
         base_se_simple = pf_schedule_baseline(
@@ -1169,7 +1434,30 @@ def run_once(config: Dict) -> Dict:
             snr_lin_prb=None,
             cap_prb=None,
             snr_lin_time_prb=None,
+            force_wideband_throughput=True,
         )
+        # Optional subband baseline (static)
+        if bool(config.get("enable_baseline_subband", False)):
+            base_se_subband = pf_schedule_baseline_subband(
+                Z=Z,
+                T=T,
+                beta=config["pf_beta"],
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                mcs_params=mcs_params,
+                num_groups=int(config.get("baseline_subband_groups", 8)),
+                eesm_beta_db=float(config.get("baseline_eesm_beta_db", 1.0)),
+                max_groups_per_ue=config.get("baseline_max_groups_per_ue"),
+                use_marginal_delta=True,
+                snr_lin_prb=snr_lin,
+                cap_prb=cap,
+                snr_lin_time_prb_metric=None,
+                snr_lin_time_prb_true=None,
+                se_metric_time_subband=None,
+            )
+        else:
+            base_se_subband = None
         if config.get("sched_block_mode", False):
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -1205,9 +1493,11 @@ def run_once(config: Dict) -> Dict:
     return {
         "avg_se_baseline_default": base_se_default,
         "avg_se_baseline_simple": base_se_simple,
+        "avg_se_baseline_subband": base_se_subband,
         "avg_se_radiomap": map_se,
         "improvement_vs_default_pct": (map_se - base_se_default) / max(1e-9, base_se_default) * 100.0,
         "improvement_vs_simple_pct": (map_se - base_se_simple) / max(1e-9, base_se_simple) * 100.0,
+        "improvement_vs_subband_pct": (map_se - base_se_subband) / max(1e-9, base_se_subband) * 100.0 if base_se_subband is not None else None,
         "R_xyz_dbm": R_xyz_dbm,
         "ue_pos": ue_pos,
         "cap": cap,
@@ -1221,22 +1511,27 @@ def run_once(config: Dict) -> Dict:
     }
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
-    base_def_list, base_simp_list, map_list, imp_def_list, imp_simp_list = [], [], [], [], []
+    base_def_list, base_simp_list, base_sub_list, map_list, imp_def_list, imp_simp_list, imp_sub_list = [], [], [], [], [], [], []
     for s in seeds:
         c2 = dict(config)
         c2["seed"] = int(s)
         out = run_once(c2)
         base_def_list.append(out["avg_se_baseline_default"])
         base_simp_list.append(out["avg_se_baseline_simple"])
+        base_sub_list.append(out["avg_se_baseline_subband"]) if out.get("avg_se_baseline_subband") is not None else None
         map_list.append(out["avg_se_radiomap"])
         imp_def_list.append(out["improvement_vs_default_pct"])
         imp_simp_list.append(out["improvement_vs_simple_pct"])
+        if out.get("improvement_vs_subband_pct") is not None:
+            imp_sub_list.append(out["improvement_vs_subband_pct"])
     return {
         "baseline_default": np.array(base_def_list),
         "baseline_simple": np.array(base_simp_list),
+        "baseline_subband": np.array([x for x in base_sub_list if x is not None]) if any(x is not None for x in base_sub_list) else None,
         "radiomap": np.array(map_list),
         "improvement_vs_default_pct": np.array(imp_def_list),
         "improvement_vs_simple_pct": np.array(imp_simp_list),
+        "improvement_vs_subband_pct": np.array(imp_sub_list) if len(imp_sub_list) > 0 else None,
     }
 
 # CONFIG is provided by code/config.py
@@ -1249,9 +1544,13 @@ if __name__ == '__main__':
     print("Single-run results")
     print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
     print(f"  Baseline-Simple  avg SE (bits/s/Hz): {single['avg_se_baseline_simple']:.3f}")
+    if single.get('avg_se_baseline_subband') is not None:
+        print(f"  Baseline-Subband avg SE (bits/s/Hz): {single['avg_se_baseline_subband']:.3f}")
     print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
     print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
     print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
+    if single.get('improvement_vs_subband_pct') is not None:
+        print(f"  Gain vs Subband (%): {single['improvement_vs_subband_pct']:.2f}")
 
     # -----------------------
     # Run multiple seeds to show robustness
@@ -1261,9 +1560,14 @@ if __name__ == '__main__':
     print("\nMulti-seed summary (N=20)")
     print(f"  Baseline-Default avg SE: {multi['baseline_default'].mean():.3f} ± {multi['baseline_default'].std():.3f}")
     print(f"  Baseline-Simple  avg SE: {multi['baseline_simple'].mean():.3f} ± {multi['baseline_simple'].std():.3f}")
+    if multi.get('baseline_subband') is not None:
+        print(f"  Baseline-Subband avg SE: {multi['baseline_subband'].mean():.3f} ± {multi['baseline_subband'].std():.3f}")
     print(f"  RadioMap         avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
     print(f"  Gain vs Default median: {np.median(multi['improvement_vs_default_pct']):.2f}% (min={multi['improvement_vs_default_pct'].min():.2f}%, max={multi['improvement_vs_default_pct'].max():.2f}%)")
     print(f"  Gain vs Simple  median: {np.median(multi['improvement_vs_simple_pct']):.2f}% (min={multi['improvement_vs_simple_pct'].min():.2f}%, max={multi['improvement_vs_simple_pct'].max():.2f}%)")
+    if multi.get('improvement_vs_subband_pct') is not None:
+        arr = multi['improvement_vs_subband_pct']
+        print(f"  Gain vs Subband median: {np.median(arr):.2f}% (min={arr.min():.2f}%, max={arr.max():.2f}%)")
 
     # -----------------------
     # Plots

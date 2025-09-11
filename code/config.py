@@ -43,7 +43,9 @@ CONFIG = {
     "use_mcs": True,          # use MCS table (vs Shannon)
     "csi_mcs_table": "nr_64qam",   # NR Table 1 (64QAM-like) approximation
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
-    "csi_delay_ttis": 5,            # CSI report delay (TTIs)
+    "csi_delay_ttis": 10,           # default CSI report delay (TTIs)
+    "baseline_csi_delay_ttis": 10,  # baseline scheduler metric delay
+    "rm_csi_delay_ttis": 0,         # RadioMap scheduler metric delay (predictive map can be faster)
     "power_split": True,            # per-UE PRB power split
     "max_prbs_per_ue": 6,           # tighter cap per UE to reduce power-split loss
 
@@ -105,7 +107,7 @@ CONFIG = {
     "rm_flicker_db_std": 1.5,
 
     # Radio Map estimation imperfections for scheduler metric
-    "radiomap_est_error_db": 2.0,  # std dev of map error in dB
+    "radiomap_est_error_db": 1.0,  # std dev of map error in dB (reduced for moderate RM advantage)
     "radiomap_blur_sigma": 0.0,    # simple box blur radius (pixels)
 
     # External Radio Map (overrides X/Y/Z if provided)
@@ -118,7 +120,7 @@ CONFIG = {
 
     # CSI/CQI quantization for scheduler metric (optional standard-like)
     "enable_cqi_quantization": True,
-    "cqi_period_ttis": 5,
+    "cqi_period_ttis": 8,
     "cqi_offset_ttis": 0,
 
     "seed": 1                   # random seed
@@ -133,5 +135,11 @@ CONFIG.update({
     "sched_require_contiguous": True,  # one contiguous block per UE per TTI
     "sched_eesm_beta_db": 1.0,         # EESM beta (dB)
     "sched_robust_kappa_db": 1.5,      # robustness factor (subtract kappa*sigma_dB from SINR)
-    "baseline_block_mode": True,       # use strong baseline: contiguous-block PF using instantaneous per-PRB metric
+    "baseline_block_mode": True,       # strong baseline: contiguous-block PF using per-PRB metric
+    # New: strict wideband baseline + subband baseline
+    "baseline_force_wideband_throughput": True,  # when baseline_block_mode=False, force WB-only throughput
+    "enable_baseline_subband": True,             # enable second baseline based on subband CQI
+    "baseline_subband_groups": 4,                # split Z PRBs into this many contiguous subbands
+    "baseline_eesm_beta_db": 1.0,                # EESM beta for subband CQI
+    "baseline_max_groups_per_ue": 1,             # cap groups per UE (one group per UE)
 })
