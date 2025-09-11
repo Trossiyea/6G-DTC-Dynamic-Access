@@ -42,7 +42,7 @@ CONFIG = {
     "use_mcs": True,          # use MCS table (vs Shannon)
     "csi_mcs_table": "nr_64qam",   # NR Table 1 (64QAM-like) approximation
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
-    "csi_delay_ttis": 0,            # CSI report delay (TTIs)
+    "csi_delay_ttis": 5,            # CSI report delay (TTIs)
     "power_split": True,            # per-UE PRB power split
     "max_prbs_per_ue": 9,           # cap per UE per TTI (~Z/sqrt(N)), mitigates power-split loss
 
@@ -63,19 +63,42 @@ CONFIG = {
     "cell_size_km": 5.0,      # ground resolution per pixel
 
     # Orbit dynamics (optional; keep static for baseline comparisons)
-    "enable_orbit_dynamics": False,
+    "enable_orbit_dynamics": True,
     "tti_ms": 1.0,
     "sat_ground_speed_kms": 7.5,
     "sat_heading_deg": 0.0,   # 0: +x direction
-    "doppler_residual_fraction": 0.0,  # fraction of Doppler left after precompensation (0..1)
+    "doppler_residual_fraction": 0.0,  # using explicit precomp model instead
+
+    # NTN uplink frequency pre-compensation (Doppler prediction model)
+    # Disabled by default to preserve baseline behavior.
+    # When enabled, the simulator will update a predicted Doppler per UE with
+    # a configurable periodicity and latency, and apply an ICI penalty based on
+    # the residual frequency error eps_f = |f_d(t) - f_pred(t-lat)| plus random/quantization error.
+    "enable_ntn_freq_precomp": True,
+    "freq_precomp_update_ttis": 1,     # update every TTI
+    "freq_precomp_latency_ttis": 1,    # 1 TTI latency
+    "freq_precomp_error_std_hz": 100.0,
+    "freq_precomp_quant_hz": 10.0,
+
+    # NTN uplink Timing Advance (TA) model
+    # Disabled by default; when enabled, TA is periodically commanded with latency
+    # and granularity, and misalignment beyond CP-margins causes strong degradation.
+    "enable_ta_model": True,
+    "cp_us": 2.34,                 # approx CP for SCS=30 kHz normal symbols
+    "ta_granularity_us": 1.04,     # NR TA step at SCS=30 kHz
+    "ta_update_ttis": 20,
+    "ta_latency_ttis": 2,
+    "ta_margin_us": 0.3,
+    "ta_drop_if_exceed": True,
+    "ta_penalty_exponent": 2.0,
 
     # Time-varying Radio Map (optional realism)
-    "enable_time_varying": False,
-    "rm_drift_px": (0, 0),
-    "rm_flicker_db_std": 0.0,
+    "enable_time_varying": True,
+    "rm_drift_px": (1, 0),
+    "rm_flicker_db_std": 1.5,
 
     # Radio Map estimation imperfections for scheduler metric
-    "radiomap_est_error_db": 0.0,  # std dev of map error in dB
+    "radiomap_est_error_db": 2.0,  # std dev of map error in dB
     "radiomap_blur_sigma": 0.0,    # simple box blur radius (pixels)
 
     # External Radio Map (overrides X/Y/Z if provided)
@@ -84,7 +107,7 @@ CONFIG = {
     "radio_map_units": "mW",                               # dataset values are mW per PRB
 
     # Residual impairments (frequency offset for ICI penalty)
-    "residual_freq_hz": 200.0,  # small residual CFO (~0.1 ppm @ 2 GHz)
+    "residual_freq_hz": 200.0,  # small constant CFO
 
     "seed": 1                   # random seed
 }
@@ -97,6 +120,6 @@ CONFIG.update({
     "sched_block_mode": True,          # enable enhanced block-based scheduler
     "sched_require_contiguous": True,  # one contiguous block per UE per TTI
     "sched_eesm_beta_db": 1.0,         # EESM beta (dB)
-    "sched_robust_kappa_db": 0.0,      # robustness factor (subtract kappa*sigma_dB from SINR)
+    "sched_robust_kappa_db": 1.5,      # robustness factor (subtract kappa*sigma_dB from SINR)
     "baseline_block_mode": True,       # use strong baseline: contiguous-block PF using instantaneous per-PRB metric
 })

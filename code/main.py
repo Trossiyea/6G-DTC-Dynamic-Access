@@ -345,6 +345,7 @@ def build_time_variation_if_enabled(config: Dict,
     if not config.get("enable_time_varying", False):
         return None
     T = config["T"]
+    N_UE = int(ue_pos.shape[0])
     vx, vy = config.get("rm_drift_px", (0, 0))
     flicker = float(config.get("rm_flicker_db_std", 0.0))
     se_time_rm: list = []
@@ -355,6 +356,32 @@ def build_time_variation_if_enabled(config: Dict,
     fd_time: list = []
     R_t = R_xyz_dbm.copy()
     orbit_model = OrbitModel(config, R_xyz_dbm.shape[0], R_xyz_dbm.shape[1]) if config.get("enable_orbit_dynamics", False) else None
+
+    # -----------------------
+    # UL frequency pre-compensation model state
+    # -----------------------
+    enable_precomp = bool(config.get("enable_ntn_freq_precomp", False)) and (orbit_model is not None)
+    if enable_precomp:
+        precomp_update = max(1, int(config.get("freq_precomp_update_ttis", 1)))
+        precomp_latency = max(0, int(config.get("freq_precomp_latency_ttis", 0)))
+        precomp_err_std_hz = float(config.get("freq_precomp_error_std_hz", 0.0) or 0.0)
+        precomp_quant_hz = config.get("freq_precomp_quant_hz", None)
+        precomp_quant_hz = None if precomp_quant_hz in (None, 0, 0.0) else float(precomp_quant_hz)
+        f_pred = np.zeros(N_UE, dtype=float)
+
+    # -----------------------
+    # Timing Advance (TA) model state
+    # -----------------------
+    enable_ta = bool(config.get("enable_ta_model", False)) and (orbit_model is not None)
+    if enable_ta:
+        cp_us = float(config.get("cp_us", 2.34))
+        ta_step_us = float(config.get("ta_granularity_us", 1.04))
+        ta_update = max(1, int(config.get("ta_update_ttis", 20)))
+        ta_latency = max(0, int(config.get("ta_latency_ttis", 0)))
+        ta_margin_us = max(0.0, float(config.get("ta_margin_us", 0.0)))
+        ta_drop = bool(config.get("ta_drop_if_exceed", True))
+        ta_exp = float(config.get("ta_penalty_exponent", 2.0))
+        ta_cmd_s = np.zeros(N_UE, dtype=float)  # current TA command per UE (seconds)
     for t in range(T):
         if t > 0:
             if vx or vy:
@@ -407,12 +434,58 @@ def build_time_variation_if_enabled(config: Dict,
             impl_loss_db=config.get("impl_loss_db", 0.0),
             seed=config["seed"]
         )
-        if orbit_model is not None and config.get("doppler_residual_fraction", 0.0) > 0.0:
-            eps_f = np.abs(fd_hz_t) * float(config.get("doppler_residual_fraction", 0.0))
-            T_sym = 1.0 / (float(config.get("scs_khz", 30)) * 1e3)
-            ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
-            snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
-            snr_lin_wb_t = snr_lin_wb_t / ici_fac
+        # Apply residual frequency error induced ICI (either via explicit precomp model or legacy fraction)
+        if orbit_model is not None:
+            if enable_precomp:
+                # Periodic Doppler prediction with latency and imperfections
+                if (t % precomp_update) == 0:
+                    t_src = max(0, t - precomp_latency)
+                    # Use orbit model to obtain the delayed Doppler reference
+                    _, _, _, fd_src = orbit_model.get_geometry(ue_pos, t_src)
+                    f_pred = fd_src.copy()
+                    if precomp_err_std_hz > 0.0:
+                        f_pred = f_pred + rng.normal(0.0, precomp_err_std_hz, size=f_pred.shape)
+                    if precomp_quant_hz is not None and precomp_quant_hz > 0.0:
+                        f_pred = np.round(f_pred / precomp_quant_hz) * precomp_quant_hz
+                eps_f = np.abs(fd_hz_t - f_pred)
+                T_sym = 1.0 / (float(config.get("scs_khz", 30)) * 1e3)
+                ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+                snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
+                snr_lin_wb_t = snr_lin_wb_t / ici_fac
+            elif config.get("doppler_residual_fraction", 0.0) > 0.0:
+                eps_f = np.abs(fd_hz_t) * float(config.get("doppler_residual_fraction", 0.0))
+                T_sym = 1.0 / (float(config.get("scs_khz", 30)) * 1e3)
+                ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+                snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
+                snr_lin_wb_t = snr_lin_wb_t / ici_fac
+
+        # Apply TA misalignment penalty if enabled
+        if enable_ta and orbit_model is not None:
+            # Update TA commands periodically using delayed tau and quantization
+            if (t % ta_update) == 0:
+                t_src = max(0, t - ta_latency)
+                _, _, tau_src, _ = orbit_model.get_geometry(ue_pos, t_src)
+                # Quantize to TA step
+                step_s = max(ta_step_us, 1e-9) * 1e-6
+                ta_cmd_s = np.round(tau_src / step_s) * step_s
+            # Compute misalignment
+            e_us = np.abs(tau_s_t - ta_cmd_s) * 1e6
+            # Threshold beyond which CP cannot fully absorb
+            thr_us = max(0.0, cp_us - ta_margin_us)
+            if np.any(e_us > thr_us):
+                if ta_drop:
+                    # Zero out SNRs for offending UEs
+                    mask = (e_us > thr_us)
+                    if np.any(mask):
+                        snr_lin_t[mask, :] = 0.0
+                        snr_lin_wb_t[mask] = 0.0
+                else:
+                    # Smooth penalty proportional to excess beyond threshold
+                    excess = np.maximum(0.0, e_us - thr_us)
+                    # Penalty factor in [0,1]; stronger with larger exponent
+                    factor = np.clip(1.0 - (excess / max(cp_us, 1e-6)), 0.0, 1.0) ** max(ta_exp, 1.0)
+                    snr_lin_t = snr_lin_t * factor.reshape(-1, 1)
+                    snr_lin_wb_t = snr_lin_wb_t * factor
         mcs_params = {
             "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
             "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -919,7 +992,8 @@ def run_once(config: Dict) -> Dict:
 
     # Optional time variation
     time_series = build_time_variation_if_enabled(
-        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng, metric_override
+        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng,
+        None if config.get("enable_time_varying", False) else metric_override
     )
     mcs_params = {
         "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
@@ -956,7 +1030,7 @@ def run_once(config: Dict) -> Dict:
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
         if config.get("baseline_block_mode", True):
-            base_se = pf_schedule_radiomap_blocks(
+            base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
                 overhead_eff=config.get("overhead_eff", 1.0),
@@ -974,7 +1048,7 @@ def run_once(config: Dict) -> Dict:
                 rng=rng,
             )
         else:
-            base_se = pf_schedule_baseline(
+            base_se_default = pf_schedule_baseline(
                 cap_wb, Z, T, beta=config["pf_beta"],
                 snr_lin_wb=snr_lin_wb,
                 overhead_eff=config.get("overhead_eff", 1.0),
@@ -987,6 +1061,20 @@ def run_once(config: Dict) -> Dict:
                 cap_prb=cap,
                 snr_lin_time_prb=time_series["snr_time"]
             )
+        # Always compute a simple wideband PF baseline (no PRB awareness)
+        base_se_simple = pf_schedule_baseline(
+            cap_wb, Z, T, beta=config["pf_beta"],
+            snr_lin_wb=snr_lin_wb,
+            overhead_eff=config.get("overhead_eff", 1.0),
+            use_mcs=config.get("use_mcs", False),
+            power_split=config.get("power_split", False),
+            mcs_params=mcs_params,
+            se_metric_time=se_time_wb,
+            snr_lin_wb_time=time_series["snr_wb_time"],
+            snr_lin_prb=None,
+            cap_prb=None,
+            snr_lin_time_prb=None,
+        )
         if config.get("sched_block_mode", False):
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -1022,7 +1110,7 @@ def run_once(config: Dict) -> Dict:
             sched_stats = None
     else:
         if config.get("baseline_block_mode", True):
-            base_se = pf_schedule_radiomap_blocks(
+            base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
                 overhead_eff=config.get("overhead_eff", 1.0),
@@ -1040,7 +1128,7 @@ def run_once(config: Dict) -> Dict:
                 rng=rng,
             )
         else:
-            base_se = pf_schedule_baseline(
+            base_se_default = pf_schedule_baseline(
                 cap_wb, Z, T, beta=config["pf_beta"],
                 snr_lin_wb=snr_lin_wb,
                 overhead_eff=config.get("overhead_eff", 1.0),
@@ -1050,6 +1138,20 @@ def run_once(config: Dict) -> Dict:
                 snr_lin_prb=snr_lin,
                 cap_prb=cap,
             )
+        # Simple wideband PF baseline for static snapshot
+        base_se_simple = pf_schedule_baseline(
+            cap_wb, Z, T, beta=config["pf_beta"],
+            snr_lin_wb=snr_lin_wb,
+            overhead_eff=config.get("overhead_eff", 1.0),
+            use_mcs=config.get("use_mcs", False),
+            power_split=config.get("power_split", False),
+            mcs_params=mcs_params,
+            se_metric_time=None,
+            snr_lin_wb_time=None,
+            snr_lin_prb=None,
+            cap_prb=None,
+            snr_lin_time_prb=None,
+        )
         if config.get("sched_block_mode", False):
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -1083,9 +1185,11 @@ def run_once(config: Dict) -> Dict:
             sched_stats = None
 
     return {
-        "avg_se_baseline": base_se,
+        "avg_se_baseline_default": base_se_default,
+        "avg_se_baseline_simple": base_se_simple,
         "avg_se_radiomap": map_se,
-        "improvement_pct": (map_se - base_se) / max(1e-9, base_se) * 100.0,
+        "improvement_vs_default_pct": (map_se - base_se_default) / max(1e-9, base_se_default) * 100.0,
+        "improvement_vs_simple_pct": (map_se - base_se_simple) / max(1e-9, base_se_simple) * 100.0,
         "R_xyz_dbm": R_xyz_dbm,
         "ue_pos": ue_pos,
         "cap": cap,
@@ -1099,18 +1203,22 @@ def run_once(config: Dict) -> Dict:
     }
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
-    base_list, map_list, imp_list = [], [], []
+    base_def_list, base_simp_list, map_list, imp_def_list, imp_simp_list = [], [], [], [], []
     for s in seeds:
         c2 = dict(config)
         c2["seed"] = int(s)
         out = run_once(c2)
-        base_list.append(out["avg_se_baseline"])
+        base_def_list.append(out["avg_se_baseline_default"])
+        base_simp_list.append(out["avg_se_baseline_simple"])
         map_list.append(out["avg_se_radiomap"])
-        imp_list.append(out["improvement_pct"])
+        imp_def_list.append(out["improvement_vs_default_pct"])
+        imp_simp_list.append(out["improvement_vs_simple_pct"])
     return {
-        "baseline": np.array(base_list),
+        "baseline_default": np.array(base_def_list),
+        "baseline_simple": np.array(base_simp_list),
         "radiomap": np.array(map_list),
-        "improvement_pct": np.array(imp_list)
+        "improvement_vs_default_pct": np.array(imp_def_list),
+        "improvement_vs_simple_pct": np.array(imp_simp_list),
     }
 
 # CONFIG is provided by code/config.py
@@ -1121,9 +1229,11 @@ if __name__ == '__main__':
     # -----------------------
     single = run_once(CONFIG)
     print("Single-run results")
-    print(f"  Baseline avg SE (bits/s/Hz): {single['avg_se_baseline']:.3f}")
-    print(f"  RadioMap avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
-    print(f"  Gain (%): {single['improvement_pct']:.2f}")
+    print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
+    print(f"  Baseline-Simple  avg SE (bits/s/Hz): {single['avg_se_baseline_simple']:.3f}")
+    print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
+    print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
+    print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
 
     # -----------------------
     # Run multiple seeds to show robustness
@@ -1131,9 +1241,11 @@ if __name__ == '__main__':
     seeds = np.arange(1, 21)
     multi = run_many(CONFIG, seeds)
     print("\nMulti-seed summary (N=20)")
-    print(f"  Baseline avg SE: {multi['baseline'].mean():.3f} ± {multi['baseline'].std():.3f}")
-    print(f"  RadioMap avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
-    print(f"  Gain median: {np.median(multi['improvement_pct']):.2f}% (min={multi['improvement_pct'].min():.2f}%, max={multi['improvement_pct'].max():.2f}%)")
+    print(f"  Baseline-Default avg SE: {multi['baseline_default'].mean():.3f} ± {multi['baseline_default'].std():.3f}")
+    print(f"  Baseline-Simple  avg SE: {multi['baseline_simple'].mean():.3f} ± {multi['baseline_simple'].std():.3f}")
+    print(f"  RadioMap         avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
+    print(f"  Gain vs Default median: {np.median(multi['improvement_vs_default_pct']):.2f}% (min={multi['improvement_vs_default_pct'].min():.2f}%, max={multi['improvement_vs_default_pct'].max():.2f}%)")
+    print(f"  Gain vs Simple  median: {np.median(multi['improvement_vs_simple_pct']):.2f}% (min={multi['improvement_vs_simple_pct'].min():.2f}%, max={multi['improvement_vs_simple_pct'].max():.2f}%)")
 
     # -----------------------
     # Plots
@@ -1154,9 +1266,9 @@ if __name__ == '__main__':
 
     # 1) Improvement distribution
     plt.figure(figsize=(6,4))
-    plt.hist(multi["improvement_pct"], bins=10, edgecolor='black')
-    plt.title("Radio Map–aware gain distribution across seeds")
-    plt.xlabel("Gain vs. baseline (%)")
+    plt.hist(multi["improvement_vs_default_pct"], bins=10, edgecolor='black')
+    plt.title("Radio Map–aware gain vs Default baseline")
+    plt.xlabel("Gain vs. Default baseline (%)")
     plt.ylabel("Count")
     plt.tight_layout()
     maybe_finalize("gain_distribution.png")
