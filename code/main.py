@@ -16,6 +16,7 @@ import math
 import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Optional, Union
 import os
+import json
 from scipy.io import loadmat
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
@@ -35,8 +36,12 @@ from ntn_cfo import compute_residual_cfo_hz, ici_factor_from_cfo, ptrs_tracking_
 from ntn_csi import snr_to_se_sched
 from ho import HOManager
 from rach import RachManager
+try:
+    from rach_ntn import RachManagerNTN
+except Exception:
+    RachManagerNTN = None
 from harq import HarqManager, HarqManagerFull
-from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file
+from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file, register_bler_curves_from_file
 
 # -----------------------
 # Utility conversions
@@ -1013,8 +1018,38 @@ def pf_schedule_radiomap_blocks(
             li, ri = int(l_idx[ue]), int(r_idx[ue])
             block_se_pred[ue] = pred_block_se(ue, li, ri)
 
+        # If HARQ has pending retransmissions with resource constraints, pre-assign their blocks
+        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_requirements'):
+            try:
+                reqs = harq_mgr.get_retx_requirements()
+                for ue_req, (li0, ri0) in reqs.items():
+                    li0 = max(0, int(li0)); ri0 = min(Z-1, int(ri0))
+                    # Skip if UE masked or UE can't be scheduled
+                    if (mask_t is not None) and (not mask_t[ue_req]):
+                        continue
+                    if not harq_mgr.can_schedule(ue_req):
+                        continue
+                    # Assign PRBs if free
+                    can_assign = True
+                    for zz in range(li0, ri0+1):
+                        if winners[zz] >= 0:
+                            can_assign = False
+                            break
+                    if not can_assign:
+                        continue
+                    for zz in range(li0, ri0+1):
+                        winners[zz] = int(ue_req)
+                    l_idx[ue_req] = li0
+                    r_idx[ue_req] = ri0
+                    k_assigned[ue_req] = (ri0 - li0 + 1)
+                    block_se_pred[ue_req] = pred_block_se(int(ue_req), li0, ri0)
+            except Exception:
+                pass
+
         # Greedy allocation until all PRBs assigned
         assigned_cnt = 0
+        # Count already assigned by pre-assignment
+        assigned_cnt = int(np.sum(winners >= 0))
         while assigned_cnt < Z:
             # Build best action per UE: seed or grow L/R
             best_delta = -1e9
@@ -1127,6 +1162,7 @@ def pf_schedule_radiomap_blocks(
                     'sinr_vec_db': 10.0 * np.log10(np.maximum(snr_true[ue, li:ri + 1], 1e-12)),
                     'n_prb': (ri - li + 1),
                     'eesm_beta_db': float(eesm_beta_db),
+                    'li': li, 'ri': ri,
                 }
             harq_mgr.on_scheduled_blocks(sched_info)
         else:
@@ -1430,7 +1466,16 @@ def run_once(config: Dict) -> Dict:
         ho_mgr = HOManager(config, orbit_model_meas, ue_pos)
         mask_ho = ho_mgr.build_mask(T)
         centers_time = ho_mgr.events.get("serving_centers_time", None)
-        ra_mgr = RachManager(config, ue_pos)
+        if bool(config.get("enable_rach_ntn", False)) and (RachManagerNTN is not None):
+            # Approximate RTT in ms based on geometry if available
+            rt_ms = 5.0
+            if orbit_model_meas is not None:
+                # Derive one-way tau median then RTT≈2*tau
+                _, _, tau_s0, _ = orbit_model_meas.get_geometry(ue_pos, 0)
+                rt_ms = float(np.median(tau_s0) * 2 * 1e3)
+            ra_mgr = RachManagerNTN(config, ue_pos, rt_prop_delay_ms=rt_ms)
+        else:
+            ra_mgr = RachManager(config, ue_pos)
         mask_ra = ra_mgr.build_mask(T, ho_mgr.events.get("ho_start", []))
         ue_mask_time = np.logical_and(mask_ho, mask_ra)
         events["ho"] = ho_mgr.events
@@ -1451,6 +1496,12 @@ def run_once(config: Dict) -> Dict:
             register_mcs_tables_from_file(config.get("mcs_3gpp_table_path"))
     except Exception as e:
         print(f"[WARN] Failed to load 3GPP MCS tables: {e}")
+    # Register BLER curves if provided
+    try:
+        if config.get("bler_curve_path"):
+            register_bler_curves_from_file(config.get("bler_curve_path"))
+    except Exception as e:
+        print(f"[WARN] Failed to load BLER curves: {e}")
     mcs_params = {
         "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
         "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -1517,7 +1568,8 @@ def run_once(config: Dict) -> Dict:
         # ue_mask_time/events already computed above
 
         # Optional HARQ (Stage-2 deferral or full Stage-3-like)
-        harq_stats = None
+        harq_stats_base = None
+        harq_stats_map = None
         harq_mgr_base = None
         harq_mgr_map = None
         if bool(config.get("enable_harq_full", False)):
@@ -1661,11 +1713,16 @@ def run_once(config: Dict) -> Dict:
             )
             sched_stats = None
         # Collect HARQ statistics if available
+        if harq_mgr_base is not None and hasattr(harq_mgr_base, 'get_stats'):
+            try:
+                harq_stats_base = harq_mgr_base.get_stats()
+            except Exception:
+                harq_stats_base = None
         if harq_mgr_map is not None and hasattr(harq_mgr_map, 'get_stats'):
             try:
-                harq_stats = harq_mgr_map.get_stats()
+                harq_stats_map = harq_mgr_map.get_stats()
             except Exception:
-                harq_stats = None
+                harq_stats_map = None
     else:
         if config.get("baseline_block_mode", True):
             base_se_default = pf_schedule_radiomap_blocks(
@@ -1767,9 +1824,11 @@ def run_once(config: Dict) -> Dict:
                 ue_mask_time=ue_mask_time,
             )
             sched_stats = None
-        harq_stats = None
+        harq_stats_base = None
+        harq_stats_map = None
 
-    return {
+    # Optional JSON report with per-UE throughput/fairness and events
+    report = {
         "avg_se_baseline_default": base_se_default,
         "avg_se_baseline_simple": base_se_simple,
         "avg_se_baseline_subband": base_se_subband,
@@ -1787,9 +1846,57 @@ def run_once(config: Dict) -> Dict:
         "tau_time": None if time_series is None else time_series.get("tau_time"),
         "fd_time": None if time_series is None else time_series.get("fd_time"),
         "sched_stats": None,
-        "harq_stats": harq_stats,
+        "harq_stats_base": harq_stats_base,
+        "harq_stats_map": harq_stats_map,
         "events": None if time_series is None else events if 'ue_mask_time' in locals() else None,
     }
+
+    # Compute per-UE avg SE (goodput) from acked bits if available
+    try:
+        re_per_prb = re_per_prb_from_config(CONFIG)
+        T_total = int(CONFIG.get("T", T))
+        Z_total = cap.shape[1]
+        def per_ue_avg_se(hs):
+            if not hs or not isinstance(hs, dict) or 'acked_bits_per_ue' not in hs:
+                return None
+            bits = np.asarray(hs['acked_bits_per_ue'], dtype=float)
+            return (bits / float(max(1, re_per_prb) * T_total * Z_total)).tolist()
+        se_ue_base = per_ue_avg_se(harq_stats_base)
+        se_ue_map = per_ue_avg_se(harq_stats_map)
+        report["per_ue_avg_se_base"] = se_ue_base
+        report["per_ue_avg_se_map"] = se_ue_map
+        # Jain's fairness index
+        def jain(x):
+            if not x:
+                return None
+            arr = np.asarray(x, dtype=float)
+            s = np.sum(arr)
+            s2 = np.sum(arr * arr)
+            n = arr.size
+            return float((s * s) / max(1e-12, n * s2)) if s2 > 0 else 0.0
+        report["fairness_jain_base"] = jain(se_ue_base) if se_ue_base is not None else None
+        report["fairness_jain_map"] = jain(se_ue_map) if se_ue_map is not None else None
+    except Exception:
+        pass
+
+    # Optionally write JSON to output directory
+    try:
+        if bool(CONFIG.get("write_json_report", False)):
+            out_dir = CONFIG.get("plot_dir", "output")
+            os.makedirs(out_dir, exist_ok=True)
+            name = CONFIG.get("report_basename", "summary")
+            path = os.path.join(out_dir, f"{name}.json")
+            def serialize(obj):
+                import numpy as _np
+                if isinstance(obj, _np.ndarray):
+                    return obj.tolist()
+                raise TypeError
+            with open(path, 'w') as f:
+                json.dump(report, f, default=serialize)
+    except Exception as e:
+        print(f"[WARN] Failed to write JSON report: {e}")
+
+    return report
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
     base_def_list, base_simp_list, base_sub_list, map_list, imp_def_list, imp_simp_list, imp_sub_list = [], [], [], [], [], [], []

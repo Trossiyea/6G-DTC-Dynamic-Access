@@ -156,6 +156,17 @@ CONFIG.update({
     "enable_rach_gating": True,
     "rach_on_ho": True,                 # require a short RA after HO completes
     "rach_proc_ttis": 5,                # RA procedure gating length
+    # NTN RACH (optional, more compliant state机)
+    "enable_rach_ntn": False,
+    "rach_period_ttis": 10,
+    "rach_window_ttis": 4,
+    "rach_backoff_max_ttis": 20,
+    "rach_max_retries": 6,
+    "rach_fail_timeout_ttis": 200,
+    "rach_detect_snr_thr_db": -6.0,
+    "rach_preamble_tx_dbm": 20.0,
+    "rach_pwr_ramp_step_db": 2.0,
+    "rar_ta_latency_ttis": 2,
 })
 
 # Stage-2: HARQ ACK deferral and CSI periodicity (defaults kept conservative)
@@ -175,6 +186,8 @@ CONFIG.update({
     # BLER curve parameters (AWGN-like sigmoid)
     "bler_slope_db": 1.0,
     "bler_margin_db": 1.5,
+    # Optional external BLER curves JSON (per table/MCS idx). If set, overrides AWGN model.
+    "bler_curve_path": None,
     # OLLA steps
     "olla_step_up_db": 0.1,
     "olla_step_down_db": 0.1,

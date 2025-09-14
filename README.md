@@ -4,6 +4,28 @@ Overview
 - NR/NTN 上行仿真，支持 Radio Map 感知的 PRB 调度与 3GPP 关键流程近似：功控、CSI/CQI 周期/时延、HARQ ACK 延后、NTN 频率/定时预补偿、A3 类测量/切换，以及 Skyfield/SGP4 轨道与多波束（量化/跳波束）几何。
 - 输出平均频谱效率、改进比，以及多普勒/时延等时序指标与图表。
 
+What's New (P0)
+- 38.214 MCS/TBS + BLER/OLLA + HARQ 全流程（保持默认关闭，向后兼容）
+  - 新增 `code/link_adapt.py`：
+    - 近似 Table‑1/2/3 MCS 候选集、38.214 风格 TBS 计算（小/大 TBS 分段、CB 分段、8bit 对齐）
+    - BLER（AWGN logistic 可配置 slope/margin）、OLLA（±步长、目标 BLER）
+    - EESM 与多次传输软合并（effective SINR 合并）；RE/PRB 计算（按 DMRS/OH/CP）
+    - 3GPP MCS 表加载：`register_mcs_tables_from_file(path)`，支持 `mcs_table_kind='3gpp_table_1/2/3'`
+  - 新增 `HarqManagerFull`（ACK/NACK、RV 循环、软合并、OLLA 更新、TBS 记账、统计输出）
+  - 调度器块路径集成（`pf_schedule_radiomap_blocks`）：
+    - 每 TTI 消费 ACK 比特计入吞吐；重传 UE 优先级；新传/重传统一交由 HARQ 管理
+  - 配置扩展（默认值不变）：`enable_harq_full`、`harq_target_bler`、`harq_max_retx`、
+    `olla_step_up_db/olla_step_down_db/olla_init_offset_db`、`bler_slope_db/bler_margin_db`、
+    `pusch_dmrs_sym_per_slot/dmrs_re_per_sym_per_prb/oh_prb`、`mcs_3gpp_table_path`、`mcs_table_kind`
+
+3GPP MCS 表（外部 JSON）
+- 位置：`docs/mcs_tables_38_214.json`（你已提供，已验证可用）
+- 模板：`docs/mcs_tables_38_214_template.json`（字段说明与示例）
+- 使用：
+  - 配置 `mcs_3gpp_table_path: "docs/mcs_tables_38_214.json"`
+  - 配置 `mcs_table_kind: "3gpp_table_1" | "3gpp_table_2" | "3gpp_table_3"`
+  - JSON 条目：`{"idx": <int>, "Qm": <2|4|6|8>, "R_x1024": <int或保留>}`（保留项会自动跳过）
+
 主要能力（按阶段）
 - Stage‑1：轨道/波束移动、Doppler/TA 预补偿、CSI 时延、功控、RM 感知调度
 - Stage‑2：HARQ ACK 延后门控、CQI 周期化（hold‑last）、PTRS CFO 跟踪预算推导
@@ -45,10 +67,66 @@ TLE 探针与中心建议
 - A3 测量/触发（替代纯 off-axis TTT）
   - `enable_a3_ho: True`、`ssb_period_ttis`、`a3_hysteresis_db`、`a3_ttt_meas`、`a3_neighbor_k`
 - HARQ/CSI/频率/定时
-  - HARQ：`enable_harq_deferral`、`harq_max_procs`、`harq_ack_delay_ttis`
+  - HARQ（最小门控）：`enable_harq_deferral`、`harq_max_procs`、`harq_ack_delay_ttis`
+  - HARQ（全流程）：`enable_harq_full`、`harq_target_bler`、`harq_max_retx`、
+    `olla_step_up_db/olla_step_down_db/olla_init_offset_db`、`harq_retx_priority_bonus`
   - CQI 周期：`enable_cqi_periodicity`、`cqi_period_ttis`、`cqi_offset_ttis`
   - PTRS CFO 预算：`ptrs_cfo_track_hz` 显式，或 `ptrs_symbols_per_slot` + `ptrs_track_k_factor` 推导
   - NTN 预补偿/TA：`enable_ntn_freq_precomp`、`enable_ta_model` 相关参数
+
+MCS/TBS/BLER 配置
+- 3GPP 表：`mcs_3gpp_table_path` + `mcs_table_kind='3gpp_table_1/2/3'`
+- 近似表：`mcs_table_kind='table_1_64qam'|'table_2_256qam'|'table_3_low_se'`
+- TBS/RE：`pusch_dmrs_sym_per_slot`、`dmrs_re_per_sym_per_prb`、`oh_prb`
+- BLER/OLLA：`bler_slope_db`、`bler_margin_db`、`harq_target_bler`、`olla_step_up_db/olla_step_down_db`
+- EESM：`sched_eesm_beta_db`（块调度）、`baseline_eesm_beta_db`（子带基线）
+
+示例：快速验证（Python 调用）
+```python
+from copy import deepcopy
+from config import CONFIG
+from main import run_once
+
+cfg = deepcopy(CONFIG)
+cfg.update({
+  'enable_time_varying': True,
+  'enable_orbit_dynamics': False,
+  'mcs_3gpp_table_path': 'docs/mcs_tables_38_214.json',
+  'mcs_table_kind': '3gpp_table_2',
+  'enable_harq_full': True,
+  'harq_ack_delay_ttis': 4,
+  'harq_max_procs': 8,
+  'harq_target_bler': 0.1,
+  'bler_margin_db': 2.0,
+  'bler_slope_db': 1.5,
+  'sched_eesm_beta_db': 1.5,
+  'baseline_eesm_beta_db': 1.5,
+  # 频谱异质性/时变
+  'K_interferers': 12,
+  'rm_flicker_db_std': 2.0,
+  # CSI 时延对比
+  'baseline_csi_delay_ttis': 8,
+  'rm_csi_delay_ttis': 0,
+  # 调度：两者均用块调度
+  'baseline_block_mode': True,
+  'sched_block_mode': True,
+  'sched_require_contiguous': True,
+  'N_UE': 25,
+  'T': 80,
+  'seed': 780,
+  'save_plots': False,
+  'show_plots': False,
+})
+res = run_once(cfg)
+print('Baseline-Default avg SE:', res['avg_se_baseline_default'])
+print('RadioMap         avg SE:', res['avg_se_radiomap'])
+print('Gain vs Default (%):', res['improvement_vs_default_pct'])
+```
+
+参考结果（一次运行）
+- Baseline-Default avg SE ≈ 2.00
+- RadioMap         avg SE ≈ 2.39
+- Gain vs Default  ≈ +19.4%
 
 Radio Map 与可重复性
 - `radio_map_mat_path` 可指定外部 3D 干扰图（dBm/mW），默认自生成。
@@ -75,3 +153,7 @@ Radio Map 与可重复性
 Roadmap（可选）
 - 更完整的 ECEF 速度/参考框架统一；A5/事件触发与 L1/L3 滤波；全 ECEF/本地投影映射；真实波束图与旁瓣模型；更精细的 BLER/OLLA/闭环功控建模。
 
+附录：常见问题
+- Matplotlib 缓存写权限：`export MPLCONFIGDIR=$(mktemp -d)`
+- 3GPP 表加载失败：检查 `mcs_3gpp_table_path` 路径、JSON 格式与是否含有保留条目（保留会被跳过）
+- 想要固定 BLER 目标：调整 `bler_margin_db`/`bler_slope_db` 与 `sched_eesm_beta_db`，再用 OLLA 步长微调

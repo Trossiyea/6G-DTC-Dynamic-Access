@@ -118,6 +118,11 @@ class HarqManagerFull:
         self._nack_count = 0
         self._mcs_counts: Dict[int, int] = {}
         self._olla_hist_avg: List[float] = []
+        # Per-UE accumulated acked bits (for diagnostics)
+        self._acked_bits_per_ue = np.zeros(self.N, dtype=float)
+        # Initial transmission outcome stats
+        self._init_ack = 0
+        self._init_nack = 0
 
     # ------------------------
     # Public API used by schedulers
@@ -153,12 +158,17 @@ class HarqManagerFull:
                 if is_ack:
                     self._ack_count += 1
                     ack_bits[u] += float(tb.get("tbs_bits", 0))
+                    self._acked_bits_per_ue[u] += float(tb.get("tbs_bits", 0))
+                    if int(tb.get('n_retx', 0)) == 0:
+                        self._init_ack += 1
                     # Free the process
                     self._procs[u][pidx] = None
                     if self._outstanding[u] > 0:
                         self._outstanding[u] -= 1
                 else:
                     self._nack_count += 1
+                    if int(tb.get('n_retx', 0)) == 0:
+                        self._init_nack += 1
                     # Mark for retransmission
                     self._retx[u] = (pidx, tb_id)
                 i += 1
@@ -187,6 +197,7 @@ class HarqManagerFull:
           'sinr_vec_db': np.ndarray[PRB],
           'n_prb': int,
           'eesm_beta_db': float,
+          'li': int, 'ri': int,  # contiguous PRB block indices (resource consistency)
         }
         """
         from link_adapt import eff_sinr_eesm_db, combine_eff_sinr_db, choose_mcs_from_sinr, calc_tbs_bits
@@ -250,6 +261,8 @@ class HarqManagerFull:
                     'mcs_Qm': int(mcs.Qm),
                     'mcs_R': float(mcs.R),
                     'tbs_bits': int(tbs_bits),
+                    'li': int(d.get('li', 0)),
+                    'ri': int(d.get('ri', d.get('li', 0) + int(d.get('n_prb', 1)) - 1)),
                 }
                 self._tb_next[u] += 1
                 self._procs[u][pidx] = tb
@@ -289,6 +302,20 @@ class HarqManagerFull:
         # Stochastic decision
         return (np.random.random() > p)
 
+    def get_retx_requirements(self) -> Dict[int, Tuple[int, int]]:
+        """Return desired PRB block (li,ri) for UEs pending retransmission to keep resource consistency."""
+        out: Dict[int, Tuple[int, int]] = {}
+        for u in range(self.N):
+            r = self._retx[u]
+            if r is None:
+                continue
+            pidx, tbid = r
+            tb = self._procs[u][pidx]
+            if tb is None or tb.get('tb_id') != tbid:
+                continue
+            out[u] = (int(tb.get('li', 0)), int(tb.get('ri', 0)))
+        return out
+
     def get_stats(self) -> Dict:
         """Return collected HARQ/link-adaptation statistics."""
         return {
@@ -297,4 +324,7 @@ class HarqManagerFull:
             'mcs_counts': dict(self._mcs_counts),
             'olla_offset_avg': list(self._olla_hist_avg),
             'olla_last_per_ue': [float(o.offset_db) for o in self._olla],
+            'acked_bits_per_ue': self._acked_bits_per_ue.tolist(),
+            'initial_ack_count': int(self._init_ack),
+            'initial_nack_count': int(self._init_nack),
         }

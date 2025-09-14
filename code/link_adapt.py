@@ -109,6 +109,7 @@ def _table3_low_se() -> List[MCS]:
 
 
 _MCS_TABLES_3GPP: Dict[str, List[MCS]] = {}
+_BLER_CURVES: Dict[str, Dict[int, Tuple[np.ndarray, np.ndarray]]] = {}
 
 
 def register_mcs_tables_from_file(path: str) -> None:
@@ -146,6 +147,47 @@ def register_mcs_tables_from_file(path: str) -> None:
         # sort by idx for safety
         lst.sort(key=lambda m: m.idx)
         _MCS_TABLES_3GPP[key_out] = lst
+
+
+def register_bler_curves_from_file(path: str) -> None:
+    """Register BLER vs SINR curves per MCS and table.
+
+    JSON schema example:
+    {
+      "3gpp_table_2": [
+        {"idx": 10, "sinr_db": [...], "bler": [...]},
+        ...
+      ],
+      "3gpp_table_1": [...],
+      "table_1_64qam": [...]
+    }
+    - `bler` values clipped to [0,1].
+    - For unknown tables or malformed entries, silently skip.
+    """
+    import json, os
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"BLER curve file not found: {path}")
+    with open(path, 'r') as f:
+        data = json.load(f)
+    for tbl, arr in data.items():
+        try:
+            cur: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+            for ent in arr:
+                idx = int(ent.get("idx"))
+                x = np.asarray(ent.get("sinr_db", []), dtype=float)
+                y = np.asarray(ent.get("bler", []), dtype=float)
+                if x.size < 2 or y.size != x.size:
+                    continue
+                y = np.clip(y, 0.0, 1.0)
+                # Ensure increasing x for interpolation
+                order = np.argsort(x)
+                x = x[order]
+                y = y[order]
+                cur[idx] = (x, y)
+            if cur:
+                _BLER_CURVES[str(tbl).lower()] = cur
+        except Exception:
+            continue
 
 
 def get_mcs_table(kind: str) -> List[MCS]:
@@ -227,6 +269,29 @@ def bler_awgn_sigmoid(
     return np.clip(p, 0.0, 1.0)
 
 
+def bler_from_registered_curves(
+    sinr_eff_db: np.ndarray,
+    mcs: MCS,
+    table_kind: Optional[str],
+) -> Optional[np.ndarray]:
+    """Interpolate BLER from registered curves if available for (table_kind, mcs.idx).
+    Returns None if not available.
+    """
+    if table_kind is None:
+        return None
+    tbl = _BLER_CURVES.get(str(table_kind).lower())
+    if not tbl:
+        return None
+    xy = tbl.get(int(mcs.idx))
+    if xy is None:
+        return None
+    x, y = xy
+    xx = np.asarray(sinr_eff_db, dtype=float)
+    # Extrapolate with edge values
+    y_interp = np.interp(xx, x, y, left=y[0], right=y[-1])
+    return np.clip(y_interp, 0.0, 1.0)
+
+
 class OLLA:
     def __init__(self, step_up_db: float = 0.1, step_down_db: float = 0.1, init_offset_db: float = 0.0, p_target: float = 0.1):
         self.step_up_db = float(step_up_db)
@@ -258,7 +323,11 @@ def choose_mcs_from_sinr(
     cands = get_mcs_table(table_kind)
     best = cands[0]
     for m in cands:
-        p = float(bler_awgn_sigmoid(sinr_eff_db, m, slope_db=slope_db, margin_db=margin_db))
+        p_curve = bler_from_registered_curves(sinr_eff_db, m, table_kind)
+        if p_curve is None:
+            p = float(bler_awgn_sigmoid(sinr_eff_db, m, slope_db=slope_db, margin_db=margin_db))
+        else:
+            p = float(np.squeeze(p_curve))
         if p <= target_bler and m.se >= best.se:
             best = m
     # If all exceed target, pick the lowest SE

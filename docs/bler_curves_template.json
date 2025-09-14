@@ -1,0 +1,30 @@
+{
+  "notes": [
+    "Template BLER–SINR curves per table/MCS idx. Replace with your link-level curves.",
+    "Each entry: { idx, sinr_db[], bler[] }. Monotonic in SINR is recommended.",
+    "You can list multiple tables: '3gpp_table_1', '3gpp_table_2', etc."
+  ],
+  "3gpp_table_2": [
+    {
+      "idx": 10,
+      "sinr_db": [-5, -3, -1, 0, 1, 2, 3, 4, 5, 7, 10, 14],
+      "bler":    [0.98,0.95,0.85,0.70,0.55,0.42,0.30,0.20,0.13,0.06,0.02,0.005]
+    },
+    {
+      "idx": 14,
+      "sinr_db": [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14],
+      "bler":    [0.99,0.97,0.90,0.78,0.62,0.48,0.36,0.20,0.10,0.05,0.02]
+    },
+    {
+      "idx": 21,
+      "sinr_db": [2, 3, 4, 5, 6, 7, 9, 11, 13, 15],
+      "bler":    [0.99,0.95,0.85,0.72,0.58,0.43,0.25,0.14,0.07,0.03]
+    },
+    {
+      "idx": 24,
+      "sinr_db": [4, 5, 6, 7, 8, 9, 11, 13, 15, 17],
+      "bler":    [0.99,0.95,0.88,0.76,0.62,0.47,0.30,0.18,0.10,0.05]
+    }
+  ]
+}
+
