@@ -139,6 +139,20 @@ def test_ho_rach_gating_events():
     # Note: gating can remove poor-geometry UEs and sometimes increase avg SE; we only require events.
 
 
+def test_harq_full_basic():
+    # Smoke test: full HARQ + TBS/BLER/OLLA runs without errors and yields finite SE
+    out = run_with({
+        "enable_time_varying": True,
+        "enable_orbit_dynamics": False,
+        "enable_harq_full": True,
+        "harq_max_procs": 8,
+        "harq_ack_delay_ttis": 5,
+        "T": 30,
+        "N_UE": 10,
+        "seed": 88,
+    })
+    assert np.isfinite(out["avg_se_radiomap"]) and out["avg_se_radiomap"] >= 0.0
+
 if __name__ == "__main__":
     test_power_control_effect()
     test_csi_delay_changes_outcome()
@@ -148,4 +162,5 @@ if __name__ == "__main__":
     test_mcs_table_equivalence()
     test_cqi_mapping_boundaries()
     test_ho_rach_gating_events()
+    test_harq_full_basic()
     print("All feature tests passed.")

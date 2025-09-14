@@ -163,6 +163,26 @@ CONFIG.update({
     "enable_harq_deferral": False,      # off by default to preserve baseline behavior
     "harq_max_procs": 16,               # typical NR max processes
     "harq_ack_delay_ttis": 10,          # example ACK delay (TTIs)
+    # Full HARQ + TBS/BLER/OLLA (P0)
+    "enable_harq_full": False,          # keep off by default
+    "harq_target_bler": 0.1,
+    "harq_max_retx": 4,
+    "mcs_table_kind": "table_1_64qam",  # options: table_1_64qam, table_2_256qam, table_3_low_se
+    # PUSCH DMRS/overhead for N_RE computation
+    "pusch_dmrs_sym_per_slot": 1,
+    "dmrs_re_per_sym_per_prb": 6,
+    "oh_prb": 0,
+    # BLER curve parameters (AWGN-like sigmoid)
+    "bler_slope_db": 1.0,
+    "bler_margin_db": 1.5,
+    # OLLA steps
+    "olla_step_up_db": 0.1,
+    "olla_step_down_db": 0.1,
+    "olla_init_offset_db": 0.0,
+    # Retransmission scheduling priority boost in PF metric (additive)
+    "harq_retx_priority_bonus": 0.0,
+    # Optional path to 3GPP MCS tables (JSON). If set, you can choose '3gpp_table_1/2/3'.
+    "mcs_3gpp_table_path": None,
     "enable_cqi_periodicity": False,    # hold-last CQI reporting with period/offset
     # If enable_cqi_periodicity is True, use cqi_period_ttis/cqi_offset_ttis above
 })

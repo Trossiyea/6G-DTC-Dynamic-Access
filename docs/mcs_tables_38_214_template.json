@@ -1,0 +1,49 @@
+{
+  "warning": "Template only. Replace with complete 3GPP TS 38.214 Table 5.1.3.1-1/-2/-3. R_x1024 is code rate multiplied by 1024.",
+  "notes": [
+    "- Each table is an array of entries with fields: idx, Qm, R_x1024.",
+    "- Indices should be contiguous starting at 0 for the chosen table.",
+    "- Qm is modulation order (2=QPSK, 4=16QAM, 6=64QAM, 8=256QAM).",
+    "- R_x1024 is the code rate scaled by 1024 (e.g., R=0.369 -> R_x1024=378).",
+    "- The sample entries below are illustrative only and NOT the official 3GPP values.",
+    "- Provide the full official list for accurate compliance.",
+    "- Save this file and set CONFIG['mcs_3gpp_table_path'] to its path; then set mcs_table_kind to '3gpp_table_1' or '3gpp_table_2' or '3gpp_table_3'."
+  ],
+  "table_1": [
+    { "idx": 0,  "Qm": 2, "R_x1024": 120 },
+    { "idx": 1,  "Qm": 2, "R_x1024": 193 },
+    { "idx": 2,  "Qm": 2, "R_x1024": 308 },
+    { "idx": 3,  "Qm": 2, "R_x1024": 449 },
+    { "idx": 4,  "Qm": 2, "R_x1024": 602 },
+    { "idx": 5,  "Qm": 4, "R_x1024": 378 },
+    { "idx": 6,  "Qm": 4, "R_x1024": 490 },
+    { "idx": 7,  "Qm": 4, "R_x1024": 616 },
+    { "idx": 8,  "Qm": 6, "R_x1024": 455 },
+    { "idx": 9,  "Qm": 6, "R_x1024": 553 },
+    { "idx": 10, "Qm": 6, "R_x1024": 650 },
+    { "idx": 11, "Qm": 6, "R_x1024": 746 }
+  ],
+  "table_2": [
+    { "idx": 0,  "Qm": 2, "R_x1024": 120 },
+    { "idx": 1,  "Qm": 2, "R_x1024": 193 },
+    { "idx": 5,  "Qm": 4, "R_x1024": 378 },
+    { "idx": 6,  "Qm": 4, "R_x1024": 490 },
+    { "idx": 7,  "Qm": 4, "R_x1024": 616 },
+    { "idx": 8,  "Qm": 6, "R_x1024": 553 },
+    { "idx": 9,  "Qm": 6, "R_x1024": 650 },
+    { "idx": 10, "Qm": 6, "R_x1024": 746 },
+    { "idx": 11, "Qm": 8, "R_x1024": 720 },
+    { "idx": 12, "Qm": 8, "R_x1024": 780 },
+    { "idx": 13, "Qm": 8, "R_x1024": 840 },
+    { "idx": 14, "Qm": 8, "R_x1024": 900 }
+  ],
+  "table_3": [
+    { "idx": 0,  "Qm": 2, "R_x1024": 30 },
+    { "idx": 1,  "Qm": 2, "R_x1024": 50 },
+    { "idx": 2,  "Qm": 2, "R_x1024": 76 },
+    { "idx": 3,  "Qm": 2, "R_x1024": 102 },
+    { "idx": 4,  "Qm": 2, "R_x1024": 150 },
+    { "idx": 5,  "Qm": 2, "R_x1024": 200 }
+  ]
+}
+

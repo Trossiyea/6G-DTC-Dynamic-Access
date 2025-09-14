@@ -35,7 +35,8 @@ from ntn_cfo import compute_residual_cfo_hz, ici_factor_from_cfo, ptrs_tracking_
 from ntn_csi import snr_to_se_sched
 from ho import HOManager
 from rach import RachManager
-from harq import HarqManager
+from harq import HarqManager, HarqManagerFull
+from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file
 
 # -----------------------
 # Utility conversions
@@ -647,8 +648,19 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
+        # Apply HARQ feedback and credit goodput if a full HARQ manager is used
         if harq_mgr is not None:
-            harq_mgr.advance_time(t_idx)
+            ack_bits = None
+            try:
+                ack_bits = harq_mgr.advance_time(t_idx)
+            except TypeError:
+                ack_bits = None
+            if ack_bits is not None:
+                from link_adapt import re_per_prb_from_config
+                re_per_prb = re_per_prb_from_config(CONFIG)
+                thr_ack = np.asarray(ack_bits, dtype=float) / float(max(1, re_per_prb))
+                sum_rate += float(np.sum(thr_ack))
+                Rbar = (1 - beta) * Rbar + beta * thr_ack
         if se_metric_time is not None:
             metric_se_t = se_metric_time[t_idx]
         else:
@@ -744,8 +756,8 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
             thr_i[ue] += se * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
-        # Update HARQ after scheduling: mark scheduled UEs (unique)
-        if harq_mgr is not None:
+        # Update HARQ after scheduling: mark scheduled UEs (unique) for minimal manager
+        if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
             harq_mgr.on_scheduled(np.unique(winners))
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
@@ -779,8 +791,19 @@ def pf_schedule_radiomap(cap: np.ndarray,
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
+        # HARQ: realize feedback and credit goodput if full manager is used
         if harq_mgr is not None:
-            harq_mgr.advance_time(t_idx)
+            ack_bits = None
+            try:
+                ack_bits = harq_mgr.advance_time(t_idx)
+            except TypeError:
+                ack_bits = None
+            if ack_bits is not None:
+                from link_adapt import re_per_prb_from_config
+                re_per_prb = re_per_prb_from_config(CONFIG)
+                thr_ack = np.asarray(ack_bits, dtype=float) / float(max(1, re_per_prb))
+                sum_rate += float(np.sum(thr_ack))
+                Rbar = (1 - beta) * Rbar + beta * thr_ack
         metric_base = se_metric_time[t_idx] if se_metric_time is not None else se_metric_arr
         metric = metric_base / Rbar.reshape(-1, 1)  # [UE,Z]
         # Apply per-TTI UE mask
@@ -889,7 +912,17 @@ def pf_schedule_radiomap_blocks(
 
     for t_idx in range(T):
         if harq_mgr is not None:
-            harq_mgr.advance_time(t_idx)
+            ack_bits = None
+            try:
+                ack_bits = harq_mgr.advance_time(t_idx)
+            except TypeError:
+                ack_bits = None
+            if ack_bits is not None:
+                from link_adapt import re_per_prb_from_config
+                re_per_prb = re_per_prb_from_config(CONFIG)
+                thr_ack = np.asarray(ack_bits, dtype=float) / float(max(1, re_per_prb))
+                sum_rate += float(np.sum(thr_ack))
+                Rbar = (1 - beta) * Rbar + beta * thr_ack
         mask_t = None
         if ue_mask_time is not None:
             mask_t = np.asarray(ue_mask_time[t_idx], dtype=bool)
@@ -1002,6 +1035,14 @@ def pf_schedule_radiomap_blocks(
                         se_new = float(se_pred_k1[ue, z0])
                         delta = se_new  # block sum gain for first PRB
                         metric = delta / Rbar[ue]
+                        # Retransmission priority boost, if any
+                        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
+                            try:
+                                _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
+                                if _retx_mask[ue]:
+                                    metric += float(CONFIG.get("harq_retx_priority_bonus", 0.0))
+                            except Exception:
+                                pass
                         if metric > best_delta:
                             best_delta = metric
                             best_action = (ue, int(z0))
@@ -1018,6 +1059,13 @@ def pf_schedule_radiomap_blocks(
                         k_new = k0 + 1
                         delta = k_new * se_new - k0 * se_old
                         metric = delta / Rbar[ue]
+                        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
+                            try:
+                                _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
+                                if _retx_mask[ue]:
+                                    metric += float(CONFIG.get("harq_retx_priority_bonus", 0.0))
+                            except Exception:
+                                pass
                         if metric > best_delta:
                             best_delta = metric
                             best_action = (ue, int(zl))
@@ -1029,6 +1077,13 @@ def pf_schedule_radiomap_blocks(
                         k_new = k0 + 1
                         delta = k_new * se_new - k0 * se_old
                         metric = delta / Rbar[ue]
+                        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
+                            try:
+                                _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
+                                if _retx_mask[ue]:
+                                    metric += float(CONFIG.get("harq_retx_priority_bonus", 0.0))
+                            except Exception:
+                                pass
                         if metric > best_delta:
                             best_delta = metric
                             best_action = (ue, int(zr))
@@ -1051,8 +1106,7 @@ def pf_schedule_radiomap_blocks(
             apply_assign(int(ue_sel), int(z_sel))
             assigned_cnt += 1
 
-        # Compute actual throughput with true SINR (no robust offset) and power split over final blocks
-        thr_i = np.zeros(N_UE, dtype=float)
+        # Compute throughput or register HARQ TBs
         if snr_lin_time is not None:
             snr_true = np.asarray(snr_lin_time[t_idx], dtype=float)
         elif snr_lin is not None:
@@ -1060,22 +1114,37 @@ def pf_schedule_radiomap_blocks(
         else:
             gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap)) - 1.0)
             snr_true = gamma
-        # For each UE, compute per-PRB SE of its block and sum
-        for ue in range(N_UE):
-            k0 = int(k_assigned[ue])
-            if k0 <= 0:
-                continue
-            li, ri = int(l_idx[ue]), int(r_idx[ue])
-            snr_vec = snr_true[ue, li:ri + 1]
-            se_per_prb = _block_se_from_snr_vec(snr_vec, k0 if power_split else 1, use_mcs, mcs_params, eesm_beta_db)
-            thr_i[ue] = k0 * se_per_prb * overhead_eff
 
-        sum_rate += thr_i.sum()
-        Rbar = (1 - beta) * Rbar + beta * thr_i
-        if harq_mgr is not None:
-            # Mark scheduled UEs (those with k_assigned>0)
-            scheduled = np.flatnonzero(k_assigned > 0)
-            harq_mgr.on_scheduled(scheduled)
+        if (harq_mgr is not None) and hasattr(harq_mgr, 'on_scheduled_blocks'):
+            # Register TBs for HARQ manager; credit happens on feedback
+            sched_info: Dict[int, Dict] = {}
+            for ue in range(N_UE):
+                k0 = int(k_assigned[ue])
+                if k0 <= 0:
+                    continue
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                sched_info[int(ue)] = {
+                    'sinr_vec_db': 10.0 * np.log10(np.maximum(snr_true[ue, li:ri + 1], 1e-12)),
+                    'n_prb': (ri - li + 1),
+                    'eesm_beta_db': float(eesm_beta_db),
+                }
+            harq_mgr.on_scheduled_blocks(sched_info)
+        else:
+            # Legacy immediate throughput accumulation
+            thr_i = np.zeros(N_UE, dtype=float)
+            for ue in range(N_UE):
+                k0 = int(k_assigned[ue])
+                if k0 <= 0:
+                    continue
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                snr_vec = snr_true[ue, li:ri + 1]
+                se_per_prb = _block_se_from_snr_vec(snr_vec, k0 if power_split else 1, use_mcs, mcs_params, eesm_beta_db)
+                thr_i[ue] = k0 * se_per_prb * overhead_eff
+            sum_rate += thr_i.sum()
+            Rbar = (1 - beta) * Rbar + beta * thr_i
+            if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
+                scheduled = np.flatnonzero(k_assigned > 0)
+                harq_mgr.on_scheduled(scheduled)
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
@@ -1376,6 +1445,12 @@ def run_once(config: Dict) -> Dict:
         serving_centers_time=centers_time,
         orbit_model=orbit_model_meas,
     )
+    # Register 3GPP MCS tables from file if provided
+    try:
+        if config.get("mcs_3gpp_table_path"):
+            register_mcs_tables_from_file(config.get("mcs_3gpp_table_path"))
+    except Exception as e:
+        print(f"[WARN] Failed to load 3GPP MCS tables: {e}")
     mcs_params = {
         "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
         "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -1441,12 +1516,34 @@ def run_once(config: Dict) -> Dict:
         fd_time = time_series.get("fd_time")
         # ue_mask_time/events already computed above
 
-        # Optional HARQ deferral (Stage-2)
-        harq_mgr = None
-        if bool(config.get("enable_harq_deferral", False)):
-            harq_mgr = HarqManager(num_ue=N_UE,
-                                   num_procs=int(config.get("harq_max_procs", 16)),
-                                   ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)))
+        # Optional HARQ (Stage-2 deferral or full Stage-3-like)
+        harq_stats = None
+        harq_mgr_base = None
+        harq_mgr_map = None
+        if bool(config.get("enable_harq_full", False)):
+            harq_mgr_base = HarqManagerFull(
+                num_ue=N_UE,
+                num_procs=int(config.get("harq_max_procs", 16)),
+                ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                config=config,
+            )
+            harq_mgr_map = HarqManagerFull(
+                num_ue=N_UE,
+                num_procs=int(config.get("harq_max_procs", 16)),
+                ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                config=config,
+            )
+        elif bool(config.get("enable_harq_deferral", False)):
+            harq_mgr_base = HarqManager(
+                num_ue=N_UE,
+                num_procs=int(config.get("harq_max_procs", 16)),
+                ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+            )
+            harq_mgr_map = HarqManager(
+                num_ue=N_UE,
+                num_procs=int(config.get("harq_max_procs", 16)),
+                ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+            )
         if config.get("baseline_block_mode", True):
             base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -1465,7 +1562,7 @@ def run_once(config: Dict) -> Dict:
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
                 ue_mask_time=ue_mask_time,
-                harq_mgr=harq_mgr,
+                harq_mgr=harq_mgr_base,
             )
         else:
             base_se_default = pf_schedule_baseline(
@@ -1482,7 +1579,7 @@ def run_once(config: Dict) -> Dict:
                 snr_lin_time_prb=time_series["snr_time"],
                 force_wideband_throughput=bool(config.get("baseline_force_wideband_throughput", False)),
                 ue_mask_time=ue_mask_time,
-                harq_mgr=harq_mgr,
+                harq_mgr=harq_mgr_base,
             )
         # Always compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
@@ -1544,7 +1641,7 @@ def run_once(config: Dict) -> Dict:
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
                 ue_mask_time=ue_mask_time,
-                harq_mgr=harq_mgr,
+                harq_mgr=harq_mgr_map,
             )
             sched_stats = None
         else:
@@ -1560,9 +1657,15 @@ def run_once(config: Dict) -> Dict:
                 se_metric_time=se_time_rm,
                 snr_lin_time=time_series["snr_time"],
                 ue_mask_time=ue_mask_time,
-                harq_mgr=harq_mgr,
+                harq_mgr=harq_mgr_map,
             )
             sched_stats = None
+        # Collect HARQ statistics if available
+        if harq_mgr_map is not None and hasattr(harq_mgr_map, 'get_stats'):
+            try:
+                harq_stats = harq_mgr_map.get_stats()
+            except Exception:
+                harq_stats = None
     else:
         if config.get("baseline_block_mode", True):
             base_se_default = pf_schedule_radiomap_blocks(
@@ -1664,6 +1767,7 @@ def run_once(config: Dict) -> Dict:
                 ue_mask_time=ue_mask_time,
             )
             sched_stats = None
+        harq_stats = None
 
     return {
         "avg_se_baseline_default": base_se_default,
@@ -1683,6 +1787,7 @@ def run_once(config: Dict) -> Dict:
         "tau_time": None if time_series is None else time_series.get("tau_time"),
         "fd_time": None if time_series is None else time_series.get("fd_time"),
         "sched_stats": None,
+        "harq_stats": harq_stats,
         "events": None if time_series is None else events if 'ue_mask_time' in locals() else None,
     }
 
