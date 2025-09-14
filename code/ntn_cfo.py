@@ -55,3 +55,18 @@ def ici_factor_from_cfo(eps_f_hz: np.ndarray, scs_khz: float) -> np.ndarray:
     eps = np.asarray(eps_f_hz, dtype=float)
     return 1.0 + (2.0 * np.pi * eps * T_sym) ** 2
 
+
+def ptrs_tracking_budget_hz(scs_khz: float,
+                            ptrs_symbols_per_slot: Optional[int] = None,
+                            k_factor: float = 50.0) -> float:
+    """
+    Heuristic PTRS/DMRS-based CFO tracking budget (Hz).
+    - Increase with SCS and the number of PTRS-bearing symbols per slot.
+    - k_factor lumps implementation specifics; default keeps compatibility scale.
+    If ptrs_symbols_per_slot is None or 0, returns 0.
+    """
+    if not ptrs_symbols_per_slot:
+        return 0.0
+    scs = max(float(scs_khz), 1e-9)
+    syms = max(int(ptrs_symbols_per_slot), 0)
+    return float(k_factor) * scs * syms

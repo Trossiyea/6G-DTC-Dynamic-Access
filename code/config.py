@@ -143,3 +143,61 @@ CONFIG.update({
     "baseline_eesm_beta_db": 1.0,                # EESM beta for subband CQI
     "baseline_max_groups_per_ue": 1,             # cap groups per UE (one group per UE)
 })
+
+# Access and mobility gating (Stage-1 minimal)
+CONFIG.update({
+    "enable_access_gating": True,       # enable HO/RACH schedulability gating in time-varying runs
+    # HO trigger and interruption
+    "enable_beam_ho": True,             # enable beam-edge HO approximation
+    "ho_trigger_margin_deg": 1.0,       # trigger when off-axis > (half_bw - margin)
+    "ho_ttt_ttis": 10,                  # time-to-trigger in TTIs
+    "ho_interrupt_ttis": 3,             # interruption length during HO execution
+    # RACH approximation
+    "enable_rach_gating": True,
+    "rach_on_ho": True,                 # require a short RA after HO completes
+    "rach_proc_ttis": 5,                # RA procedure gating length
+})
+
+# Stage-2: HARQ ACK deferral and CSI periodicity (defaults kept conservative)
+CONFIG.update({
+    "enable_harq_deferral": False,      # off by default to preserve baseline behavior
+    "harq_max_procs": 16,               # typical NR max processes
+    "harq_ack_delay_ttis": 10,          # example ACK delay (TTIs)
+    "enable_cqi_periodicity": False,    # hold-last CQI reporting with period/offset
+    # If enable_cqi_periodicity is True, use cqi_period_ttis/cqi_offset_ttis above
+})
+
+# Optional PTRS density to derive CFO tracking budget when explicit value is not given
+CONFIG.update({
+    # If set, overrides derived budget; otherwise, derive from ptrs_symbols_per_slot
+    # "ptrs_cfo_track_hz": 500.0,
+    # For derivation:
+    # "ptrs_symbols_per_slot": 1,
+    # "ptrs_track_k_factor": 50.0,
+})
+
+# Stage-3: Multi-beam and SGP4 (scaffold toggles)
+CONFIG.update({
+    "enable_multi_beam": False,      # quantize boresight to beam grid / hopping
+    # "n_beams_x": 8, "n_beams_y": 8,  # optional override beam grid size
+    # "beam_grid_spacing_px": None,     # optional override spacing (pixels)
+    "beam_hop_period_ttis": 0,       # >0 to hop raster order every P TTIs
+    "enable_sgp4_orbit": False,      # use SGP4 if tle_line1/2 provided and package available
+    "enable_skyfield_orbit": False,  # prefer Skyfield-based orbit if available
+    "offaxis_ecef": True,            # compute off-axis via ECEF angle between boresight and LoS
+    # Optional map georeference for Skyfield grid mapping
+    "grid_center_lat_deg": 0.0,
+    "grid_center_lon_deg": 0.0,
+    # "tle_line1": "",
+    # "tle_line2": "",
+})
+
+# HO measurement/trigger parameters (A3-like)
+CONFIG.update({
+    "enable_a3_ho": True,          # use measurement-based A3-like HO logic
+    "ssb_period_ttis": 20,         # measurement period in TTIs
+    "ssb_offset_ttis": 0,          # measurement offset
+    "a3_hysteresis_db": 3.0,       # hysteresis
+    "a3_ttt_meas": 2,             # measurements needed to trigger
+    "a3_neighbor_k": 4,           # nearest beams to evaluate if multi-beam grid present
+})

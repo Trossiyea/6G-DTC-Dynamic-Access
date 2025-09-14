@@ -145,3 +145,57 @@ class OrbitModel:
         f_c_hz = float(self.config.get("carrier_freq_GHz", 2.0)) * 1e9
         f_d_hz = (v_r_kmps / c_kmps) * f_c_hz
         return L_fs, G_rx, tau_s, f_d_hz
+
+
+class OrbitModelMultiBeam(OrbitModel):
+    """
+    Multi-beam wrapper around OrbitModel that quantizes the instantaneous
+    boresight center to a discrete beam grid or hops beams with a fixed period.
+
+    Config keys (optional):
+    - n_beams_x, n_beams_y: beam grid dimensions (defaults derived from map size)
+    - beam_grid_spacing_px: spacing in pixels between adjacent beams (defaults ~ 2*half_bw footprint)
+    - beam_hop_period_ttis: if >0, hop through beams in a raster order every P TTIs
+    """
+
+    def __init__(self, config: Dict, X: int, Y: int):
+        super().__init__(config, X, Y)
+        self.nx = int(config.get("n_beams_x", 0) or 0)
+        self.ny = int(config.get("n_beams_y", 0) or 0)
+        # Build beam centers
+        spacing_px = config.get("beam_grid_spacing_px", None)
+        if spacing_px is None:
+            # Default spacing: approximate 2*half_bw footprint in pixels
+            # half_bw_deg -> ground km at altitude: tan(hb) * alt; divide by cell size to get pixels
+            hb_deg = float(config.get("beam_half_bw_deg", 4.0))
+            r_km = math.tan(math.radians(hb_deg)) * self.alt_km * 2.0
+            spacing_px = max(1, int(round(r_km / self.cell_km)))
+        self.spacing_px = int(spacing_px)
+        if self.nx <= 0 or self.ny <= 0:
+            # Derive a moderate grid from map dimensions
+            self.nx = max(2, self.X // max(1, self.spacing_px))
+            self.ny = max(2, self.Y // max(1, self.spacing_px))
+        xs = np.linspace(self.spacing_px//2, self.X - self.spacing_px//2, self.nx)
+        ys = np.linspace(self.spacing_px//2, self.Y - self.spacing_px//2, self.ny)
+        self.grid = np.array([(x, y) for x in xs for y in ys], dtype=float)
+        self.hop_period = int(config.get("beam_hop_period_ttis", 0) or 0)
+
+    def _nearest_beam_center(self, cx: float, cy: float) -> tuple:
+        """Snap arbitrary center to nearest beam grid location."""
+        if self.grid.size == 0:
+            return cx, cy
+        d2 = (self.grid[:,0] - cx)**2 + (self.grid[:,1] - cy)**2
+        i = int(np.argmin(d2))
+        return float(self.grid[i,0]), float(self.grid[i,1])
+
+    def beam_center_at(self, t: int) -> Tuple[float, float]:
+        # Base center from parent motion
+        cx, cy = super().beam_center_at(t)
+        if self.hop_period and self.hop_period > 0:
+            # Raster hop through beams with period
+            idx = (t // self.hop_period) % self.grid.shape[0]
+            gx, gy = self.grid[idx]
+            return float(gx), float(gy)
+        # Else snap to nearest grid
+        gx, gy = self._nearest_beam_center(cx, cy)
+        return gx, gy

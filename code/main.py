@@ -19,11 +19,23 @@ import os
 from scipy.io import loadmat
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
-from orbit import compute_geometry_and_beam, OrbitModel
+from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
+from orbit import OrbitModelMultiBeam
+try:
+    from orbit_sgp4 import OrbitSGP4
+except Exception:
+    OrbitSGP4 = None
+try:
+    from orbit_skyfield import OrbitSkyfield
+except Exception:
+    OrbitSkyfield = None
 from pc import pusch_open_loop_power
 from ntn_ta import ta_step_us as ntn_ta_step_us, effective_cp_us as ntn_effective_cp_us, quantize_ta_s, misalignment_penalty
-from ntn_cfo import compute_residual_cfo_hz, ici_factor_from_cfo
+from ntn_cfo import compute_residual_cfo_hz, ici_factor_from_cfo, ptrs_tracking_budget_hz
 from ntn_csi import snr_to_se_sched
+from ho import HOManager
+from rach import RachManager
+from harq import HarqManager
 
 # -----------------------
 # Utility conversions
@@ -338,7 +350,9 @@ def build_time_variation_if_enabled(config: Dict,
                                     P_tx_per_ue_dbm,
                                     noise_dbm: float,
                                     rng: np.random.Generator,
-                                    metric_override: Optional[np.ndarray]) -> Optional[Dict[str, np.ndarray]]:
+                                    metric_override: Optional[np.ndarray],
+                                    serving_centers_time: Optional[np.ndarray] = None,
+                                    orbit_model: Optional[object] = None) -> Optional[Dict[str, np.ndarray]]:
     """
     If time variation is enabled, build time series of per-PRB and wideband metrics
     (both SE and SNR). Mirrors the original behavior including optional prediction
@@ -358,7 +372,8 @@ def build_time_variation_if_enabled(config: Dict,
     tau_time: list = []
     fd_time: list = []
     R_t = R_xyz_dbm.copy()
-    orbit_model = OrbitModel(config, R_xyz_dbm.shape[0], R_xyz_dbm.shape[1]) if config.get("enable_orbit_dynamics", False) else None
+    if orbit_model is None:
+        orbit_model = OrbitModel(config, R_xyz_dbm.shape[0], R_xyz_dbm.shape[1]) if config.get("enable_orbit_dynamics", False) else None
 
     # -----------------------
     # UL frequency pre-compensation model state
@@ -376,7 +391,13 @@ def build_time_variation_if_enabled(config: Dict,
         ue_ppm = float(config.get("ue_lo_ppm", 0.1))
         gnb_ppm = float(config.get("gnb_lo_ppm", 0.05))
         lo_mis_ppm = config.get("lo_mismatch_ppm", None)
-        ptrs_track_hz = float(config.get("ptrs_cfo_track_hz", 0.0))
+        # PTRS/DMRS tracking budget: explicit or derived from PTRS density
+        if config.get("ptrs_cfo_track_hz", None) is not None:
+            ptrs_track_hz = float(config.get("ptrs_cfo_track_hz", 0.0))
+        else:
+            ptrs_syms = config.get("ptrs_symbols_per_slot", None)
+            ptrs_track_hz = float(ptrs_tracking_budget_hz(float(config.get("scs_khz", 30)), ptrs_syms,
+                                                          k_factor=float(config.get("ptrs_track_k_factor", 50.0))))
         residual_cfo_const = float(config.get("residual_freq_hz", 0.0))
 
     # -----------------------
@@ -432,6 +453,26 @@ def build_time_variation_if_enabled(config: Dict,
 
         if orbit_model is not None:
             L_fs_t, G_rx_t, tau_s_t, fd_hz_t = orbit_model.get_geometry(ue_pos, t)
+            if serving_centers_time is not None:
+                centers_t = np.asarray(serving_centers_time[t])
+                if hasattr(orbit_model, "_subpoint_px"):
+                    try:
+                        _, _, alt_km_t = orbit_model._subpoint_px(t)
+                    except Exception:
+                        alt_km_t = float(config.get("sat_altitude_km", 600.0))
+                else:
+                    alt_km_t = float(getattr(orbit_model, "alt_km", config.get("sat_altitude_km", 600.0)))
+                cell_km = float(getattr(orbit_model, "cell_km", config.get("cell_size_km", 5.0)))
+                dxg = (ue_pos[:, 0].astype(float) - centers_t[:, 0].astype(float)) * cell_km
+                dyg = (ue_pos[:, 1].astype(float) - centers_t[:, 1].astype(float)) * cell_km
+                r_ground = np.sqrt(dxg * dxg + dyg * dyg)
+                offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km_t))
+                G_rx_t = simple_beam_gain_db(
+                    offaxis_deg,
+                    boresight_gain_db=config.get("G_rx_db", 32.0),
+                    half_bw_deg=config.get("beam_half_bw_deg", 4.0),
+                    edge_drop_db=config.get("beam_edge_drop_db", 3.0),
+                )
             tau_time.append(tau_s_t)
             fd_time.append(fd_hz_t)
         else:
@@ -590,7 +631,9 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
                          snr_lin_prb: Optional[np.ndarray] = None,
                          cap_prb: Optional[np.ndarray] = None,
                          snr_lin_time_prb: Optional[np.ndarray] = None,
-                         force_wideband_throughput: bool = False) -> float:
+                         force_wideband_throughput: bool = False,
+                         ue_mask_time: Optional[np.ndarray] = None,
+                         harq_mgr: Optional[HarqManager] = None) -> float:
     """
     3GPP-like baseline: proportional fair with wideband CQI (same cap on every PRB).
     To avoid one-UE monopolization, assign PRBs in each TTI across the top sqrt(N) UEs 
@@ -604,11 +647,29 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
+        if harq_mgr is not None:
+            harq_mgr.advance_time(t_idx)
         if se_metric_time is not None:
             metric_se_t = se_metric_time[t_idx]
         else:
             metric_se_t = metric_se
         metric = metric_se_t / Rbar
+        # Apply UE mask if provided (mask out by setting to very negative)
+        if ue_mask_time is not None:
+            mask_t = np.asarray(ue_mask_time[t_idx], dtype=bool)
+            blocked = ~mask_t
+            if np.any(blocked):
+                metric = np.array(metric, copy=True)
+                metric[blocked] = -1e9
+        # Apply HARQ gating (cannot schedule if all processes occupied)
+        if harq_mgr is not None:
+            if 'mask_t' in locals():
+                mask_h = np.array([harq_mgr.can_schedule(u) for u in range(N_UE)], dtype=bool)
+                metric[~mask_h] = -1e9
+            else:
+                mask_h = np.array([harq_mgr.can_schedule(u) for u in range(N_UE)], dtype=bool)
+                metric = np.array(metric, copy=True)
+                metric[~mask_h] = -1e9
         U_select = min(N_UE, max(3, int(np.sqrt(N_UE))))
         if U_select < N_UE:
             top_idx = np.argpartition(-metric, U_select - 1)[:U_select]
@@ -616,6 +677,14 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
             selected = top_idx
         else:
             selected = np.argsort(-metric)
+        # If mask provided, filter selected by allowed UEs
+        if ue_mask_time is not None:
+            mask_t = np.asarray(ue_mask_time[t_idx], dtype=bool)
+            sel = [u for u in selected if mask_t[u]]
+            if len(sel) == 0:
+                sel = [selected[0]]  # fallback to avoid empty
+            selected = np.array(sel, dtype=int)
+            U_select = len(selected)
 
         # Determine number of PRBs per selected UE
         alloc_counts = np.full(U_select, Z // U_select, dtype=int)
@@ -675,6 +744,9 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
             thr_i[ue] += se * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
+        # Update HARQ after scheduling: mark scheduled UEs (unique)
+        if harq_mgr is not None:
+            harq_mgr.on_scheduled(np.unique(winners))
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
@@ -690,7 +762,9 @@ def pf_schedule_radiomap(cap: np.ndarray,
                          max_prbs_per_ue: Optional[int] = None,
                          mcs_params: Optional[Dict] = None,
                          se_metric_time: Optional[np.ndarray] = None,
-                         snr_lin_time: Optional[np.ndarray] = None) -> float:
+                         snr_lin_time: Optional[np.ndarray] = None,
+                         ue_mask_time: Optional[np.ndarray] = None,
+                         harq_mgr: Optional[HarqManager] = None) -> float:
     """
     Radio Map–aware PF: per-PRB scheduling using cap[UE,Z].
     Returns average sum spectral efficiency per PRB (bits/s/Hz).
@@ -705,8 +779,20 @@ def pf_schedule_radiomap(cap: np.ndarray,
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
     for t_idx in range(T):
+        if harq_mgr is not None:
+            harq_mgr.advance_time(t_idx)
         metric_base = se_metric_time[t_idx] if se_metric_time is not None else se_metric_arr
         metric = metric_base / Rbar.reshape(-1, 1)  # [UE,Z]
+        # Apply per-TTI UE mask
+        if ue_mask_time is not None:
+            mask_t = np.asarray(ue_mask_time[t_idx], dtype=bool)
+            if np.any(~mask_t):
+                metric = np.array(metric, copy=True)
+                metric[~mask_t, :] = -1e9
+        # HARQ gating
+        if harq_mgr is not None:
+            mask_h = np.array([harq_mgr.can_schedule(u) for u in range(N_UE)], dtype=bool)
+            metric[~mask_h, :] = -1e9
         # Winner selection with optional per-UE PRB cap
         if max_prbs_per_ue is None:
             winners = np.argmax(metric, axis=0)  # [Z]
@@ -724,11 +810,15 @@ def pf_schedule_radiomap(cap: np.ndarray,
                 cands = cands[np.argsort(-vals)]
                 chosen = -1
                 for ue in cands:
+                    if (ue_mask_time is not None) and (not mask_t[ue]):
+                        continue
                     if counts[ue] < max_prbs_per_ue:
                         chosen = int(ue)
                         break
                 if chosen < 0:
                     avail = np.flatnonzero(counts < max_prbs_per_ue)
+                    if ue_mask_time is not None:
+                        avail = avail[mask_t[avail]]
                     if avail.size > 0:
                         chosen = int(avail[np.argmax(metric[avail, idx])])
                     else:
@@ -752,6 +842,8 @@ def pf_schedule_radiomap(cap: np.ndarray,
             thr_i[ue] += se * overhead_eff
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
+        if harq_mgr is not None:
+            harq_mgr.on_scheduled(np.unique(winners))
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
@@ -775,6 +867,8 @@ def pf_schedule_radiomap_blocks(
     robust_sigma_db: float = 0.0,
     require_contiguous: bool = True,
     rng: Optional[np.random.Generator] = None,
+    ue_mask_time: Optional[np.ndarray] = None,
+    harq_mgr: Optional[HarqManager] = None,
 ) -> float:
     """
     Enhanced Radio Map–aware PF with contiguous RB blocks (single-MCS via EESM),
@@ -794,6 +888,11 @@ def pf_schedule_radiomap_blocks(
     sum_rate = 0.0
 
     for t_idx in range(T):
+        if harq_mgr is not None:
+            harq_mgr.advance_time(t_idx)
+        mask_t = None
+        if ue_mask_time is not None:
+            mask_t = np.asarray(ue_mask_time[t_idx], dtype=bool)
         # Prepare predicted per-PRB seed scores (k=1) and robust inputs
         if se_metric_time is not None:
             # Use given per-PRB SE predictions directly as seed scores
@@ -888,6 +987,10 @@ def pf_schedule_radiomap_blocks(
             best_delta = -1e9
             best_action = None  # (ue, z_to_assign)
             for ue in range(N_UE):
+                if (harq_mgr is not None) and (not harq_mgr.can_schedule(ue)):
+                    continue
+                if (mask_t is not None) and (not mask_t[ue]):
+                    continue
                 # Respect per-UE PRB cap
                 if (max_prbs_per_ue is not None) and (k_assigned[ue] >= int(max_prbs_per_ue)):
                     continue
@@ -937,6 +1040,8 @@ def pf_schedule_radiomap_blocks(
                     break
                 z = int(remaining[0])
                 cand = np.arange(N_UE) if max_prbs_per_ue is None else np.flatnonzero(k_assigned < int(max_prbs_per_ue))
+                if mask_t is not None:
+                    cand = cand[mask_t[cand]]
                 if cand.size == 0:
                     break
                 ue = int(cand[np.argmax(se_pred_k1[cand, z] / Rbar[cand])])
@@ -967,6 +1072,10 @@ def pf_schedule_radiomap_blocks(
 
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
+        if harq_mgr is not None:
+            # Mark scheduled UEs (those with k_assigned>0)
+            scheduled = np.flatnonzero(k_assigned > 0)
+            harq_mgr.on_scheduled(scheduled)
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
@@ -1236,10 +1345,36 @@ def run_once(config: Dict) -> Dict:
         config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, noise_dbm
     )
 
+    # Prepare HO/RACH gating and serving centers if orbit dynamics enabled (Stage-3)
+    ue_mask_time = None
+    events = {"ho": {}, "rach": {}}
+    centers_time = None
+    if config.get("enable_orbit_dynamics", False) and bool(config.get("enable_access_gating", True)):
+        if bool(config.get("enable_skyfield_orbit", False)) and (OrbitSkyfield is not None):
+            orbit_model_meas = OrbitSkyfield(config, X, Y)
+        elif bool(config.get("enable_sgp4_orbit", False)) and (OrbitSGP4 is not None):
+            orbit_model_meas = OrbitSGP4(config, X, Y)
+        elif bool(config.get("enable_multi_beam", False)):
+            orbit_model_meas = OrbitModelMultiBeam(config, X, Y)
+        else:
+            orbit_model_meas = OrbitModel(config, X, Y)
+        ho_mgr = HOManager(config, orbit_model_meas, ue_pos)
+        mask_ho = ho_mgr.build_mask(T)
+        centers_time = ho_mgr.events.get("serving_centers_time", None)
+        ra_mgr = RachManager(config, ue_pos)
+        mask_ra = ra_mgr.build_mask(T, ho_mgr.events.get("ho_start", []))
+        ue_mask_time = np.logical_and(mask_ho, mask_ra)
+        events["ho"] = ho_mgr.events
+        events["rach"] = ra_mgr.events
+    else:
+        orbit_model_meas = None
+
     # Optional time variation
     time_series = build_time_variation_if_enabled(
         config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng,
-        None if config.get("enable_time_varying", False) else metric_override
+        None if config.get("enable_time_varying", False) else metric_override,
+        serving_centers_time=centers_time,
+        orbit_model=orbit_model_meas,
     )
     mcs_params = {
         "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
@@ -1258,6 +1393,20 @@ def run_once(config: Dict) -> Dict:
             for t in range(T0):
                 src = max(0, t - d)
                 out[t] = arr[src]
+            return out
+        def hold_series(arr: np.ndarray, period: int, offset: int = 0) -> np.ndarray:
+            """Hold-last across time axis 0 given a reporting period/offset."""
+            if period is None or period <= 1:
+                return arr
+            T0 = arr.shape[0]
+            out = np.empty_like(arr)
+            last = None
+            for t in range(T0):
+                if ((t - offset) % period) == 0:
+                    out[t] = arr[t]
+                    last = arr[t]
+                else:
+                    out[t] = arr[t] if last is None else last
             return out
 
         baseline_delay = int(config.get("baseline_csi_delay_ttis", config.get("csi_delay_ttis", 0)))
@@ -1279,9 +1428,25 @@ def run_once(config: Dict) -> Dict:
             else:
                 se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
         se_time_base = delay_series(se_time_base, baseline_delay)
+        # Optional CQI reporting periodicity (hold-last)
+        if bool(config.get("enable_cqi_periodicity", False)):
+            period = int(config.get("cqi_period_ttis", 0) or 0)
+            offset = int(config.get("cqi_offset_ttis", 0) or 0)
+            if period and period > 1:
+                se_time_wb = hold_series(se_time_wb, period, offset)
+                se_time_rm = hold_series(se_time_rm, period, offset)
+                se_time_base = hold_series(se_time_base, period, offset)
         # Keep tau/fd for downstream users (HARQ/deferral to be added)
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
+        # ue_mask_time/events already computed above
+
+        # Optional HARQ deferral (Stage-2)
+        harq_mgr = None
+        if bool(config.get("enable_harq_deferral", False)):
+            harq_mgr = HarqManager(num_ue=N_UE,
+                                   num_procs=int(config.get("harq_max_procs", 16)),
+                                   ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)))
         if config.get("baseline_block_mode", True):
             base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
@@ -1299,6 +1464,8 @@ def run_once(config: Dict) -> Dict:
                 robust_sigma_db=0.0,
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
+                ue_mask_time=ue_mask_time,
+                harq_mgr=harq_mgr,
             )
         else:
             base_se_default = pf_schedule_baseline(
@@ -1314,6 +1481,8 @@ def run_once(config: Dict) -> Dict:
                 cap_prb=cap,
                 snr_lin_time_prb=time_series["snr_time"],
                 force_wideband_throughput=bool(config.get("baseline_force_wideband_throughput", False)),
+                ue_mask_time=ue_mask_time,
+                harq_mgr=harq_mgr,
             )
         # Always compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
@@ -1374,6 +1543,8 @@ def run_once(config: Dict) -> Dict:
                 robust_sigma_db=float(config.get("radiomap_est_error_db", 0.0)),
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
+                ue_mask_time=ue_mask_time,
+                harq_mgr=harq_mgr,
             )
             sched_stats = None
         else:
@@ -1387,7 +1558,9 @@ def run_once(config: Dict) -> Dict:
                 max_prbs_per_ue=config.get("max_prbs_per_ue"),
                 mcs_params=mcs_params,
                 se_metric_time=se_time_rm,
-                snr_lin_time=time_series["snr_time"]
+                snr_lin_time=time_series["snr_time"],
+                ue_mask_time=ue_mask_time,
+                harq_mgr=harq_mgr,
             )
             sched_stats = None
     else:
@@ -1475,6 +1648,7 @@ def run_once(config: Dict) -> Dict:
                 robust_sigma_db=float(config.get("radiomap_est_error_db", 0.0)),
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
+                ue_mask_time=ue_mask_time,
             )
             sched_stats = None
         else:
@@ -1486,7 +1660,8 @@ def run_once(config: Dict) -> Dict:
                 power_split=config.get("power_split", False),
                 mcs_params=mcs_params,
                 se_metric_override=metric_override,
-                max_prbs_per_ue=config.get("max_prbs_per_ue")
+                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                ue_mask_time=ue_mask_time,
             )
             sched_stats = None
 
@@ -1508,6 +1683,7 @@ def run_once(config: Dict) -> Dict:
         "tau_time": None if time_series is None else time_series.get("tau_time"),
         "fd_time": None if time_series is None else time_series.get("fd_time"),
         "sched_stats": None,
+        "events": None if time_series is None else events if 'ue_mask_time' in locals() else None,
     }
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:

@@ -1,0 +1,13 @@
+{
+  "T": 600,
+  "N_UE": 100,
+  "avg_se_baseline_default": 0.2819539229166667,
+  "avg_se_radiomap": 0.38541642083333333,
+  "impr_vs_default_pct": 36.69482475945037,
+  "ho_events_total": 1317,
+  "rach_events_total": 1417,
+  "grid_center": {
+    "lat_deg": 0.0,
+    "lon_deg": 0.0
+  }
+}

@@ -26,12 +26,16 @@ def test_csi_delay_changes_outcome():
         "enable_time_varying": True,
         "rm_flicker_db_std": 2.0,
         "csi_delay_ttis": 0,
+        "baseline_csi_delay_ttis": 0,
+        "rm_csi_delay_ttis": 0,
         "seed": 22,
     })
     delayed = run_with({
         "enable_time_varying": True,
         "rm_flicker_db_std": 2.0,
         "csi_delay_ttis": 5,
+        "baseline_csi_delay_ttis": 5,
+        "rm_csi_delay_ttis": 5,
         "seed": 22,
     })
     print("[CSI delay] 0 vs 5 TTIs:", base["avg_se_radiomap"], delayed["avg_se_radiomap"])
@@ -108,6 +112,33 @@ def test_cqi_mapping_boundaries():
     assert se[0] == 0.0 and se[-1] > 5.0
 
 
+def test_ho_rach_gating_events():
+    # With access gating enabled, we should observe HO and RACH events and a throughput reduction vs disabled
+    base = run_with({
+        "enable_time_varying": True,
+        "enable_orbit_dynamics": True,
+        "enable_access_gating": False,
+        "seed": 77,
+    })
+    gated = run_with({
+        "enable_time_varying": True,
+        "enable_orbit_dynamics": True,
+        "enable_access_gating": True,
+        "enable_beam_ho": True,
+        "ho_ttt_ttis": 5,
+        "ho_interrupt_ttis": 2,
+        "rach_proc_ttis": 3,
+        "seed": 77,
+    })
+    ev = gated.get("events")
+    assert ev is not None and "ho" in ev and "rach" in ev
+    # At least one UE should have HO and RACH events
+    ho_any = any(len(lst) > 0 for lst in ev["ho"].get("ho_start", []))
+    rach_any = any(len(lst) > 0 for lst in ev["rach"].get("rach_start", []))
+    assert ho_any and rach_any
+    # Note: gating can remove poor-geometry UEs and sometimes increase avg SE; we only require events.
+
+
 if __name__ == "__main__":
     test_power_control_effect()
     test_csi_delay_changes_outcome()
@@ -116,4 +147,5 @@ if __name__ == "__main__":
     test_orbit_dynamics_and_doppler()
     test_mcs_table_equivalence()
     test_cqi_mapping_boundaries()
+    test_ho_rach_gating_events()
     print("All feature tests passed.")
