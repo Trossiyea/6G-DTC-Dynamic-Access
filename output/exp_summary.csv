@@ -1,0 +1,2 @@
+name,baseline_default_mean,baseline_simple_mean,radiomap_mean,imp_vs_default_mean_pct,imp_vs_default_median_pct,imp_vs_simple_mean_pct,imp_vs_simple_median_pct
+3GPP baseline vs Radio Map (target +20%),0.524466,0.078841,0.657753,31.41,23.94,867.81,782.80

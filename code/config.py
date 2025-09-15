@@ -101,9 +101,35 @@ CONFIG.update({
     "harq_retx_priority_bonus": 0.0,
     # Optional path to 3GPP MCS tables (JSON). If set, you can choose '3gpp_table_1/2/3'.
     "mcs_3gpp_table_path": None,
-    "enable_cqi_periodicity": False,    # hold-last CQI reporting with period/offset
+    "enable_cqi_periodicity": False,    # legacy switch (applies to both if specific flags not set)
+    # New: decouple CQI periodicity per path
+    "enable_cqi_periodicity_base": True,   # apply periodic CQI to baseline metrics
+    "enable_cqi_periodicity_rm": False,    # apply periodic CQI to RM metrics
+    "cqi_period_ttis": 0,
+    "cqi_offset_ttis": 0,
 })
 
 # Multi-beam and external orbit models removed in minimal preset
 
 # A3/HO parameters removed
+
+# Optional Skyfield/TLE-driven orbit (disabled by default)
+CONFIG.update({
+    "enable_skyfield_orbit": True,   # enable TLE-driven orbit by default per request
+    # Provide either two-line TLE via 'tle_lines' (list[str,str]) or a file path via 'tle_path'
+    "tle_lines": [
+        "1 58705C 24002A   25256.77687500  .00004774  00000+0  39334-4 0  2566",
+        "2 58705  53.1569  66.1378 0000804  91.2245 181.2078 15.69698397    13",
+    ],
+    "tle_path": None,
+    "tle_name": "STARLINK-11072 [DTC]",
+    # Orbit start time for t=0 (ISO8601).
+    "orbit_start_datetime": "2025-09-13T18:38:42Z",
+    # Mapping the simulation grid (x,y) to Earth surface around a reference lat/lon (degrees).
+    # Each pixel corresponds to 'cell_size_km' in local ENU, with an optional rotation.
+    # By default, auto-center the grid to the sub-satellite point at t=0 to ensure overpass.
+    "auto_ref_from_tle": True,
+    "ref_lat_deg": 31.2,   # fallback if auto_ref_from_tle is False
+    "ref_lon_deg": 121.5,  # fallback if auto_ref_from_tle is False
+    "map_rotation_deg": 0.0,
+})

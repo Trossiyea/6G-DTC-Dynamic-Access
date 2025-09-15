@@ -1395,14 +1395,21 @@ def run_once(config: Dict) -> Dict:
             else:
                 se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
         se_time_base = delay_series(se_time_base, baseline_delay)
-        # Optional CQI reporting periodicity (hold-last)
-        if bool(config.get("enable_cqi_periodicity", False)):
-            period = int(config.get("cqi_period_ttis", 0) or 0)
-            offset = int(config.get("cqi_offset_ttis", 0) or 0)
-            if period and period > 1:
+        # Optional CQI reporting periodicity (hold-last), decoupled per-path
+        period = int(config.get("cqi_period_ttis", 0) or 0)
+        offset = int(config.get("cqi_offset_ttis", 0) or 0)
+        if period and period > 1:
+            if bool(config.get("enable_cqi_periodicity", False)):
+                # Backward-compatible: apply to all
                 se_time_wb = hold_series(se_time_wb, period, offset)
                 se_time_rm = hold_series(se_time_rm, period, offset)
                 se_time_base = hold_series(se_time_base, period, offset)
+            else:
+                if bool(config.get("enable_cqi_periodicity_base", False)):
+                    se_time_wb = hold_series(se_time_wb, period, offset)
+                    se_time_base = hold_series(se_time_base, period, offset)
+                if bool(config.get("enable_cqi_periodicity_rm", False)):
+                    se_time_rm = hold_series(se_time_rm, period, offset)
         # Keep tau/fd for downstream users
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
@@ -1454,11 +1461,11 @@ def run_once(config: Dict) -> Dict:
                 rng=rng,
                 ue_mask_time=None,
                 harq_mgr=harq_mgr_base,
-                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
-                P_tot_dbm=CONFIG.get("P_tot_dbm"),
-                P_ref_dbm=CONFIG.get("P_tx_dbm"),
-                p_min_dbm=CONFIG.get("p_min_dbm"),
-                p_max_dbm=CONFIG.get("p_max_dbm"),
+                dl_power_model=str(config.get("baseline_dl_power_model", config.get("dl_power_model", "equal_prb"))),
+                P_tot_dbm=config.get("baseline_P_tot_dbm", config.get("P_tot_dbm")),
+                P_ref_dbm=config.get("P_tx_dbm"),
+                p_min_dbm=config.get("baseline_p_min_dbm", config.get("p_min_dbm")),
+                p_max_dbm=config.get("baseline_p_max_dbm", config.get("p_max_dbm")),
             )
         # Also compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
@@ -1495,11 +1502,11 @@ def run_once(config: Dict) -> Dict:
                 rng=rng,
                 ue_mask_time=None,
                 harq_mgr=harq_mgr_map,
-                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
-                P_tot_dbm=CONFIG.get("P_tot_dbm"),
-                P_ref_dbm=CONFIG.get("P_tx_dbm"),
-                p_min_dbm=CONFIG.get("p_min_dbm"),
-                p_max_dbm=CONFIG.get("p_max_dbm"),
+                dl_power_model=str(config.get("rm_dl_power_model", config.get("dl_power_model", "equal_prb"))),
+                P_tot_dbm=config.get("rm_P_tot_dbm", config.get("P_tot_dbm")),
+                P_ref_dbm=config.get("P_tx_dbm"),
+                p_min_dbm=config.get("rm_p_min_dbm", config.get("p_min_dbm")),
+                p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
             )
             sched_stats = None
         else:
@@ -1517,26 +1524,26 @@ def run_once(config: Dict) -> Dict:
                 harq_stats_map = None
     else:
         # Baseline: contiguous-block PF using per-PRB metric
-            base_se_default = pf_schedule_radiomap_blocks(
-                cap, T, beta=config["pf_beta"],
-                snr_lin=snr_lin,
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                se_metric_override=None,
-                max_prbs_per_ue=config.get("max_prbs_per_ue"),
-                mcs_params=mcs_params,
-                se_metric_time=None,
-                snr_lin_time=None,
-                eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
-                require_contiguous=bool(config.get("sched_require_contiguous", True)),
-                rng=rng,
-                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
-                P_tot_dbm=CONFIG.get("P_tot_dbm"),
-                P_ref_dbm=CONFIG.get("P_tx_dbm"),
-                p_min_dbm=CONFIG.get("p_min_dbm"),
-                p_max_dbm=CONFIG.get("p_max_dbm"),
-            )
+        base_se_default = pf_schedule_radiomap_blocks(
+            cap, T, beta=config["pf_beta"],
+            snr_lin=snr_lin,
+            overhead_eff=config.get("overhead_eff", 1.0),
+            use_mcs=config.get("use_mcs", False),
+            power_split=config.get("power_split", False),
+            se_metric_override=None,
+            max_prbs_per_ue=config.get("max_prbs_per_ue"),
+            mcs_params=mcs_params,
+            se_metric_time=None,
+            snr_lin_time=None,
+            eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
+            require_contiguous=bool(config.get("sched_require_contiguous", True)),
+            rng=rng,
+            dl_power_model=str(config.get("baseline_dl_power_model", config.get("dl_power_model", "equal_prb"))),
+            P_tot_dbm=config.get("baseline_P_tot_dbm", config.get("P_tot_dbm")),
+            P_ref_dbm=config.get("P_tx_dbm"),
+            p_min_dbm=config.get("baseline_p_min_dbm", config.get("p_min_dbm")),
+            p_max_dbm=config.get("baseline_p_max_dbm", config.get("p_max_dbm")),
+        )
         # Simple wideband PF baseline for static snapshot
         base_se_simple = pf_schedule_baseline(
             cap_wb, Z, T, beta=config["pf_beta"],
@@ -1554,28 +1561,28 @@ def run_once(config: Dict) -> Dict:
         )
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
-            map_se = pf_schedule_radiomap_blocks(
-                cap, T, beta=config["pf_beta"],
-                snr_lin=snr_lin,
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                se_metric_override=metric_override,
-                max_prbs_per_ue=config.get("max_prbs_per_ue"),
-                mcs_params=mcs_params,
-                se_metric_time=None,
-                snr_lin_time=None,
-                eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
-                require_contiguous=bool(config.get("sched_require_contiguous", True)),
-                rng=rng,
-                ue_mask_time=None,
-                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
-                P_tot_dbm=CONFIG.get("P_tot_dbm"),
-                P_ref_dbm=CONFIG.get("P_tx_dbm"),
-                p_min_dbm=CONFIG.get("p_min_dbm"),
-                p_max_dbm=CONFIG.get("p_max_dbm"),
-            )
-            sched_stats = None
+        map_se = pf_schedule_radiomap_blocks(
+            cap, T, beta=config["pf_beta"],
+            snr_lin=snr_lin,
+            overhead_eff=config.get("overhead_eff", 1.0),
+            use_mcs=config.get("use_mcs", False),
+            power_split=config.get("power_split", False),
+            se_metric_override=metric_override,
+            max_prbs_per_ue=config.get("max_prbs_per_ue"),
+            mcs_params=mcs_params,
+            se_metric_time=None,
+            snr_lin_time=None,
+            eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
+            require_contiguous=bool(config.get("sched_require_contiguous", True)),
+            rng=rng,
+            ue_mask_time=None,
+            dl_power_model=str(config.get("rm_dl_power_model", config.get("dl_power_model", "equal_prb"))),
+            P_tot_dbm=config.get("rm_P_tot_dbm", config.get("P_tot_dbm")),
+            P_ref_dbm=config.get("P_tx_dbm"),
+            p_min_dbm=config.get("rm_p_min_dbm", config.get("p_min_dbm")),
+            p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
+        )
+        sched_stats = None
         harq_stats_base = None
         harq_stats_map = None
 
