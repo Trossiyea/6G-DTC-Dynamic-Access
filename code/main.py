@@ -671,6 +671,12 @@ def pf_schedule_radiomap_blocks(
     P_ref_dbm: Optional[float] = None,
     p_min_dbm: Optional[float] = None,
     p_max_dbm: Optional[float] = None,
+    # Optional recording of per-TTI PRB assignments (winners per PRB)
+    record_assignments: bool = False,
+    assignments_out: Optional[list] = None,
+    # Optional per-TTI per-UE throughput (SE sum across assigned PRBs)
+    record_ue_thr: bool = False,
+    ue_thr_out: Optional[list] = None,
 ) -> float:
     """
     Enhanced Radio Map–aware PF with contiguous RB blocks (single-MCS via EESM),
@@ -914,6 +920,13 @@ def pf_schedule_radiomap_blocks(
             apply_assign(int(ue_sel), int(z_sel))
             assigned_cnt += 1
 
+        # Optionally record per-PRB winners for this TTI
+        if record_assignments and assignments_out is not None:
+            try:
+                assignments_out.append(np.array(winners, copy=True))
+            except Exception:
+                pass
+
         # Compute throughput or register HARQ TBs
         if snr_lin_time is not None:
             snr_true = np.asarray(snr_lin_time[t_idx], dtype=float)
@@ -1043,6 +1056,11 @@ def pf_schedule_radiomap_blocks(
                 snr_vec = snr_scaled[ue, li:ri + 1]
                 se_per_prb = _block_se_from_snr_vec(snr_vec, 1 if (str(dl_power_model).lower() in ('equal_prb','waterfill')) else (k0 if power_split else 1), use_mcs, mcs_params, eesm_beta_db)
                 thr_i[ue] = (ri - li + 1) * se_per_prb * overhead_eff
+            if record_ue_thr and ue_thr_out is not None:
+                try:
+                    ue_thr_out.append(np.array(thr_i, copy=True))
+                except Exception:
+                    pass
             sum_rate += thr_i.sum()
             Rbar = (1 - beta) * Rbar + beta * thr_i
             if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
@@ -1445,6 +1463,10 @@ def run_once(config: Dict) -> Dict:
                 ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
             )
         # Baseline: contiguous-block PF using per-PRB metric
+        _rec_base = bool(config.get("record_assignments", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all"))
+        _rec_base_thr = bool(config.get("record_ue_thr", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all"))
+        assignments_base = [] if _rec_base else None
+        ue_thr_base = [] if _rec_base_thr else None
         base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1466,6 +1488,10 @@ def run_once(config: Dict) -> Dict:
                 P_ref_dbm=config.get("P_tx_dbm"),
                 p_min_dbm=config.get("baseline_p_min_dbm", config.get("p_min_dbm")),
                 p_max_dbm=config.get("baseline_p_max_dbm", config.get("p_max_dbm")),
+                record_assignments=_rec_base,
+                assignments_out=assignments_base,
+                record_ue_thr=_rec_base_thr,
+                ue_thr_out=ue_thr_base,
             )
         # Also compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
@@ -1486,6 +1512,10 @@ def run_once(config: Dict) -> Dict:
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
         if True:
+            _rec_rm = bool(config.get("record_assignments", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all"))
+            _rec_rm_thr = bool(config.get("record_ue_thr", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all"))
+            assignments_rm = [] if _rec_rm else None
+            ue_thr_rm = [] if _rec_rm_thr else None
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1507,6 +1537,10 @@ def run_once(config: Dict) -> Dict:
                 P_ref_dbm=config.get("P_tx_dbm"),
                 p_min_dbm=config.get("rm_p_min_dbm", config.get("p_min_dbm")),
                 p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
+                record_assignments=_rec_rm,
+                assignments_out=assignments_rm,
+                record_ue_thr=_rec_rm_thr,
+                ue_thr_out=ue_thr_rm,
             )
             sched_stats = None
         else:
@@ -1561,6 +1595,8 @@ def run_once(config: Dict) -> Dict:
         )
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
+        _rec_rm2 = bool(config.get("record_assignments", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all"))
+        assignments_rm2 = [] if _rec_rm2 else None
         map_se = pf_schedule_radiomap_blocks(
             cap, T, beta=config["pf_beta"],
             snr_lin=snr_lin,
@@ -1581,6 +1617,8 @@ def run_once(config: Dict) -> Dict:
             P_ref_dbm=config.get("P_tx_dbm"),
             p_min_dbm=config.get("rm_p_min_dbm", config.get("p_min_dbm")),
             p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
+            record_assignments=_rec_rm2,
+            assignments_out=assignments_rm2,
         )
         sched_stats = None
         harq_stats_base = None
@@ -1606,6 +1644,33 @@ def run_once(config: Dict) -> Dict:
         "harq_stats_base": harq_stats_base,
         "harq_stats_map": harq_stats_map,
     }
+
+    # Attach PRB assignment timeline and per-UE throughput if recorded
+    try:
+        if 'assignments_rm' in locals() and assignments_rm is not None and len(assignments_rm) > 0:
+            report["assignments_rm"] = np.stack(assignments_rm, axis=0)
+        if 'assignments_base' in locals() and assignments_base is not None and len(assignments_base) > 0:
+            report["assignments_base"] = np.stack(assignments_base, axis=0)
+        if 'ue_thr_rm' in locals() and ue_thr_rm is not None and len(ue_thr_rm) > 0:
+            thr_mat = np.stack(ue_thr_rm, axis=0)  # [T,UE]
+            report["ue_thr_time_rm"] = thr_mat
+            # Convert to average per-UE SE per PRB: sum over time / (T*Z)
+            report["per_ue_se_rm_avg"] = (np.sum(thr_mat, axis=0) / float(max(1, CONFIG.get("T", T)) * cap.shape[1])).tolist()
+        if 'ue_thr_base' in locals() and ue_thr_base is not None and len(ue_thr_base) > 0:
+            thr_mat_b = np.stack(ue_thr_base, axis=0)
+            report["ue_thr_time_base"] = thr_mat_b
+            report["per_ue_se_base_avg"] = (np.sum(thr_mat_b, axis=0) / float(max(1, CONFIG.get("T", T)) * cap.shape[1])).tolist()
+    except Exception:
+        pass
+
+    # Attach PRB assignment timeline for RM if recorded
+    try:
+        if 'assignments_rm' in locals() and assignments_rm is not None and len(assignments_rm) > 0:
+            report["assignments_rm"] = np.stack(assignments_rm, axis=0)
+        elif 'assignments_rm2' in locals() and assignments_rm2 is not None and len(assignments_rm2) > 0:
+            report["assignments_rm"] = np.stack(assignments_rm2, axis=0)
+    except Exception:
+        pass
 
     # Compute per-UE avg SE (goodput) from acked bits if available
     try:
