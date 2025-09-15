@@ -248,7 +248,7 @@ class HarqManagerFull:
                     int(d['n_prb']), mcs,
                     n_layers=int(self.cfg.get('n_layers', 1)),
                     cp_type=str(self.cfg.get('cp_type', 'normal')),
-                    dmrs_sym_per_slot=int(self.cfg.get('pusch_dmrs_sym_per_slot', 1)),
+                    dmrs_sym_per_slot=int(self.cfg.get('pdsch_dmrs_sym_per_slot', self.cfg.get('pusch_dmrs_sym_per_slot', 1))),
                     dmrs_re_per_sym_per_prb=int(self.cfg.get('dmrs_re_per_sym_per_prb', 6)),
                     oh_prb=int(self.cfg.get('oh_prb', 0)),
                 )

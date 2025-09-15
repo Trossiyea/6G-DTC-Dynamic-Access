@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Radio Map–aware dynamic access simulation for direct-to-satellite (FDD) uplink.
-- We compare a simple 3GPP-like baseline (wideband PF, no subband awareness) 
-  against a Radio Map–aware proportional fair (per-PRB) scheduler.
-- The Radio Map is a 3D tensor R[x, y, z] (dBm) measuring terrestrial interference.
-- Output: average spectral efficiency (bits/s/Hz), relative gain, and a few plots.
+Radio Map–aware dynamic access simulation for direct-to-satellite downlink (DL, FDD).
+- Baselines: a 3GPP-like wideband PF vs a Radio Map–aware per‑PRB/block PF.
+- Radio Map R[x,y,z] (dBm) represents terrestrial interference at the UE receiver.
+- Output: average spectral efficiency (bits/s/Hz), relative gain, and plots.
 
-Notes for reproducibility:
-- You can edit the parameters under 'CONFIG' to stress-test different regimes.
-- Charts use matplotlib only, one per figure, and no specific colors are set.
+This repository has been simplified to DL only:
+- All uplink-specific mechanics (UL open-loop PC, TA, UL Doppler pre‑comp) are removed.
+- Transmit power is interpreted as DL EIRP (per‑PRB) or a total DL power budget.
 """
 
 import numpy as np
@@ -21,25 +20,7 @@ from scipy.io import loadmat
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
 from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
-from orbit import OrbitModelMultiBeam
-try:
-    from orbit_sgp4 import OrbitSGP4
-except Exception:
-    OrbitSGP4 = None
-try:
-    from orbit_skyfield import OrbitSkyfield
-except Exception:
-    OrbitSkyfield = None
-from pc import pusch_open_loop_power
-from ntn_ta import ta_step_us as ntn_ta_step_us, effective_cp_us as ntn_effective_cp_us, quantize_ta_s, misalignment_penalty
-from ntn_cfo import compute_residual_cfo_hz, ici_factor_from_cfo, ptrs_tracking_budget_hz
 from ntn_csi import snr_to_se_sched
-from ho import HOManager
-from rach import RachManager
-try:
-    from rach_ntn import RachManagerNTN
-except Exception:
-    RachManagerNTN = None
 from harq import HarqManager, HarqManagerFull
 from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file, register_bler_curves_from_file
 
@@ -294,17 +275,10 @@ def resolve_noise_and_prb_bw(config: Dict) -> Tuple[float, Optional[float]]:
 def apply_open_loop_power_control(config: Dict,
                                   L_fs_per_ue: Union[np.ndarray, float],
                                   G_rx_per_ue: Union[np.ndarray, float]) -> Union[np.ndarray, float]:
-    """Compute per-UE P_tx if PC enabled; else return configured P_tx_dbm (scalar or array)."""
-    if config.get("enable_power_control", False):
-        PL_eff_db = np.asarray(L_fs_per_ue, dtype=float) - np.asarray(G_rx_per_ue, dtype=float)
-        return pusch_open_loop_power(
-            P_cmax_dbm=config.get("P_max_dbm", config.get("P_tx_dbm", 23.0)),
-            P0_dbm=config.get("pc_P0_dbm", -90.0),
-            alpha=config.get("pc_alpha", 0.8),
-            PL_db=PL_eff_db,
-            M_prb=int(config.get("pc_M_ref", 1)),
-            delta_tf_db=0.0,
-        )
+    """
+    DL-only simplification: return configured DL per‑PRB EIRP `P_tx_dbm` as-is.
+    This function remains for interface compatibility.
+    """
     return config["P_tx_dbm"]
 
 def compute_metric_override_static_if_needed(config: Dict,
@@ -357,7 +331,6 @@ def build_time_variation_if_enabled(config: Dict,
                                     noise_dbm: float,
                                     rng: np.random.Generator,
                                     metric_override: Optional[np.ndarray],
-                                    serving_centers_time: Optional[np.ndarray] = None,
                                     orbit_model: Optional[object] = None) -> Optional[Dict[str, np.ndarray]]:
     """
     If time variation is enabled, build time series of per-PRB and wideband metrics
@@ -381,47 +354,7 @@ def build_time_variation_if_enabled(config: Dict,
     if orbit_model is None:
         orbit_model = OrbitModel(config, R_xyz_dbm.shape[0], R_xyz_dbm.shape[1]) if config.get("enable_orbit_dynamics", False) else None
 
-    # -----------------------
-    # UL frequency pre-compensation model state
-    # -----------------------
-    enable_precomp = bool(config.get("enable_ntn_freq_precomp", False)) and (orbit_model is not None)
-    if enable_precomp:
-        precomp_update = max(1, int(config.get("freq_precomp_update_ttis", 1)))
-        precomp_latency = max(0, int(config.get("freq_precomp_latency_ttis", 0)))
-        precomp_err_std_hz = float(config.get("freq_precomp_error_std_hz", 0.0) or 0.0)
-        precomp_quant_hz = config.get("freq_precomp_quant_hz", None)
-        precomp_quant_hz = None if precomp_quant_hz in (None, 0, 0.0) else float(precomp_quant_hz)
-        f_pred = np.zeros(N_UE, dtype=float)
-        # CFO budget
-        fc_hz = float(config.get("carrier_freq_GHz", 2.0)) * 1e9
-        ue_ppm = float(config.get("ue_lo_ppm", 0.1))
-        gnb_ppm = float(config.get("gnb_lo_ppm", 0.05))
-        lo_mis_ppm = config.get("lo_mismatch_ppm", None)
-        # PTRS/DMRS tracking budget: explicit or derived from PTRS density
-        if config.get("ptrs_cfo_track_hz", None) is not None:
-            ptrs_track_hz = float(config.get("ptrs_cfo_track_hz", 0.0))
-        else:
-            ptrs_syms = config.get("ptrs_symbols_per_slot", None)
-            ptrs_track_hz = float(ptrs_tracking_budget_hz(float(config.get("scs_khz", 30)), ptrs_syms,
-                                                          k_factor=float(config.get("ptrs_track_k_factor", 50.0))))
-        residual_cfo_const = float(config.get("residual_freq_hz", 0.0))
-
-    # -----------------------
-    # Timing Advance (TA) model state
-    # -----------------------
-    enable_ta = bool(config.get("enable_ta_model", False)) and (orbit_model is not None)
-    if enable_ta:
-        scs_khz = float(config.get("scs_khz", 30))
-        cp_us_cfg = config.get("cp_us", None)
-        cp_us = float(cp_us_cfg) if cp_us_cfg is not None else ntn_effective_cp_us(scs_khz, cp_type=str(config.get("cp_type", "normal")), symbol_index=1)
-        ta_step_cfg = config.get("ta_granularity_us", None)
-        ta_step_us = float(ta_step_cfg) if ta_step_cfg is not None else ntn_ta_step_us(scs_khz)
-        ta_update = max(1, int(config.get("ta_update_ttis", 20)))
-        ta_latency = max(0, int(config.get("ta_latency_ttis", 0)))
-        ta_margin_us = max(0.0, float(config.get("ta_margin_us", 0.0)))
-        ta_drop = bool(config.get("ta_drop_if_exceed", True))
-        ta_exp = float(config.get("ta_penalty_exponent", 2.0))
-        ta_cmd_s = np.zeros(N_UE, dtype=float)  # current TA command per UE (seconds)
+    # DL-only: UL-specific pre-compensation and TA models removed.
     for t in range(T):
         if t > 0:
             if vx or vy:
@@ -459,26 +392,6 @@ def build_time_variation_if_enabled(config: Dict,
 
         if orbit_model is not None:
             L_fs_t, G_rx_t, tau_s_t, fd_hz_t = orbit_model.get_geometry(ue_pos, t)
-            if serving_centers_time is not None:
-                centers_t = np.asarray(serving_centers_time[t])
-                if hasattr(orbit_model, "_subpoint_px"):
-                    try:
-                        _, _, alt_km_t = orbit_model._subpoint_px(t)
-                    except Exception:
-                        alt_km_t = float(config.get("sat_altitude_km", 600.0))
-                else:
-                    alt_km_t = float(getattr(orbit_model, "alt_km", config.get("sat_altitude_km", 600.0)))
-                cell_km = float(getattr(orbit_model, "cell_km", config.get("cell_size_km", 5.0)))
-                dxg = (ue_pos[:, 0].astype(float) - centers_t[:, 0].astype(float)) * cell_km
-                dyg = (ue_pos[:, 1].astype(float) - centers_t[:, 1].astype(float)) * cell_km
-                r_ground = np.sqrt(dxg * dxg + dyg * dyg)
-                offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km_t))
-                G_rx_t = simple_beam_gain_db(
-                    offaxis_deg,
-                    boresight_gain_db=config.get("G_rx_db", 32.0),
-                    half_bw_deg=config.get("beam_half_bw_deg", 4.0),
-                    edge_drop_db=config.get("beam_edge_drop_db", 3.0),
-                )
             tau_time.append(tau_s_t)
             fd_time.append(fd_hz_t)
         else:
@@ -494,52 +407,15 @@ def build_time_variation_if_enabled(config: Dict,
             impl_loss_db=config.get("impl_loss_db", 0.0),
             seed=config["seed"]
         )
-        # Apply residual frequency error induced ICI (explicit precomp + CFO budget or legacy fraction)
-        if orbit_model is not None:
-            if enable_precomp:
-                # Periodic Doppler prediction with latency and imperfections
-                if (t % precomp_update) == 0:
-                    t_src = max(0, t - precomp_latency)
-                    _, _, _, fd_src = orbit_model.get_geometry(ue_pos, t_src)
-                    f_pred = fd_src.copy()
-                    if precomp_err_std_hz > 0.0:
-                        f_pred = f_pred + rng.normal(0.0, precomp_err_std_hz, size=f_pred.shape)
-                    if precomp_quant_hz is not None and precomp_quant_hz > 0.0:
-                        f_pred = np.round(f_pred / precomp_quant_hz) * precomp_quant_hz
-                # Combine Doppler residual + LO mismatch + constant CFO, minus PTRS tracking capability
-                eps_f = compute_residual_cfo_hz(
-                    fd_true_hz=fd_hz_t,
-                    f_pred_hz=f_pred,
-                    fc_hz=fc_hz,
-                    ue_lo_ppm=ue_ppm,
-                    gnb_lo_ppm=gnb_ppm,
-                    residual_freq_hz=residual_cfo_const,
-                    ptrs_cfo_track_hz=ptrs_track_hz,
-                    override_mismatch_ppm=lo_mis_ppm,
-                )
-                ici_fac = ici_factor_from_cfo(eps_f, float(config.get("scs_khz", 30)))
-                snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
-                snr_lin_wb_t = snr_lin_wb_t / ici_fac
-            elif config.get("doppler_residual_fraction", 0.0) > 0.0:
-                eps_f = np.abs(fd_hz_t) * float(config.get("doppler_residual_fraction", 0.0))
-                ici_fac = ici_factor_from_cfo(eps_f, float(config.get("scs_khz", 30)))
-                snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
-                snr_lin_wb_t = snr_lin_wb_t / ici_fac
-
-        # Apply TA misalignment penalty if enabled
-        if enable_ta and orbit_model is not None:
-            # Update TA commands periodically using delayed tau and quantization
-            if (t % ta_update) == 0:
-                t_src = max(0, t - ta_latency)
-                _, _, tau_src, _ = orbit_model.get_geometry(ue_pos, t_src)
-                ta_cmd_s = quantize_ta_s(tau_src, ta_step_us)
-            # Compute misalignment
-            e_us = np.abs(tau_s_t - ta_cmd_s) * 1e6
-            # Apply penalty factor according to CP budget
-            fac = misalignment_penalty(e_us, cp_us, ta_margin_us, drop_if_exceed=ta_drop, exponent=ta_exp)
-            if np.any(fac < 1.0):
-                snr_lin_t = snr_lin_t * fac.reshape(-1, 1)
-                snr_lin_wb_t = snr_lin_wb_t * fac
+        # DL-only: generic residual Doppler fraction -> ICI penalty (optional)
+        dop_frac = float(config.get("doppler_residual_fraction", 0.0) or 0.0)
+        if (orbit_model is not None) and (dop_frac > 0.0):
+            eps_f = np.abs(fd_hz_t) * dop_frac
+            scs_khz = float(config.get("scs_khz", 30))
+            T_sym = 1.0 / (scs_khz * 1e3)
+            ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+            snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
+            snr_lin_wb_t = snr_lin_wb_t / ici_fac
         mcs_params = {
             "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
             "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -768,113 +644,7 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
 
-def pf_schedule_radiomap(cap: np.ndarray,
-                         T: int,
-                         beta: float = 0.1,
-                         snr_lin: np.ndarray = None,
-                         overhead_eff: float = 1.0,
-                         use_mcs: bool = False,
-                         power_split: bool = False,
-                         se_metric_override: Optional[np.ndarray] = None,
-                         max_prbs_per_ue: Optional[int] = None,
-                         mcs_params: Optional[Dict] = None,
-                         se_metric_time: Optional[np.ndarray] = None,
-                         snr_lin_time: Optional[np.ndarray] = None,
-                         ue_mask_time: Optional[np.ndarray] = None,
-                         harq_mgr: Optional[HarqManager] = None) -> float:
-    """
-    Radio Map–aware PF: per-PRB scheduling using cap[UE,Z].
-    Returns average sum spectral efficiency per PRB (bits/s/Hz).
-    """
-    N_UE, Z = cap.shape
-    # Metric per PRB: use strategy (Shannon or MCS); allow override
-    if se_metric_time is None:
-        if se_metric_override is not None:
-            se_metric_arr = se_metric_override
-        else:
-            se_metric_arr = se_metric_strategy(use_mcs, snr_lin=snr_lin, cap_shannon=cap, mcs_params=mcs_params)
-    Rbar = np.full(N_UE, 1e-3)
-    sum_rate = 0.0
-    for t_idx in range(T):
-        # HARQ: realize feedback and credit goodput if full manager is used
-        if harq_mgr is not None:
-            ack_bits = None
-            try:
-                ack_bits = harq_mgr.advance_time(t_idx)
-            except TypeError:
-                ack_bits = None
-            if ack_bits is not None:
-                from link_adapt import re_per_prb_from_config
-                re_per_prb = re_per_prb_from_config(CONFIG)
-                thr_ack = np.asarray(ack_bits, dtype=float) / float(max(1, re_per_prb))
-                sum_rate += float(np.sum(thr_ack))
-                Rbar = (1 - beta) * Rbar + beta * thr_ack
-        metric_base = se_metric_time[t_idx] if se_metric_time is not None else se_metric_arr
-        metric = metric_base / Rbar.reshape(-1, 1)  # [UE,Z]
-        # Apply per-TTI UE mask
-        if ue_mask_time is not None:
-            mask_t = np.asarray(ue_mask_time[t_idx], dtype=bool)
-            if np.any(~mask_t):
-                metric = np.array(metric, copy=True)
-                metric[~mask_t, :] = -1e9
-        # HARQ gating
-        if harq_mgr is not None:
-            mask_h = np.array([harq_mgr.can_schedule(u) for u in range(N_UE)], dtype=bool)
-            metric[~mask_h, :] = -1e9
-        # Winner selection with optional per-UE PRB cap
-        if max_prbs_per_ue is None:
-            winners = np.argmax(metric, axis=0)  # [Z]
-        else:
-            winners = np.full(Z, -1, dtype=int)
-            counts = np.zeros(N_UE, dtype=int)
-            best_vals = metric.max(axis=0)
-            order_z = np.argsort(-best_vals)
-            top_k = min(N_UE, max(8, int(np.sqrt(N_UE))))
-            kth = max(0, N_UE - top_k)
-            topk_idx = np.argpartition(metric, kth, axis=0)[kth:, :] if top_k < N_UE else np.tile(np.arange(N_UE).reshape(-1, 1), (1, Z))
-            for idx in order_z:
-                cands = topk_idx[:, idx]
-                vals = metric[cands, idx]
-                cands = cands[np.argsort(-vals)]
-                chosen = -1
-                for ue in cands:
-                    if (ue_mask_time is not None) and (not mask_t[ue]):
-                        continue
-                    if counts[ue] < max_prbs_per_ue:
-                        chosen = int(ue)
-                        break
-                if chosen < 0:
-                    avail = np.flatnonzero(counts < max_prbs_per_ue)
-                    if ue_mask_time is not None:
-                        avail = avail[mask_t[avail]]
-                    if avail.size > 0:
-                        chosen = int(avail[np.argmax(metric[avail, idx])])
-                    else:
-                        chosen = int(np.argmax(metric[:, idx]))
-                winners[idx] = chosen
-                counts[chosen] += 1
-        thr_i = np.zeros(N_UE)
-        # Count PRBs per UE for power split
-        if power_split:
-            counts = np.bincount(winners, minlength=N_UE)
-        else:
-            counts = np.ones(N_UE, dtype=int)
-        for z in range(Z):
-            ue = winners[z]
-            k_prb = int(counts[ue]) if power_split else 1
-            if snr_lin is not None or snr_lin_time is not None:
-                snr_base = snr_lin_time[t_idx, ue, z] if snr_lin_time is not None else snr_lin[ue, z]
-                se = se_from_snr_with_split(snr_base, k_prb if power_split else 1, use_mcs, mcs_params=mcs_params)
-            else:
-                se = se_from_cap_shannon_with_split(cap[ue, z], k_prb if power_split else 1)
-            thr_i[ue] += se * overhead_eff
-        sum_rate += thr_i.sum()
-        Rbar = (1 - beta) * Rbar + beta * thr_i
-        if harq_mgr is not None:
-            harq_mgr.on_scheduled(np.unique(winners))
-
-    avg_sum_rate_per_prb = sum_rate / (T * Z)
-    return avg_sum_rate_per_prb
+# Removed legacy per-PRB RM PF in favor of contiguous-block scheduler
 
 
 def pf_schedule_radiomap_blocks(
@@ -891,12 +661,16 @@ def pf_schedule_radiomap_blocks(
     se_metric_time: Optional[np.ndarray],
     snr_lin_time: Optional[np.ndarray],
     eesm_beta_db: float = 1.0,
-    robust_kappa_db: float = 0.0,
-    robust_sigma_db: float = 0.0,
     require_contiguous: bool = True,
     rng: Optional[np.random.Generator] = None,
     ue_mask_time: Optional[np.ndarray] = None,
     harq_mgr: Optional[HarqManager] = None,
+    # DL power allocation
+    dl_power_model: str = "equal_prb",
+    P_tot_dbm: Optional[float] = None,
+    P_ref_dbm: Optional[float] = None,
+    p_min_dbm: Optional[float] = None,
+    p_max_dbm: Optional[float] = None,
 ) -> float:
     """
     Enhanced Radio Map–aware PF with contiguous RB blocks (single-MCS via EESM),
@@ -907,9 +681,8 @@ def pf_schedule_radiomap_blocks(
     rng = np.random.default_rng(0) if rng is None else rng
 
     def to_robust_sinr_db(arr_snr_lin: np.ndarray) -> np.ndarray:
+        # Minimal: no uncertainty subtraction; plain SINR(dB)
         sinr_db = 10.0 * np.log10(np.maximum(arr_snr_lin, 1e-12))
-        if robust_kappa_db > 0.0 and robust_sigma_db > 0.0:
-            sinr_db = sinr_db - float(robust_kappa_db) * float(robust_sigma_db)
         return sinr_db
 
     Rbar = np.full(N_UE, 1e-3)
@@ -1166,16 +939,110 @@ def pf_schedule_radiomap_blocks(
                 }
             harq_mgr.on_scheduled_blocks(sched_info)
         else:
-            # Legacy immediate throughput accumulation
+            # Legacy immediate throughput accumulation with optional DL power allocation
+            # Build per-PRB base SNR for used PRBs
+            winners_full = np.full(Z, -1, dtype=int)
+            for ue in range(N_UE):
+                if int(k_assigned[ue]) <= 0:
+                    continue
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                winners_full[li:ri+1] = ue
+
+            snr_scaled = np.array(snr_true, copy=True)
+
+            if str(dl_power_model).lower() == 'waterfill' and P_tot_dbm is not None:
+                used = np.flatnonzero(winners_full >= 0)
+                if used.size > 0:
+                    P_ref_dbm_eff = float(P_ref_dbm) if P_ref_dbm is not None else 0.0
+                    P_ref_mW = 10.0 ** (P_ref_dbm_eff / 10.0)
+                    P_tot_mW = 10.0 ** (float(P_tot_dbm) / 10.0)
+                    pmin_mW = 0.0 if p_min_dbm is None else 10.0 ** (float(p_min_dbm) / 10.0)
+                    pmax_mW = float('inf') if p_max_dbm is None else 10.0 ** (float(p_max_dbm) / 10.0)
+
+                    a = np.zeros(used.size, dtype=float)
+                    for i, z in enumerate(used):
+                        ue = int(winners_full[z])
+                        base = max(1e-12, snr_true[ue, z])
+                        # snr_true corresponds to P_ref_mW; if P_ref_mW==0, treat as 1 mW reference
+                        P0 = P_ref_mW if P_ref_mW > 0.0 else 1.0
+                        a[i] = base / P0
+
+                    # Water-filling solver with box constraints
+                    def waterfill(a_vec: np.ndarray, P: float, pmin: float, pmax: float) -> np.ndarray:
+                        a_vec = np.asarray(a_vec, dtype=float)
+                        n = a_vec.size
+                        # Active set algorithm
+                        active = np.ones(n, dtype=bool)
+                        p = np.zeros(n, dtype=float)
+                        # Initialize ignoring bounds
+                        while True:
+                            a_act = a_vec[active]
+                            if a_act.size == 0:
+                                break
+                            inv_a = 1.0 / a_act
+                            # Solve for nu: sum(max(0, 1/nu - 1/a)) = P_eff
+                            # Using bisection on nu in (0, max(a))
+                            lo, hi = 1e-12, max(1.0, a_act.max()*1e3)
+                            for _ in range(40):
+                                nu = (lo + hi) * 0.5
+                                p_tmp = np.maximum(0.0, 1.0/nu - inv_a)
+                                s = p_tmp.sum()
+                                if s > P:
+                                    lo = nu
+                                else:
+                                    hi = nu
+                            p_act = np.maximum(0.0, 1.0/hi - inv_a)
+                            # Apply box constraints
+                            p_act = np.clip(p_act, pmin, pmax)
+                            p[:] = 0.0
+                            p[active] = p_act
+                            # Check total power vs P with saturated elements removed
+                            if abs(p.sum() - P) < 1e-6:
+                                break
+                            # If sum > P due to lower bounds, reduce active set of saturated lows
+                            if p.sum() > P + 1e-6:
+                                # Reduce those at pmin from active and re‑solve
+                                mask = active.copy()
+                                idxs = np.flatnonzero(active)
+                                sat_low = (p[idxs] <= pmin + 1e-12)
+                                if not np.any(sat_low):
+                                    break
+                                active[idxs[sat_low]] = False
+                                P = max(0.0, P - np.sum(p[idxs[sat_low]]))
+                                continue
+                            # If sum < P due to upper bounds, remove highs and re‑distribute residual
+                            resid = P - p.sum()
+                            if resid <= 1e-6:
+                                break
+                            mask = active.copy()
+                            idxs = np.flatnonzero(active)
+                            sat_high = (p[idxs] >= pmax - 1e-12)
+                            if not np.any(sat_high):
+                                # Distribute tiny residual equally
+                                p[idxs] += resid / float(len(idxs))
+                                break
+                            active[idxs[sat_high]] = False
+                            P = resid
+                        return p
+
+                    p_used = waterfill(a, P_tot_mW, pmin_mW, pmax_mW)
+                    # Scale SNRs
+                    for i, z in enumerate(used):
+                        ue = int(winners_full[z])
+                        P0 = P_ref_mW if P_ref_mW > 0.0 else 1.0
+                        scale = p_used[i] / P0
+                        snr_scaled[ue, z] = snr_true[ue, z] * scale
+
+            # Throughput accumulation per UE
             thr_i = np.zeros(N_UE, dtype=float)
             for ue in range(N_UE):
                 k0 = int(k_assigned[ue])
                 if k0 <= 0:
                     continue
                 li, ri = int(l_idx[ue]), int(r_idx[ue])
-                snr_vec = snr_true[ue, li:ri + 1]
-                se_per_prb = _block_se_from_snr_vec(snr_vec, k0 if power_split else 1, use_mcs, mcs_params, eesm_beta_db)
-                thr_i[ue] = k0 * se_per_prb * overhead_eff
+                snr_vec = snr_scaled[ue, li:ri + 1]
+                se_per_prb = _block_se_from_snr_vec(snr_vec, 1 if (str(dl_power_model).lower() in ('equal_prb','waterfill')) else (k0 if power_split else 1), use_mcs, mcs_params, eesm_beta_db)
+                thr_i[ue] = (ri - li + 1) * se_per_prb * overhead_eff
             sum_rate += thr_i.sum()
             Rbar = (1 - beta) * Rbar + beta * thr_i
             if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
@@ -1427,7 +1294,7 @@ def run_once(config: Dict) -> Dict:
     R_xyz_dbm, X, Y, Z = select_radio_map(config)
     ue_pos = generate_ue_positions(N_UE, X, Y, rng)
 
-    # Geometry/beam, noise/bandwidth, power control
+    # Geometry/beam, noise/bandwidth, power settings
     L_fs_per_ue, G_rx_per_ue = compute_geometry_and_beam(config, X, Y, ue_pos)
     noise_dbm, prb_bw_hz = resolve_noise_and_prb_bw(config)
     P_tx_per_ue_dbm = apply_open_loop_power_control(config, L_fs_per_ue, G_rx_per_ue)
@@ -1450,36 +1317,11 @@ def run_once(config: Dict) -> Dict:
         config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, noise_dbm
     )
 
-    # Prepare HO/RACH gating and serving centers if orbit dynamics enabled (Stage-3)
+    # Orbit dynamics (measurement geometry) if enabled; no HO gating in minimal DL
     ue_mask_time = None
-    events = {"ho": {}, "rach": {}}
-    centers_time = None
-    if config.get("enable_orbit_dynamics", False) and bool(config.get("enable_access_gating", True)):
-        if bool(config.get("enable_skyfield_orbit", False)) and (OrbitSkyfield is not None):
-            orbit_model_meas = OrbitSkyfield(config, X, Y)
-        elif bool(config.get("enable_sgp4_orbit", False)) and (OrbitSGP4 is not None):
-            orbit_model_meas = OrbitSGP4(config, X, Y)
-        elif bool(config.get("enable_multi_beam", False)):
-            orbit_model_meas = OrbitModelMultiBeam(config, X, Y)
-        else:
-            orbit_model_meas = OrbitModel(config, X, Y)
-        ho_mgr = HOManager(config, orbit_model_meas, ue_pos)
-        mask_ho = ho_mgr.build_mask(T)
-        centers_time = ho_mgr.events.get("serving_centers_time", None)
-        if bool(config.get("enable_rach_ntn", False)) and (RachManagerNTN is not None):
-            # Approximate RTT in ms based on geometry if available
-            rt_ms = 5.0
-            if orbit_model_meas is not None:
-                # Derive one-way tau median then RTT≈2*tau
-                _, _, tau_s0, _ = orbit_model_meas.get_geometry(ue_pos, 0)
-                rt_ms = float(np.median(tau_s0) * 2 * 1e3)
-            ra_mgr = RachManagerNTN(config, ue_pos, rt_prop_delay_ms=rt_ms)
-        else:
-            ra_mgr = RachManager(config, ue_pos)
-        mask_ra = ra_mgr.build_mask(T, ho_mgr.events.get("ho_start", []))
-        ue_mask_time = np.logical_and(mask_ho, mask_ra)
-        events["ho"] = ho_mgr.events
-        events["rach"] = ra_mgr.events
+    events = None
+    if config.get("enable_orbit_dynamics", False):
+        orbit_model_meas = OrbitModel(config, X, Y)
     else:
         orbit_model_meas = None
 
@@ -1487,7 +1329,6 @@ def run_once(config: Dict) -> Dict:
     time_series = build_time_variation_if_enabled(
         config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng,
         None if config.get("enable_time_varying", False) else metric_override,
-        serving_centers_time=centers_time,
         orbit_model=orbit_model_meas,
     )
     # Register 3GPP MCS tables from file if provided
@@ -1562,10 +1403,10 @@ def run_once(config: Dict) -> Dict:
                 se_time_wb = hold_series(se_time_wb, period, offset)
                 se_time_rm = hold_series(se_time_rm, period, offset)
                 se_time_base = hold_series(se_time_base, period, offset)
-        # Keep tau/fd for downstream users (HARQ/deferral to be added)
+        # Keep tau/fd for downstream users
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
-        # ue_mask_time/events already computed above
+        # No HO/RACH gating events in minimal DL
 
         # Optional HARQ (Stage-2 deferral or full Stage-3-like)
         harq_stats_base = None
@@ -1596,8 +1437,8 @@ def run_once(config: Dict) -> Dict:
                 num_procs=int(config.get("harq_max_procs", 16)),
                 ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
             )
-        if config.get("baseline_block_mode", True):
-            base_se_default = pf_schedule_radiomap_blocks(
+        # Baseline: contiguous-block PF using per-PRB metric
+        base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
                 overhead_eff=config.get("overhead_eff", 1.0),
@@ -1609,31 +1450,17 @@ def run_once(config: Dict) -> Dict:
                 se_metric_time=se_time_base,
                 snr_lin_time=time_series["snr_time"],
                 eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
-                robust_kappa_db=0.0,
-                robust_sigma_db=0.0,
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
-                ue_mask_time=ue_mask_time,
+                ue_mask_time=None,
                 harq_mgr=harq_mgr_base,
+                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
+                P_tot_dbm=CONFIG.get("P_tot_dbm"),
+                P_ref_dbm=CONFIG.get("P_tx_dbm"),
+                p_min_dbm=CONFIG.get("p_min_dbm"),
+                p_max_dbm=CONFIG.get("p_max_dbm"),
             )
-        else:
-            base_se_default = pf_schedule_baseline(
-                cap_wb, Z, T, beta=config["pf_beta"],
-                snr_lin_wb=snr_lin_wb,
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                mcs_params=mcs_params,
-                se_metric_time=se_time_wb,
-                snr_lin_wb_time=time_series["snr_wb_time"],
-                snr_lin_prb=snr_lin,
-                cap_prb=cap,
-                snr_lin_time_prb=time_series["snr_time"],
-                force_wideband_throughput=bool(config.get("baseline_force_wideband_throughput", False)),
-                ue_mask_time=ue_mask_time,
-                harq_mgr=harq_mgr_base,
-            )
-        # Always compute a simple wideband PF baseline (no PRB awareness)
+        # Also compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
             cap_wb, Z, T, beta=config["pf_beta"],
             snr_lin_wb=snr_lin_wb,
@@ -1649,33 +1476,9 @@ def run_once(config: Dict) -> Dict:
             force_wideband_throughput=True,
         )
 
-        # Optional subband baseline (time-varying)
-        if bool(config.get("enable_baseline_subband", False)):
-            # Build per-TTI subband metric from instantaneous per-PRB SNR (then apply delay)
-            num_g = int(config.get("baseline_subband_groups", 8))
-            # Use delayed per-PRB SNR for the subband scheduling metric
-            snr_time_delayed = delay_series(time_series["snr_time"], baseline_delay)
-            base_se_subband = pf_schedule_baseline_subband(
-                Z=Z,
-                T=T,
-                beta=config["pf_beta"],
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                mcs_params=mcs_params,
-                num_groups=num_g,
-                eesm_beta_db=float(config.get("baseline_eesm_beta_db", 1.0)),
-                max_groups_per_ue=config.get("baseline_max_groups_per_ue"),
-                use_marginal_delta=True,
-                snr_lin_prb=snr_lin,
-                cap_prb=cap,
-                snr_lin_time_prb_metric=snr_time_delayed,
-                snr_lin_time_prb_true=time_series["snr_time"],
-                se_metric_time_subband=None,
-            )
-        else:
-            base_se_subband = None
-        if config.get("sched_block_mode", False):
+        base_se_subband = None
+        # RadioMap: contiguous-block PF with per-PRB metric
+        if True:
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1688,30 +1491,19 @@ def run_once(config: Dict) -> Dict:
                 se_metric_time=se_time_rm,
                 snr_lin_time=time_series["snr_time"],
                 eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
-                robust_kappa_db=float(config.get("sched_robust_kappa_db", 0.0)),
-                robust_sigma_db=float(config.get("radiomap_est_error_db", 0.0)),
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
-                ue_mask_time=ue_mask_time,
+                ue_mask_time=None,
                 harq_mgr=harq_mgr_map,
+                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
+                P_tot_dbm=CONFIG.get("P_tot_dbm"),
+                P_ref_dbm=CONFIG.get("P_tx_dbm"),
+                p_min_dbm=CONFIG.get("p_min_dbm"),
+                p_max_dbm=CONFIG.get("p_max_dbm"),
             )
             sched_stats = None
         else:
-            map_se = pf_schedule_radiomap(
-                cap, T, beta=config["pf_beta"],
-                snr_lin=snr_lin,
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                se_metric_override=None if metric_override is None else metric_override,
-                max_prbs_per_ue=config.get("max_prbs_per_ue"),
-                mcs_params=mcs_params,
-                se_metric_time=se_time_rm,
-                snr_lin_time=time_series["snr_time"],
-                ue_mask_time=ue_mask_time,
-                harq_mgr=harq_mgr_map,
-            )
-            sched_stats = None
+            pass
         # Collect HARQ statistics if available
         if harq_mgr_base is not None and hasattr(harq_mgr_base, 'get_stats'):
             try:
@@ -1724,7 +1516,7 @@ def run_once(config: Dict) -> Dict:
             except Exception:
                 harq_stats_map = None
     else:
-        if config.get("baseline_block_mode", True):
+        # Baseline: contiguous-block PF using per-PRB metric
             base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1737,22 +1529,13 @@ def run_once(config: Dict) -> Dict:
                 se_metric_time=None,
                 snr_lin_time=None,
                 eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
-                robust_kappa_db=0.0,
-                robust_sigma_db=0.0,
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
-            )
-        else:
-            base_se_default = pf_schedule_baseline(
-                cap_wb, Z, T, beta=config["pf_beta"],
-                snr_lin_wb=snr_lin_wb,
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                mcs_params=mcs_params,
-                snr_lin_prb=snr_lin,
-                cap_prb=cap,
-                force_wideband_throughput=bool(config.get("baseline_force_wideband_throughput", False)),
+                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
+                P_tot_dbm=CONFIG.get("P_tot_dbm"),
+                P_ref_dbm=CONFIG.get("P_tx_dbm"),
+                p_min_dbm=CONFIG.get("p_min_dbm"),
+                p_max_dbm=CONFIG.get("p_max_dbm"),
             )
         # Simple wideband PF baseline for static snapshot
         base_se_simple = pf_schedule_baseline(
@@ -1769,29 +1552,8 @@ def run_once(config: Dict) -> Dict:
             snr_lin_time_prb=None,
             force_wideband_throughput=True,
         )
-        # Optional subband baseline (static)
-        if bool(config.get("enable_baseline_subband", False)):
-            base_se_subband = pf_schedule_baseline_subband(
-                Z=Z,
-                T=T,
-                beta=config["pf_beta"],
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                mcs_params=mcs_params,
-                num_groups=int(config.get("baseline_subband_groups", 8)),
-                eesm_beta_db=float(config.get("baseline_eesm_beta_db", 1.0)),
-                max_groups_per_ue=config.get("baseline_max_groups_per_ue"),
-                use_marginal_delta=True,
-                snr_lin_prb=snr_lin,
-                cap_prb=cap,
-                snr_lin_time_prb_metric=None,
-                snr_lin_time_prb_true=None,
-                se_metric_time_subband=None,
-            )
-        else:
-            base_se_subband = None
-        if config.get("sched_block_mode", False):
+        base_se_subband = None
+        # RadioMap: contiguous-block PF with per-PRB metric
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1804,24 +1566,14 @@ def run_once(config: Dict) -> Dict:
                 se_metric_time=None,
                 snr_lin_time=None,
                 eesm_beta_db=float(config.get("sched_eesm_beta_db", 1.0)),
-                robust_kappa_db=float(config.get("sched_robust_kappa_db", 0.0)),
-                robust_sigma_db=float(config.get("radiomap_est_error_db", 0.0)),
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
-                ue_mask_time=ue_mask_time,
-            )
-            sched_stats = None
-        else:
-            map_se = pf_schedule_radiomap(
-                cap, T, beta=config["pf_beta"],
-                snr_lin=snr_lin,
-                overhead_eff=config.get("overhead_eff", 1.0),
-                use_mcs=config.get("use_mcs", False),
-                power_split=config.get("power_split", False),
-                mcs_params=mcs_params,
-                se_metric_override=metric_override,
-                max_prbs_per_ue=config.get("max_prbs_per_ue"),
-                ue_mask_time=ue_mask_time,
+                ue_mask_time=None,
+                dl_power_model=str(CONFIG.get("dl_power_model", "equal_prb")),
+                P_tot_dbm=CONFIG.get("P_tot_dbm"),
+                P_ref_dbm=CONFIG.get("P_tx_dbm"),
+                p_min_dbm=CONFIG.get("p_min_dbm"),
+                p_max_dbm=CONFIG.get("p_max_dbm"),
             )
             sched_stats = None
         harq_stats_base = None
@@ -1831,11 +1583,9 @@ def run_once(config: Dict) -> Dict:
     report = {
         "avg_se_baseline_default": base_se_default,
         "avg_se_baseline_simple": base_se_simple,
-        "avg_se_baseline_subband": base_se_subband,
         "avg_se_radiomap": map_se,
         "improvement_vs_default_pct": (map_se - base_se_default) / max(1e-9, base_se_default) * 100.0,
         "improvement_vs_simple_pct": (map_se - base_se_simple) / max(1e-9, base_se_simple) * 100.0,
-        "improvement_vs_subband_pct": (map_se - base_se_subband) / max(1e-9, base_se_subband) * 100.0 if base_se_subband is not None else None,
         "R_xyz_dbm": R_xyz_dbm,
         "ue_pos": ue_pos,
         "cap": cap,
@@ -1848,7 +1598,6 @@ def run_once(config: Dict) -> Dict:
         "sched_stats": None,
         "harq_stats_base": harq_stats_base,
         "harq_stats_map": harq_stats_map,
-        "events": None if time_series is None else events if 'ue_mask_time' in locals() else None,
     }
 
     # Compute per-UE avg SE (goodput) from acked bits if available
@@ -1899,27 +1648,22 @@ def run_once(config: Dict) -> Dict:
     return report
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
-    base_def_list, base_simp_list, base_sub_list, map_list, imp_def_list, imp_simp_list, imp_sub_list = [], [], [], [], [], [], []
+    base_def_list, base_simp_list, map_list, imp_def_list, imp_simp_list = [], [], [], [], []
     for s in seeds:
         c2 = dict(config)
         c2["seed"] = int(s)
         out = run_once(c2)
         base_def_list.append(out["avg_se_baseline_default"])
         base_simp_list.append(out["avg_se_baseline_simple"])
-        base_sub_list.append(out["avg_se_baseline_subband"]) if out.get("avg_se_baseline_subband") is not None else None
         map_list.append(out["avg_se_radiomap"])
         imp_def_list.append(out["improvement_vs_default_pct"])
         imp_simp_list.append(out["improvement_vs_simple_pct"])
-        if out.get("improvement_vs_subband_pct") is not None:
-            imp_sub_list.append(out["improvement_vs_subband_pct"])
     return {
         "baseline_default": np.array(base_def_list),
         "baseline_simple": np.array(base_simp_list),
-        "baseline_subband": np.array([x for x in base_sub_list if x is not None]) if any(x is not None for x in base_sub_list) else None,
         "radiomap": np.array(map_list),
         "improvement_vs_default_pct": np.array(imp_def_list),
         "improvement_vs_simple_pct": np.array(imp_simp_list),
-        "improvement_vs_subband_pct": np.array(imp_sub_list) if len(imp_sub_list) > 0 else None,
     }
 
 # CONFIG is provided by code/config.py
@@ -1932,13 +1676,9 @@ if __name__ == '__main__':
     print("Single-run results")
     print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
     print(f"  Baseline-Simple  avg SE (bits/s/Hz): {single['avg_se_baseline_simple']:.3f}")
-    if single.get('avg_se_baseline_subband') is not None:
-        print(f"  Baseline-Subband avg SE (bits/s/Hz): {single['avg_se_baseline_subband']:.3f}")
     print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
     print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
     print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
-    if single.get('improvement_vs_subband_pct') is not None:
-        print(f"  Gain vs Subband (%): {single['improvement_vs_subband_pct']:.2f}")
 
     # -----------------------
     # Run multiple seeds to show robustness
@@ -1948,14 +1688,9 @@ if __name__ == '__main__':
     print("\nMulti-seed summary (N=20)")
     print(f"  Baseline-Default avg SE: {multi['baseline_default'].mean():.3f} ± {multi['baseline_default'].std():.3f}")
     print(f"  Baseline-Simple  avg SE: {multi['baseline_simple'].mean():.3f} ± {multi['baseline_simple'].std():.3f}")
-    if multi.get('baseline_subband') is not None:
-        print(f"  Baseline-Subband avg SE: {multi['baseline_subband'].mean():.3f} ± {multi['baseline_subband'].std():.3f}")
     print(f"  RadioMap         avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
     print(f"  Gain vs Default median: {np.median(multi['improvement_vs_default_pct']):.2f}% (min={multi['improvement_vs_default_pct'].min():.2f}%, max={multi['improvement_vs_default_pct'].max():.2f}%)")
     print(f"  Gain vs Simple  median: {np.median(multi['improvement_vs_simple_pct']):.2f}% (min={multi['improvement_vs_simple_pct'].min():.2f}%, max={multi['improvement_vs_simple_pct'].max():.2f}%)")
-    if multi.get('improvement_vs_subband_pct') is not None:
-        arr = multi['improvement_vs_subband_pct']
-        print(f"  Gain vs Subband median: {np.median(arr):.2f}% (min={arr.min():.2f}%, max={arr.max():.2f}%)")
 
     # -----------------------
     # Plots
@@ -1992,17 +1727,17 @@ if __name__ == '__main__':
     plt.tight_layout()
     maybe_finalize("interference_map_median.png")
 
-    # 3) Example per-UE wideband vs best-subband capacity (first 10 UEs)
+    # 3) Example per-UE wideband vs best-PRB capacity (first 10 UEs)
     ue = np.arange(min(10, CONFIG["N_UE"]))
-    best_subband = single["cap"][ue].max(axis=1)
+    best_prb = single["cap"][ue].max(axis=1)
     wb = single["cap_wb"][ue]
     x = np.arange(ue.size)
     plt.figure(figsize=(6,4))
     plt.bar(x - 0.2, wb, width=0.4, label='Wideband (baseline)')
-    plt.bar(x + 0.2, best_subband, width=0.4, label='Best subband (RadioMap)')
+    plt.bar(x + 0.2, best_prb, width=0.4, label='Best PRB (RadioMap)')
     plt.xticks(x, [f"UE{int(i)}" for i in ue])
     plt.ylabel("Spectral efficiency (bits/s/Hz)")
-    plt.title("Per-UE: wideband vs best subband opportunity")
+    plt.title("Per-UE: wideband vs best PRB opportunity")
     plt.legend()
     plt.tight_layout()
-    maybe_finalize("per_ue_wb_vs_best_subband.png")
+    maybe_finalize("per_ue_wb_vs_best_prb.png")

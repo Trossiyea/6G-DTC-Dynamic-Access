@@ -12,12 +12,7 @@ def run_with(overrides):
     return run_once(cfg)
 
 
-def test_power_control_effect():
-    # With this open-loop setting, P_tx is typically below P_max, so throughput should not exceed baseline.
-    base = run_with({"enable_power_control": False, "seed": 11})
-    pc = run_with({"enable_power_control": True, "pc_P0_dbm": -90.0, "pc_alpha": 0.8, "pc_M_ref": 1, "seed": 11})
-    print("[PC] baseline vs PC:", base["avg_se_radiomap"], pc["avg_se_radiomap"])
-    assert pc["avg_se_radiomap"] <= base["avg_se_radiomap"] + 1e-9
+# DL-only: remove UL power-control test
 
 
 def test_csi_delay_changes_outcome():
@@ -112,31 +107,7 @@ def test_cqi_mapping_boundaries():
     assert se[0] == 0.0 and se[-1] > 5.0
 
 
-def test_ho_rach_gating_events():
-    # With access gating enabled, we should observe HO and RACH events and a throughput reduction vs disabled
-    base = run_with({
-        "enable_time_varying": True,
-        "enable_orbit_dynamics": True,
-        "enable_access_gating": False,
-        "seed": 77,
-    })
-    gated = run_with({
-        "enable_time_varying": True,
-        "enable_orbit_dynamics": True,
-        "enable_access_gating": True,
-        "enable_beam_ho": True,
-        "ho_ttt_ttis": 5,
-        "ho_interrupt_ttis": 2,
-        "rach_proc_ttis": 3,
-        "seed": 77,
-    })
-    ev = gated.get("events")
-    assert ev is not None and "ho" in ev and "rach" in ev
-    # At least one UE should have HO and RACH events
-    ho_any = any(len(lst) > 0 for lst in ev["ho"].get("ho_start", []))
-    rach_any = any(len(lst) > 0 for lst in ev["rach"].get("rach_start", []))
-    assert ho_any and rach_any
-    # Note: gating can remove poor-geometry UEs and sometimes increase avg SE; we only require events.
+# DL minimal preset: HO gating removed
 
 
 def test_harq_full_basic():
@@ -154,13 +125,13 @@ def test_harq_full_basic():
     assert np.isfinite(out["avg_se_radiomap"]) and out["avg_se_radiomap"] >= 0.0
 
 if __name__ == "__main__":
-    test_power_control_effect()
+    # UL power-control test removed in DL-only configuration
     test_csi_delay_changes_outcome()
     test_olla_offset()
     test_residual_freq_penalty()
     test_orbit_dynamics_and_doppler()
     test_mcs_table_equivalence()
     test_cqi_mapping_boundaries()
-    test_ho_rach_gating_events()
+    # HO gating test removed in minimal DL-only configuration
     test_harq_full_basic()
     print("All feature tests passed.")

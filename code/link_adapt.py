@@ -358,9 +358,12 @@ def eff_sinr_eesm_db(sinr_db_vec: np.ndarray, beta_db: float = 1.0) -> float:
 
 
 def re_per_prb_from_config(cfg: Dict) -> int:
-    return n_re_per_prb(
-        cp_type=str(cfg.get("cp_type", "normal")),
-        dmrs_sym_per_slot=int(cfg.get("pusch_dmrs_sym_per_slot", 1)),
-        dmrs_re_per_sym_per_prb=int(cfg.get("dmrs_re_per_sym_per_prb", 6)),
-        oh_prb=int(cfg.get("oh_prb", 0)),
-    )
+    """Resolve effective RE/PRB from config, preferring DL (PDSCH) keys.
+
+    Backward-compatible: falls back to PUSCH keys if PDSCH ones are absent.
+    """
+    cp = str(cfg.get("cp_type", "normal"))
+    dmrs_sym = int(cfg.get("pdsch_dmrs_sym_per_slot", cfg.get("pusch_dmrs_sym_per_slot", 1)))
+    dmrs_re = int(cfg.get("dmrs_re_per_sym_per_prb", 6))
+    oh = int(cfg.get("oh_prb", 0))
+    return n_re_per_prb(cp, dmrs_sym, dmrs_re, oh)
