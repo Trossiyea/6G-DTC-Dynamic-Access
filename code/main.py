@@ -1430,6 +1430,25 @@ def run_once(config: Dict) -> Dict:
     else:
         orbit_model_meas = None
 
+    # One-time orbit mode prompt for clarity
+    try:
+        if orbit_model_meas is None:
+            print("[Orbit] Dynamics disabled: using static geometry (no time-varying orbit).")
+        else:
+            mode = getattr(orbit_model_meas, "_mode", "simple")
+            if str(mode).lower() == "skyfield":
+                tle_name = str(config.get("tle_name", "SAT"))
+                start = str(config.get("orbit_start_datetime", "t0"))
+                auto_ref = bool(config.get("auto_ref_from_tle", False))
+                print(f"[Orbit] Using Skyfield/TLE orbit: {tle_name} (start={start}), auto_ref={auto_ref}.")
+            else:
+                v = float(config.get("sat_ground_speed_kms", 7.5))
+                hdg = float(config.get("sat_heading_deg", 0.0))
+                alt = float(config.get("sat_altitude_km", 600.0))
+                print(f"[Orbit] Using simple ground-track model: v={v:.2f} km/s, heading={hdg:.1f} deg, alt={alt:.0f} km.")
+    except Exception:
+        pass
+
     # Optional time variation
     time_series = build_time_variation_if_enabled(
         config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, elev_deg_per_ue, P_tx_per_ue_dbm, noise_dbm, rng,

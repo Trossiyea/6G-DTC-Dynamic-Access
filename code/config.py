@@ -13,7 +13,7 @@ CONFIG = {
     # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
     "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
     "N_UE": 40,               # active UEs in footprint (per-beam slice)
-    "T": 160,                 # number of TTIs per measurement window
+    "T": 1000,                 # number of TTIs per measurement window
     "K_interferers": 7,       # used only when synthetic map is generated
     "seed": 101,              # master RNG seed for reproducibility
 
@@ -142,12 +142,17 @@ CONFIG.update({
 CONFIG.update({
     "enable_skyfield_orbit": True,   # enable TLE-driven orbit by default per request
     # Provide either two-line TLE via 'tle_lines' (list[str,str]) or a file path via 'tle_path'
+    # "tle_lines": [
+    #     "1 58705C 24002A   25256.77687500  .00004774  00000+0  39334-4 0  2566",
+    #     "2 58705  53.1569  66.1378 0000804  91.2245 181.2078 15.69698397    13",
+    # ],
     "tle_lines": [
-        "1 58705C 24002A   25256.77687500  .00004774  00000+0  39334-4 0  2566",
-        "2 58705  53.1569  66.1378 0000804  91.2245 181.2078 15.69698397    13",
-    ],
+        "1 59421C 24065A   25259.10395833  .00000071  00000+0  58945-6 0  2596",
+        "2 59421  53.1566 234.6672 0001137  93.5671 155.3063 15.69664283    16",
+    ],    
     "tle_path": None,
-    "tle_name": "STARLINK-11072 [DTC]",
+    # "tle_name": "STARLINK-11072 [DTC]",
+    "tle_name": "STARLINK-11087 [DTC]",
     # Orbit start time for t=0 (ISO8601).
     "orbit_start_datetime": "2025-09-13T18:38:42Z",
     # Mapping the simulation grid (x,y) to Earth surface around a reference lat/lon (degrees).
