@@ -10,14 +10,15 @@ CONFIG = {
     # Grid and traffic
     "X": 60,                  # map width (matches radio_map grid)
     "Y": 60,                  # map height
-    "Z": 64,                  # subbands in radio_map (not strict NR PRBs)
+    # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
+    "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
     "N_UE": 40,               # active UEs in footprint (per-beam slice)
     "T": 160,                 # number of TTIs per measurement window
     "K_interferers": 7,       # used only when synthetic map is generated
     "seed": 101,              # master RNG seed for reproducibility
 
     # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
-    "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz
+    "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz (20 MHz channel => 51 PRBs)
     "cp_type": "normal",      # cyclic prefix type (FR1 normal)
     "noise_dbm": -121.45,     # fallback if PRB BW not set
     "noise_temp_K": 290.0,    # thermal noise temperature
@@ -60,7 +61,8 @@ CONFIG = {
     # Geometry + beam (NR-NTN LEO S-band)
     "enable_geometry": True,  # enable per-UE FSPL and beam gain
     "sat_altitude_km": 600.0,
-    "carrier_freq_GHz": 1.995,  # FR1 n255 S-band
+    # Center frequency 2.000 GHz (1990–2010 MHz band edges, 20 MHz BW)
+    "carrier_freq_GHz": 2.000,  # FR1 S-band center (1990–2010 MHz)
     "beam_center_xy": None,   # default: map center
     "beam_half_bw_deg": 8.0,
     "beam_edge_drop_db": 3.0,

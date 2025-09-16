@@ -26,9 +26,9 @@ def generate_moderate_map(X=60, Y=60, K=64, scs_khz=30.0, seed=42,
     return interf, noise_dbm
 
 if __name__ == '__main__':
-    X, Y, K = 60, 60, 64
+    X, Y, K = 60, 60, 51
     X_true, noise_dbm = generate_moderate_map(X, Y, K, scs_khz=30.0)
-    savemat('radio_map/Data_moderate.mat', {'X_true': X_true})
+    savemat('radio_map/Data_moderate_51.mat', {'X_true': X_true})
     stats = (10*np.log10(X_true).min(), np.percentile(10*np.log10(X_true),50), np.percentile(10*np.log10(X_true),90), 10*np.log10(X_true).max())
-    print(f'Saved radio_map/Data_moderate.mat shape={X_true.shape}, noise_dbm={noise_dbm:.2f}, interf_dbm[min,p50,p90,max]={stats}')
+    print(f'Saved radio_map/Data_moderate_51.mat shape={X_true.shape}, noise_dbm={noise_dbm:.2f}, interf_dbm[min,p50,p90,max]={stats}')
 
