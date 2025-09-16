@@ -17,6 +17,10 @@ CONFIG = {
     "K_interferers": 7,       # used only when synthetic map is generated
     "seed": 101,              # master RNG seed for reproducibility
 
+    'radio_map_mat_path': 'radio_map/Data_strong_51.mat',
+    'radio_map_mat_var': 'X_true',
+    'radio_map_units': 'mW',
+    
     # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
     "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz (20 MHz channel => 51 PRBs)
     "cp_type": "normal",      # cyclic prefix type (FR1 normal)
