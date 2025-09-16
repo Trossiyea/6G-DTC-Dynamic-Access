@@ -217,6 +217,75 @@ def main():
 
     print('Saved figures and CSV to', out_dir)
 
+    # 7) MCS distribution comparison (Baseline-Default vs Radio Map) using full HARQ on first seed
+    # This run does not affect above SE summaries; it is only for MCS stats.
+    try:
+        cfg_h = deepcopy(base_cfg)
+        cfg_h['seed'] = int(seeds[0]) if len(seeds) > 0 else int(CONFIG.get('seed', 1))
+        # Enable explicit MCS selection with BLER target and OLLA
+        cfg_h.update({
+            'enable_harq_full': True,
+            'harq_target_bler': 0.1,
+            'harq_max_retx': 4,
+            'harq_ack_delay_ttis': int(cfg_h.get('harq_ack_delay_ttis', 10)),
+            # Ensure 3GPP-like tables are available for selection
+            'mcs_3gpp_table_path': cfg_h.get('mcs_3gpp_table_path', 'docs/mcs_tables_38_214.json'),
+            'mcs_table_kind': cfg_h.get('mcs_table_kind', '3gpp_table_2'),
+        })
+        r_h = run_once(cfg_h)
+        hs_b = r_h.get('harq_stats_base') if isinstance(r_h, dict) else None
+        hs_r = r_h.get('harq_stats_map') if isinstance(r_h, dict) else None
+        if hs_b and hs_r and isinstance(hs_b, dict) and isinstance(hs_r, dict):
+            # Prepare MCS histograms (counts -> normalized shares)
+            mc_b = hs_b.get('mcs_counts', {}) or {}
+            mc_r = hs_r.get('mcs_counts', {}) or {}
+            # Union of observed indices
+            idxs = sorted(set([int(k) for k in mc_b.keys()]) | set([int(k) for k in mc_r.keys()]))
+            if len(idxs) > 0:
+                cb = np.array([mc_b.get(int(i), 0) for i in idxs], dtype=float)
+                cr = np.array([mc_r.get(int(i), 0) for i in idxs], dtype=float)
+                sb = float(cb.sum()) if cb.sum() > 0 else 1.0
+                sr = float(cr.sum()) if cr.sum() > 0 else 1.0
+                pb = cb / sb
+                pr = cr / sr
+                # Weighted average MCS index as a compact summary
+                mean_b = float(np.sum(cb * np.array(idxs)) / sb)
+                mean_r = float(np.sum(cr * np.array(idxs)) / sr)
+
+                # Bar chart (side-by-side) of MCS share per index
+                x = np.arange(len(idxs))
+                w = 0.42
+                plt.figure(figsize=(9,4))
+                plt.bar(x - w/2, pb, width=w, label='Baseline-Default')
+                plt.bar(x + w/2, pr, width=w, label='Radio Map')
+                plt.xticks(x, [str(i) for i in idxs], rotation=0)
+                plt.xlabel('MCS index')
+                plt.ylabel('Share of selected TBs')
+                plt.title('MCS distribution (HARQ full, first seed)\nmean MCS: base={:.1f}, rm={:.1f}'.format(mean_b, mean_r))
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(os.path.join(out_dir, 'mcs_distribution_baseline_vs_rm.png'), dpi=140)
+                plt.close()
+
+            # Initial NACK rate comparison as a precision proxy
+            a_b = float(hs_b.get('initial_ack_count', 0))
+            n_b = float(hs_b.get('initial_nack_count', 0))
+            a_r = float(hs_r.get('initial_ack_count', 0))
+            n_r = float(hs_r.get('initial_nack_count', 0))
+            tot_b = max(1.0, a_b + n_b)
+            tot_r = max(1.0, a_r + n_r)
+            rate_b = n_b / tot_b
+            rate_r = n_r / tot_r
+            plt.figure(figsize=(5,4))
+            plt.bar([0,1], [rate_b, rate_r], tick_label=['Baseline-Default','Radio Map'])
+            plt.ylabel('Initial NACK rate')
+            plt.title('Link adaptation precision (lower is better)')
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, 'nack_rate_baseline_vs_rm.png'), dpi=140)
+            plt.close()
+    except Exception as e:
+        print('[WARN] MCS comparison plot failed:', e)
+
 
 if __name__ == '__main__':
     main()
