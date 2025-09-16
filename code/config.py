@@ -6,6 +6,12 @@ Doppler pre‑compensation) and their configs are removed. The Radio Map models
 terrestrial interference at the UE receiver per PRB.
 """
 
+import os
+
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 CONFIG = {
     # Grid and traffic
     "X": 60,                  # map width (matches radio_map grid)
@@ -46,7 +52,7 @@ CONFIG = {
 
     # Scheduler realism
     "use_mcs": True,          # use MCS table (vs Shannon)
-    "csi_mcs_table": "nr_64qam",   # NR Table 1 (64QAM-like) approximation
+    "csi_mcs_table": "nr_64qam",   # NR Table 1 (CQI->SE from 38.214)
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
     "csi_delay_ttis": 10,           # legacy knob (kept for compatibility)
     "baseline_csi_delay_ttis": 12,  # baseline CSI delay (ms slots) per 3GPP regen assumptions
@@ -108,7 +114,7 @@ CONFIG.update({
     "enable_harq_full": False,          # keep off by default
     "harq_target_bler": 0.1,
     "harq_max_retx": 4,
-    "mcs_table_kind": "table_1_64qam",
+    "mcs_table_kind": "3gpp_table_1",
     # PDSCH DMRS/overhead for N_RE computation
     "pdsch_dmrs_sym_per_slot": 1,
     "dmrs_re_per_sym_per_prb": 6,
@@ -125,7 +131,7 @@ CONFIG.update({
     # Retransmission scheduling priority boost in PF metric (additive)
     "harq_retx_priority_bonus": 0.0,
     # Optional path to 3GPP MCS tables (JSON). If set, you can choose '3gpp_table_1/2/3'.
-    "mcs_3gpp_table_path": None,
+    "mcs_3gpp_table_path": os.path.join(_BASE_DIR, "..", "docs", "mcs_tables_38_214.json"),
     "enable_cqi_periodicity": False,    # legacy switch (applies to both if specific flags not set)
     # New: decouple CQI periodicity per path
     "enable_cqi_periodicity_base": True,   # apply periodic CQI to baseline metrics

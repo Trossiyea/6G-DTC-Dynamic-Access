@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
+from csi import get_nr_cqi_table
+
 
 # ------------------------------
 # Helpers: symbols/RE accounting
@@ -43,7 +45,7 @@ def n_re_per_prb(
 
 
 # ------------------------------
-# MCS candidates (approximate)
+# MCS tables (3GPP TS 38.214)
 # ------------------------------
 @dataclass(frozen=True)
 class MCS:
@@ -56,60 +58,109 @@ class MCS:
         return self.Qm * self.R
 
 
-def _table1_64qam() -> List[MCS]:
-    """Approximate Table 5.1.3.1-1: 64QAM-capable set.
+_TABLE1_SPEC = [
+    (0, 2, 120), (1, 2, 157), (2, 2, 193), (3, 2, 251), (4, 2, 308),
+    (5, 2, 379), (6, 2, 449), (7, 2, 526), (8, 2, 602), (9, 2, 679),
+    (10, 4, 340), (11, 4, 378), (12, 4, 434), (13, 4, 490), (14, 4, 553),
+    (15, 4, 616), (16, 4, 658), (17, 6, 438), (18, 6, 466), (19, 6, 517),
+    (20, 6, 567), (21, 6, 616), (22, 6, 666), (23, 6, 719), (24, 6, 772),
+    (25, 6, 822), (26, 6, 873), (27, 6, 910), (28, 6, 948),
+]
 
-    We map a standard 15-step CQI SE vector into (Qm, R) pairs commonly used in
-    practice. This yields a stable candidate set covering QPSK/16QAM/64QAM.
-    """
-    # SE values (bits/s/Hz) for CQI 1..15 near 10% BLER in AWGN (industry-common)
-    se_vals = np.array([
-        0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
-        2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
-    ], dtype=float)
-    # Assign Qm by typical CQI regions: 1..4->QPSK, 5..8->16QAM, 9..15->64QAM
-    qm_by_idx = [2]*4 + [4]*4 + [6]*7
-    out: List[MCS] = []
-    j = 0
-    for i, se in enumerate(se_vals, start=1):
-        Qm = qm_by_idx[i-1]
-        R = float(se) / float(Qm)
-        out.append(MCS(idx=j, Qm=Qm, R=R))
-        j += 1
-    return out
+_TABLE2_SPEC = [
+    (0, 2, 120), (1, 2, 193), (2, 2, 308), (3, 2, 449), (4, 2, 602),
+    (5, 4, 378), (6, 4, 434), (7, 4, 490), (8, 4, 553), (9, 4, 616),
+    (10, 4, 658), (11, 6, 466), (12, 6, 517), (13, 6, 567), (14, 6, 616),
+    (15, 6, 666), (16, 6, 719), (17, 6, 772), (18, 6, 822), (19, 6, 873),
+    (20, 8, 682.5), (21, 8, 711), (22, 8, 754), (23, 8, 797), (24, 8, 841),
+    (25, 8, 885), (26, 8, 916.5), (27, 8, 948),
+]
 
-
-def _table2_256qam() -> List[MCS]:
-    """Approximate Table 5.1.3.1-2: 256QAM-capable set.
-
-    Extend 64QAM set with a few 256QAM points for high-SE region.
-    """
-    base = _table1_64qam()
-    # Add 256QAM candidates; choose code rates to span SE ~6.0..7.6
-    extra = [
-        MCS(idx=len(base)+0, Qm=8, R=0.75),   # se=6.00
-        MCS(idx=len(base)+1, Qm=8, R=0.80),   # se=6.40
-        MCS(idx=len(base)+2, Qm=8, R=0.85),   # se=6.80
-        MCS(idx=len(base)+3, Qm=8, R=0.90),   # se=7.20
-        MCS(idx=len(base)+4, Qm=8, R=0.95),   # se=7.60
-    ]
-    return base + extra
+_TABLE3_SPEC = [
+    (0, 2, 30), (1, 2, 40), (2, 2, 50), (3, 2, 64), (4, 2, 78),
+    (5, 2, 99), (6, 2, 120), (7, 2, 157), (8, 2, 193), (9, 2, 251),
+    (10, 2, 308), (11, 2, 379), (12, 2, 449), (13, 2, 526), (14, 2, 602),
+    (15, 4, 340), (16, 4, 378), (17, 4, 434), (18, 4, 490), (19, 4, 553),
+    (20, 4, 616), (21, 6, 438), (22, 6, 466), (23, 6, 517), (24, 6, 567),
+    (25, 6, 616), (26, 6, 666), (27, 6, 719), (28, 6, 772),
+]
 
 
-def _table3_low_se() -> List[MCS]:
-    """Approximate Table 5.1.3.1-3: Low-SE set (coverage).
+def _build_table(entries: List[Tuple[int, int, Any]]) -> List[MCS]:
+    table: List[MCS] = []
+    for idx, qm, rx in entries:
+        if isinstance(rx, str):
+            continue
+        R = float(rx) / 1024.0
+        table.append(MCS(idx=idx, Qm=int(qm), R=R))
+    table.sort(key=lambda m: m.idx)
+    return table
 
-    Keep QPSK-only with smaller steps.
-    """
-    se_vals = [0.06, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50]
-    out: List[MCS] = []
-    for i, se in enumerate(se_vals):
-        out.append(MCS(idx=i, Qm=2, R=float(se)/2.0))
-    return out
+
+_DEFAULT_MCS_TABLES: Dict[str, List[MCS]] = {
+    "table_1_64qam": _build_table(_TABLE1_SPEC),
+    "table_2_256qam": _build_table(_TABLE2_SPEC),
+    "table_3_low_se": _build_table(_TABLE3_SPEC),
+}
+
+
+def _canonical_table_kind(kind: str) -> Tuple[str, Optional[str]]:
+    """Return (canonical_name, override_key) for a requested table kind."""
+    k = str(kind or "").lower()
+    if k in ("legacy", "table_1", "table1", "table_1_64qam", "nr_64qam"):
+        return "table_1_64qam", None
+    if k in ("table_2", "table2", "table_2_256qam", "nr_256qam"):
+        return "table_2_256qam", None
+    if k in ("table_3", "table3", "table_3_low_se", "low_se"):
+        return "table_3_low_se", None
+    if k == "3gpp_table_1":
+        return "table_1_64qam", "3gpp_table_1"
+    if k == "3gpp_table_2":
+        return "table_2_256qam", "3gpp_table_2"
+    if k == "3gpp_table_3":
+        return "table_3_low_se", "3gpp_table_3"
+    return k, None
 
 
 _MCS_TABLES_3GPP: Dict[str, List[MCS]] = {}
 _BLER_CURVES: Dict[str, Dict[int, Tuple[np.ndarray, np.ndarray]]] = {}
+
+# Build AWGN 10% BLER thresholds by interpolating CQI anchors.
+_CQI_TABLE = get_nr_cqi_table("nr_64qam")
+_CQI_SE = (_CQI_TABLE[:, 1] * _CQI_TABLE[:, 2]) / 1024.0
+_CQI_THR_DB = _CQI_TABLE[:, 0]
+
+
+def _sinr10_from_se(se: float) -> float:
+    """Interpolate (or gently extrapolate) SINR for 10% BLER given spectral efficiency."""
+    s = float(se)
+    if s <= _CQI_SE[0]:
+        slope = (_CQI_THR_DB[1] - _CQI_THR_DB[0]) / (_CQI_SE[1] - _CQI_SE[0])
+        return float(_CQI_THR_DB[0] + slope * (s - _CQI_SE[0]))
+    if s >= _CQI_SE[-1]:
+        slope = (_CQI_THR_DB[-1] - _CQI_THR_DB[-2]) / (_CQI_SE[-1] - _CQI_SE[-2])
+        return float(_CQI_THR_DB[-1] + slope * (s - _CQI_SE[-1]))
+    return float(np.interp(s, _CQI_SE, _CQI_THR_DB))
+
+
+_DEFAULT_SINR_THRESH_DB: Dict[str, Dict[int, float]] = {}
+for name, tbl in _DEFAULT_MCS_TABLES.items():
+    thr_map: Dict[int, float] = {}
+    for m in tbl:
+        thr_map[m.idx] = _sinr10_from_se(m.se)
+    _DEFAULT_SINR_THRESH_DB[name] = thr_map
+
+
+def _table1_64qam() -> List[MCS]:
+    return list(_DEFAULT_MCS_TABLES["table_1_64qam"])
+
+
+def _table2_256qam() -> List[MCS]:
+    return list(_DEFAULT_MCS_TABLES["table_2_256qam"])
+
+
+def _table3_low_se() -> List[MCS]:
+    return list(_DEFAULT_MCS_TABLES["table_3_low_se"])
 
 
 def register_mcs_tables_from_file(path: str) -> None:
@@ -191,18 +242,15 @@ def register_bler_curves_from_file(path: str) -> None:
 
 
 def get_mcs_table(kind: str) -> List[MCS]:
-    k = str(kind).lower()
-    # 3GPP tables (require registration from file)
-    if k in ("3gpp_table_1", "3gpp_table_2", "3gpp_table_3"):
-        if k not in _MCS_TABLES_3GPP:
-            raise ValueError(f"3GPP MCS table '{k}' not registered. Provide CONFIG['mcs_3gpp_table_path'] to load.")
-        return _MCS_TABLES_3GPP[k]
-    if k in ("table_1", "table1", "nr_64qam", "table_1_64qam"):
-        return _table1_64qam()
-    if k in ("table_2", "table2", "nr_256qam", "table_2_256qam"):
-        return _table2_256qam()
-    if k in ("table_3", "table3", "low_se", "table_3_low_se"):
-        return _table3_low_se()
+    canon, override = _canonical_table_kind(kind)
+    if override is not None:
+        if override not in _MCS_TABLES_3GPP:
+            raise ValueError(
+                f"3GPP MCS table '{override}' not registered. Provide CONFIG['mcs_3gpp_table_path'] to load."
+            )
+        return list(_MCS_TABLES_3GPP[override])
+    if canon in _DEFAULT_MCS_TABLES:
+        return list(_DEFAULT_MCS_TABLES[canon])
     raise ValueError(f"Unknown MCS table kind: {kind}")
 
 
@@ -253,18 +301,32 @@ def bler_awgn_sigmoid(
     mcs: MCS,
     slope_db: float = 1.0,
     margin_db: float = 1.5,
+    table_kind: Optional[str] = None,
 ) -> np.ndarray:
-    """Simple BLER curve: logistic vs (SINR - threshold).
+    """Simple BLER curve using a logistic fit around the 10% BLER SINR point.
 
-    - threshold is derived from Shannon for the MCS SE, with a positive margin.
-    - slope_db sets steepness (smaller -> sharper transition).
-    Returns BLER in [0,1].
+    When ``table_kind`` is provided we use the interpolated 38.214 AWGN anchor
+    for that MCS index. Otherwise we fall back to a Shannon+margin heuristic to
+    preserve backward compatibility.
     """
-    se = mcs.se
-    th_db = _shannon_required_sinr_db(se) + float(margin_db)
+    sinr_eff_db = np.asarray(sinr_eff_db, dtype=float)
     k = max(1e-6, float(slope_db))
-    x = (np.asarray(sinr_eff_db, dtype=float) - th_db) / k
-    # Logistic: p = 1/(1+exp(x)) gives p~0.5 at x=0; adjust to reach ~0.1 near +2.2k
+
+    th_override = None
+    if table_kind is not None:
+        canon, _ = _canonical_table_kind(table_kind)
+        thr_map = _DEFAULT_SINR_THRESH_DB.get(canon)
+        if thr_map is not None:
+            th_override = thr_map.get(int(mcs.idx))
+
+    if th_override is None:
+        se = mcs.se
+        th_db = _shannon_required_sinr_db(se) + float(margin_db)
+    else:
+        th_db = float(th_override)
+
+    mu = th_db - k * np.log(9.0)  # ensures BLER≈0.1 at SINR=th_db
+    x = (sinr_eff_db - mu) / k
     p = 1.0 / (1.0 + np.exp(x))
     return np.clip(p, 0.0, 1.0)
 
@@ -320,12 +382,25 @@ def choose_mcs_from_sinr(
     """Pick the highest MCS (by SE) with predicted BLER <= target.
     If none satisfies, pick the most robust one.
     """
+    canon, override = _canonical_table_kind(table_kind)
     cands = get_mcs_table(table_kind)
     best = cands[0]
     for m in cands:
-        p_curve = bler_from_registered_curves(sinr_eff_db, m, table_kind)
+        p_curve = None
+        for key in filter(None, [override, canon]):
+            p_curve = bler_from_registered_curves(sinr_eff_db, m, key)
+            if p_curve is not None:
+                break
         if p_curve is None:
-            p = float(bler_awgn_sigmoid(sinr_eff_db, m, slope_db=slope_db, margin_db=margin_db))
+            p = float(
+                bler_awgn_sigmoid(
+                    sinr_eff_db,
+                    m,
+                    slope_db=slope_db,
+                    margin_db=margin_db,
+                    table_kind=canon,
+                )
+            )
         else:
             p = float(np.squeeze(p_curve))
         if p <= target_bler and m.se >= best.se:

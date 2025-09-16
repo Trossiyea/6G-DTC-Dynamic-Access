@@ -9,93 +9,97 @@ This first version keeps the existing behavior (legacy thresholds)
 to avoid regressions.
 """
 
-from typing import Optional, Tuple
+from typing import Dict, Optional
 import numpy as np
 
 
-def _legacy_sinr_to_se_mcs(sinr_db: np.ndarray) -> np.ndarray:
-    """
-    Legacy mapping: approximate LTE-like CQI thresholds to spectral efficiency.
-    Maintains existing behavior in main.py before we introduce 38.214 tables.
-    """
-    thr_db = np.array([
-        -6.7, -4.7, -2.3, 0.2, 2.4, 4.3, 5.9, 8.1, 10.3, 11.7, 14.1, 16.3, 18.7, 21.0, 22.7
-    ], dtype=float)
-    se_vals = np.array([
-        0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
-        2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
-    ], dtype=float)
-    idx = np.searchsorted(thr_db, sinr_db, side='right') - 1
-    idx = np.clip(idx, 0, len(se_vals) - 1)
-    se = se_vals[idx]
-    se = np.where(sinr_db < thr_db[0], 0.0, se)
-    return se
+# 3GPP TS 38.214 §5.2.2.1 CQI-to-SE entries (DL).
+# Each tuple: (SINR threshold for CQI k at 10% BLER, modulation order Qm, R_x1024)
+_NR_CQI_TABLE: Dict[str, np.ndarray] = {
+    "nr_64qam": np.array([
+        (-6.7, 2, 78),   # CQI 1
+        (-4.7, 2, 120),
+        (-2.3, 2, 193),
+        (0.2,  2, 308),
+        (2.4,  2, 449),
+        (4.3,  2, 602),
+        (5.9,  4, 378),
+        (8.1,  4, 490),
+        (10.3, 4, 616),
+        (11.7, 6, 466),
+        (14.1, 6, 567),
+        (16.3, 6, 666),
+        (18.7, 6, 772),
+        (21.0, 6, 873),
+        (22.7, 6, 948),
+    ], dtype=float),
+    # For 256QAM-capable UE the CQI-to-SE mapping reuses the same thresholds
+    # while allowing higher-order MCS beyond CQI 15 through adaptive MCS.
+    "nr_256qam": np.array([
+        (-6.7, 2, 78),
+        (-4.7, 2, 120),
+        (-2.3, 2, 193),
+        (0.2,  2, 308),
+        (2.4,  2, 449),
+        (4.3,  2, 602),
+        (5.9,  4, 378),
+        (8.1,  4, 490),
+        (10.3, 4, 616),
+        (11.7, 6, 466),
+        (14.1, 6, 567),
+        (16.3, 6, 666),
+        (18.7, 6, 772),
+        (21.0, 6, 873),
+        (22.7, 6, 948),
+    ], dtype=float),
+}
 
 
-def _nr_cqi_table(table: str) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Returns (thresholds_dB[15], se_vals[15]) for CQI 1..15 at 10% BLER AWGN.
-    - For now, thresholds are the common industry set used for 64QAM (legacy LTE-like),
-      which is a reasonable baseline for NR Table 1 (64QAM).
-    - For Table 2 (256QAM), we reuse thresholds initially and keep SE equal to Table 1
-      until calibrated values are provided.
-    """
-    thr_db = np.array([
-        -6.7, -4.7, -2.3, 0.2, 2.4, 4.3, 5.9, 8.1, 10.3, 11.7, 14.1, 16.3, 18.7, 21.0, 22.7
-    ], dtype=float)
-    if table in ("legacy", "nr_64qam"):
-        se_vals = np.array([
-            0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
-            2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
-        ], dtype=float)
-        return thr_db, se_vals
-    if table == "nr_256qam":
-        # Placeholder: same thresholds and SE as 64QAM until calibrated values are supplied.
-        se_vals = np.array([
-            0.1523, 0.2344, 0.3770, 0.6016, 0.8770, 1.1758, 1.4766, 1.9141, 2.4063,
-            2.7305, 3.3223, 3.9023, 4.5234, 5.1152, 5.5547
-        ], dtype=float)
-        return thr_db, se_vals
-    raise ValueError(f"Unknown CQI table: {table}")
+def _resolve_table(table: str) -> np.ndarray:
+    key = str(table or "nr_64qam").lower()
+    if key == "legacy":
+        key = "nr_64qam"
+    if key not in _NR_CQI_TABLE:
+        raise ValueError(f"Unknown CQI table: {table}")
+    return _NR_CQI_TABLE[key]
+
+
+def get_nr_cqi_table(table: str = "nr_64qam") -> np.ndarray:
+    """Return a copy of the CQI table entries (threshold_dB, Qm, R_x1024)."""
+    return _resolve_table(table).copy()
 
 
 def sinr_to_cqi(sinr_db: np.ndarray, table: str = "nr_64qam") -> np.ndarray:
-    """
-    Map SINR to CQI (0..15), with 0 indicating out of coverage.
-    """
+    """Map SINR (dB) to CQI index (0..15) using 38.214 thresholds."""
     sinr_db = np.asarray(sinr_db, dtype=float)
-    thr_db, _ = _nr_cqi_table(table)
-    idx = np.searchsorted(thr_db, sinr_db, side='right')
-    cqi = np.clip(idx, 0, 15)
-    return cqi
+    tbl = _resolve_table(table)
+    thr = tbl[:, 0]
+    idx = np.searchsorted(thr, sinr_db, side="right")
+    return np.clip(idx, 0, tbl.shape[0])
 
 
 def cqi_to_se(cqi: np.ndarray, table: str = "nr_64qam") -> np.ndarray:
-    """
-    Map CQI (0..15) to spectral efficiency (bits/s/Hz). CQI=0 -> SE=0.
-    """
+    """Convert CQI (0..15) into spectral efficiency (bits/s/Hz)."""
     cqi = np.asarray(cqi, dtype=int)
-    _, se_vals = _nr_cqi_table(table)
-    # cqi 1..15 map to se_vals[0..14]
-    se = np.zeros_like(cqi, dtype=float)
-    mask = (cqi > 0)
-    se[mask] = se_vals[np.clip(cqi[mask] - 1, 0, len(se_vals) - 1)]
-    return se
+    tbl = _resolve_table(table)
+    se_vals = (tbl[:, 1] * tbl[:, 2]) / 1024.0
+    out = np.zeros_like(cqi, dtype=float)
+    mask = cqi > 0
+    idx = np.clip(cqi[mask] - 1, 0, se_vals.size - 1)
+    out[mask] = se_vals[idx]
+    return out
 
 
 def sinr_to_se_mcs(sinr_db: np.ndarray, table: str = "legacy") -> np.ndarray:
-    """
-    Public API: map SINR (dB) to spectral efficiency (bits/s/Hz).
-    - table: "legacy" keeps current behavior; future options will include
-      standardized 38.214 tables (e.g., "nr_64qam", "nr_256qam").
-    """
+    """Map SINR to spectral efficiency via CQI tables."""
     sinr_db = np.asarray(sinr_db, dtype=float)
-    if table == "legacy":
-        return _legacy_sinr_to_se_mcs(sinr_db)
-    if table in ("nr_64qam", "nr_256qam"):
-        cqi = sinr_to_cqi(sinr_db, table="nr_64qam" if table == "nr_64qam" else "nr_256qam")
-        return cqi_to_se(cqi, table=table)
-    raise ValueError(f"Unknown MCS table: {table}")
+    tbl_key = str(table or "nr_64qam").lower()
+    if tbl_key not in ("legacy", "nr_64qam", "nr_256qam"):
+        raise ValueError(f"Unknown MCS table: {table}")
+    if tbl_key == "legacy":
+        tbl_key = "nr_64qam"
+    cqi = sinr_to_cqi(sinr_db, table=tbl_key)
+    return cqi_to_se(cqi, table=tbl_key)
 
 
 class OLLA:

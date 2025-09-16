@@ -287,12 +287,13 @@ class HarqManagerFull:
         from link_adapt import bler_awgn_sigmoid, MCS
         # Effective SINR for current combined attempts
         sinr_eff_db = float(tb.get('sinr_eff_db', 0.0))
-        m = MCS(idx=0, Qm=int(tb.get('mcs_Qm', 2)), R=float(tb.get('mcs_R', 0.1)))
+        m = MCS(idx=int(tb.get('mcs_idx', 0)), Qm=int(tb.get('mcs_Qm', 2)), R=float(tb.get('mcs_R', 0.1)))
         p = float(bler_awgn_sigmoid(
             sinr_eff_db,
             m,
             slope_db=float(self.cfg.get('bler_slope_db', 1.0)),
             margin_db=float(self.cfg.get('bler_margin_db', 1.5)),
+            table_kind=str(self.cfg.get('mcs_table_kind', self.cfg.get('csi_mcs_table', 'table_1_64qam'))),
         ))
         # Maximum retransmissions
         n_retx = int(tb.get('n_retx', 0))
