@@ -11,9 +11,10 @@ CONFIG = {
     "X": 60,                  # map width (matches radio_map grid)
     "Y": 60,                  # map height
     "Z": 64,                  # subbands in radio_map (not strict NR PRBs)
-    "N_UE": 50,               # active UEs in footprint
-    "T": 200,                 # number of TTIs
+    "N_UE": 40,               # active UEs in footprint (per-beam slice)
+    "T": 160,                 # number of TTIs per measurement window
     "K_interferers": 7,       # used only when synthetic map is generated
+    "seed": 101,              # master RNG seed for reproducibility
 
     # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
     "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz
@@ -21,6 +22,11 @@ CONFIG = {
     "noise_dbm": -121.45,     # fallback if PRB BW not set
     "noise_temp_K": 290.0,    # thermal noise temperature
     # Alternatively you can set: "prb_bw_hz": 360000.0
+
+    # Channel model
+    "channel_model": "3gpp_ntn",
+    "ntn_channel_profile": "s_band_handheld_urban",
+    "channel_params": None,   # optional overrides for NTN profile tables
 
     # DL transmit power and link budget
     "P_tx_dbm": 30.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
@@ -37,11 +43,19 @@ CONFIG = {
     "use_mcs": True,          # use MCS table (vs Shannon)
     "csi_mcs_table": "nr_64qam",   # NR Table 1 (64QAM-like) approximation
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
-    "csi_delay_ttis": 10,           # default CSI report delay (TTIs)
-    "baseline_csi_delay_ttis": 10,  # baseline scheduler metric delay
-    "rm_csi_delay_ttis": 0,         # RadioMap scheduler metric delay
+    "csi_delay_ttis": 10,           # legacy knob (kept for compatibility)
+    "baseline_csi_delay_ttis": 12,  # baseline CSI delay (ms slots) per 3GPP regen assumptions
+    "rm_csi_delay_ttis": 2,         # RadioMap CSI delay (near real-time on-board)
     "power_split": False,           # DL default: no per-UE power split penalty
     "max_prbs_per_ue": 6,
+
+    # CSI periodicity / estimation error (baseline vs Radio Map)
+    "enable_cqi_periodicity_base": True,
+    "enable_cqi_periodicity_rm": False,
+    "cqi_period_ttis": 10,
+    "cqi_offset_ttis": 0,
+    "radiomap_est_error_db": 1.5,
+    "radiomap_blur_sigma": 1.0,
 
     # Geometry + beam (NR-NTN LEO S-band)
     "enable_geometry": True,  # enable per-UE FSPL and beam gain
@@ -58,6 +72,11 @@ CONFIG = {
     "sat_ground_speed_kms": 7.5,
     "sat_heading_deg": 0.0,   # 0: +x direction
 
+    # Radio Map dynamics (interference drift & flicker)
+    "enable_time_varying": True,
+    "rm_flicker_db_std": 1.5,
+    "rm_drift_px": (1, 0),
+
     # DL power allocation model
     # equal_prb: constant per‑PRB EIRP = P_tx_dbm
     # waterfill: total power P_tot_dbm allocated per PRB via water‑filling
@@ -70,7 +89,7 @@ CONFIG = {
 # Scheduler
 CONFIG.update({
     "sched_require_contiguous": True,  # one contiguous block per UE per TTI
-    "sched_eesm_beta_db": 1.0,
+    "sched_eesm_beta_db": 1.3,
 })
 
 # Access gating/HO removed in minimal DL-only preset
@@ -105,7 +124,7 @@ CONFIG.update({
     # New: decouple CQI periodicity per path
     "enable_cqi_periodicity_base": True,   # apply periodic CQI to baseline metrics
     "enable_cqi_periodicity_rm": False,    # apply periodic CQI to RM metrics
-    "cqi_period_ttis": 0,
+    "cqi_period_ttis": 10,
     "cqi_offset_ttis": 0,
 })
 

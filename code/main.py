@@ -21,6 +21,7 @@ from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
 from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
 from ntn_csi import snr_to_se_sched
+from ntn_channel import sample_3gpp_ntn_fading
 from harq import HarqManager, HarqManagerFull
 from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file, register_bler_curves_from_file
 
@@ -286,7 +287,8 @@ def compute_metric_override_static_if_needed(config: Dict,
                                              ue_pos: np.ndarray,
                                              L_fs_per_ue,
                                              G_rx_per_ue,
-                                             noise_dbm: float) -> Optional[np.ndarray]:
+                                             noise_dbm: float,
+                                             elev_deg_per_ue: Optional[np.ndarray]) -> Optional[np.ndarray]:
     """
     If estimation error/blur configured, compute a static predicted per-PRB SE metric to
     override instantaneous metric in RadioMap scheduler (matches original behavior).
@@ -312,7 +314,11 @@ def compute_metric_override_static_if_needed(config: Dict,
         N0_dbm=noise_dbm,
         rx_nf_db=config.get("rx_nf_db", 0.0),
         impl_loss_db=config.get("impl_loss_db", 0.0),
-        seed=config["seed"]
+        seed=config["seed"],
+        elevation_deg=elev_deg_per_ue,
+        channel_model=config.get("channel_model", "3gpp_ntn"),
+        channel_params=config.get("channel_params"),
+        channel_profile=config.get("ntn_channel_profile", "s_band_handheld_urban"),
     )
     mcs_params = {
         "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
@@ -327,6 +333,7 @@ def build_time_variation_if_enabled(config: Dict,
                                     ue_pos: np.ndarray,
                                     L_fs_per_ue,
                                     G_rx_per_ue,
+                                    elev_deg_per_ue,
                                     P_tx_per_ue_dbm,
                                     noise_dbm: float,
                                     rng: np.random.Generator,
@@ -375,9 +382,9 @@ def build_time_variation_if_enabled(config: Dict,
                     R_hat_dbm = blur1d(R_hat_dbm, k, axis=0)
                     R_hat_dbm = blur1d(R_hat_dbm, k, axis=1)
             if orbit_model is not None:
-                L_fs_hat, G_rx_hat, _, _ = orbit_model.get_geometry(ue_pos, t)
+                L_fs_hat, G_rx_hat, _, _, elev_hat = orbit_model.get_geometry(ue_pos, t)
             else:
-                L_fs_hat, G_rx_hat = L_fs_per_ue, G_rx_per_ue
+                L_fs_hat, G_rx_hat, elev_hat = L_fs_per_ue, G_rx_per_ue, elev_deg_per_ue
             cap_pred_t, cap_wb_pred_t, _, _, snr_lin_pred_t, snr_lin_wb_pred_t = compute_caps(
                 R_hat_dbm, ue_pos,
                 P_tx_dbm=P_tx_per_ue_dbm,
@@ -387,15 +394,19 @@ def build_time_variation_if_enabled(config: Dict,
                 N0_dbm=noise_dbm,
                 rx_nf_db=config.get("rx_nf_db", 0.0),
                 impl_loss_db=config.get("impl_loss_db", 0.0),
-                seed=config["seed"]
+                seed=config["seed"],
+                elevation_deg=elev_hat,
+                channel_model=config.get("channel_model", "3gpp_ntn"),
+                channel_params=config.get("channel_params"),
+                channel_profile=config.get("ntn_channel_profile", "s_band_handheld_urban"),
             )
 
         if orbit_model is not None:
-            L_fs_t, G_rx_t, tau_s_t, fd_hz_t = orbit_model.get_geometry(ue_pos, t)
+            L_fs_t, G_rx_t, tau_s_t, fd_hz_t, elev_t = orbit_model.get_geometry(ue_pos, t)
             tau_time.append(tau_s_t)
             fd_time.append(fd_hz_t)
         else:
-            L_fs_t, G_rx_t = L_fs_per_ue, G_rx_per_ue
+            L_fs_t, G_rx_t, elev_t = L_fs_per_ue, G_rx_per_ue, elev_deg_per_ue
         cap_t, cap_wb_t, _, _, snr_lin_t, snr_lin_wb_t = compute_caps(
             R_t, ue_pos,
             P_tx_dbm=P_tx_per_ue_dbm,
@@ -405,7 +416,11 @@ def build_time_variation_if_enabled(config: Dict,
             N0_dbm=noise_dbm,
             rx_nf_db=config.get("rx_nf_db", 0.0),
             impl_loss_db=config.get("impl_loss_db", 0.0),
-            seed=config["seed"]
+            seed=config["seed"],
+            elevation_deg=elev_t,
+            channel_model=config.get("channel_model", "3gpp_ntn"),
+            channel_params=config.get("channel_params"),
+            channel_profile=config.get("ntn_channel_profile", "s_band_handheld_urban"),
         )
         # DL-only: generic residual Doppler fraction -> ICI penalty (optional)
         dop_frac = float(config.get("doppler_residual_fraction", 0.0) or 0.0)
@@ -413,9 +428,14 @@ def build_time_variation_if_enabled(config: Dict,
             eps_f = np.abs(fd_hz_t) * dop_frac
             scs_khz = float(config.get("scs_khz", 30))
             T_sym = 1.0 / (scs_khz * 1e3)
-            ici_fac = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+            ici_base = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
+            ici_fac = np.maximum(1.0, ici_base * (1.0 + 2.0 * dop_frac))
             snr_lin_t = snr_lin_t / ici_fac.reshape(-1, 1)
             snr_lin_wb_t = snr_lin_wb_t / ici_fac
+            if snr_lin_pred_t is not None:
+                snr_lin_pred_t = snr_lin_pred_t / ici_fac.reshape(-1, 1)
+            if snr_lin_wb_pred_t is not None:
+                snr_lin_wb_pred_t = snr_lin_wb_pred_t / ici_fac
         mcs_params = {
             "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
             "mcs_table": config.get("csi_mcs_table", "legacy"),
@@ -448,12 +468,19 @@ def compute_caps(R_xyz_dbm: np.ndarray,
                  N0_dbm: float = -121.45,
                  rx_nf_db: float = 0.0,
                  impl_loss_db: float = 0.0,
-                 seed: int = 1) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                 seed: int = 1,
+                 elevation_deg: Optional[np.ndarray] = None,
+                 channel_model: str = "3gpp_ntn",
+                 channel_params: Optional[Dict] = None,
+                 channel_profile: str = "s_band_handheld_urban") -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute per-UE per-PRB spectral efficiency based on the Radio Map.
     Returns:
       cap_shannon[UE,Z], cap_wb_shannon[UE], P_rx_dbm[UE], I_total_dbm[UE,Z],
       snr_lin[UE,Z], snr_lin_wb[UE]
+    channel_model:
+      - '3gpp_ntn': three-state NTN fading (default)
+      - 'lognormal': legacy independent lognormal fading with Shannon capacity
     """
     rng = np.random.default_rng(seed)
     X, Y, Z = R_xyz_dbm.shape
@@ -463,8 +490,6 @@ def compute_caps(R_xyz_dbm: np.ndarray,
     x_idx = ue_pos_xy[:, 0]
     y_idx = ue_pos_xy[:, 1]
 
-    # Link budget: received power per UE (dBm)
-    shadow_db = rng.normal(0.0, shadow_db_std, size=N_UE)
     # Broadcast-compatible operations for scalar or per-UE arrays
     L_fs = np.asarray(L_fs_db, dtype=float)
     G_rx = np.asarray(G_rx_db, dtype=float)
@@ -475,7 +500,32 @@ def compute_caps(R_xyz_dbm: np.ndarray,
         G_rx = np.full(N_UE, float(G_rx))
     if P_tx.ndim == 0:
         P_tx = np.full(N_UE, float(P_tx))
-    P_rx_dbm = P_tx - L_fs + G_rx + shadow_db  # dBm
+    channel_kind = (channel_model or "3gpp_ntn").lower().strip()
+    if elevation_deg is None:
+        elev_use = np.full(N_UE, 90.0, dtype=float)
+    else:
+        elev_use = np.asarray(elevation_deg, dtype=float)
+        if elev_use.ndim == 0:
+            elev_use = np.full(N_UE, float(elev_use))
+    overrides = channel_params if isinstance(channel_params, dict) else None
+
+    if channel_kind == "3gpp_ntn":
+        large_scale_db, fading_lin, _ = sample_3gpp_ntn_fading(
+            rng,
+            elev_use,
+            Z,
+            profile_name=str(channel_profile or "s_band_handheld_urban"),
+            overrides=overrides,
+        )
+        P_rx_dbm = P_tx - L_fs + G_rx + large_scale_db
+    elif channel_kind in ("lognormal", "legacy"):
+        shadow_db = rng.normal(0.0, shadow_db_std, size=N_UE)
+        fading_lin = np.ones((N_UE, Z), dtype=float)
+        P_rx_dbm = P_tx - L_fs + G_rx + shadow_db
+    else:
+        raise ValueError(f"Unsupported channel_model '{channel_model}'.")
+
+    P_rx_prb_dbm = P_rx_dbm.reshape(-1, 1) + 10.0 * np.log10(np.maximum(fading_lin, 1e-12))
 
     # Interference + thermal noise per UE per PRB (dBm)
     I_uez_dbm = R_xyz_dbm[x_idx, y_idx, :]  # [UE,Z]
@@ -485,7 +535,7 @@ def compute_caps(R_xyz_dbm: np.ndarray,
     I_total_dbm = mw_to_dbm(I_total_mw)
 
     # Per-PRB SNR and capacity (bits/s/Hz)
-    gamma_db = (P_rx_dbm.reshape(-1, 1) - I_total_dbm)            # [UE,Z]
+    gamma_db = P_rx_prb_dbm - I_total_dbm                          # [UE,Z]
     snr_lin = 10.0 ** (gamma_db / 10.0)
     cap = np.log2(1.0 + snr_lin)                                  # [UE,Z]
 
@@ -493,8 +543,10 @@ def compute_caps(R_xyz_dbm: np.ndarray,
     # conservative and realistic CQI statistic vs median.
     I_wb_mw = np.mean(I_total_mw, axis=1)                          # [UE]
     I_wb_dbm = mw_to_dbm(I_wb_mw)
-    gamma_db_wb = P_rx_dbm - I_wb_dbm
-    snr_lin_wb = 10.0 ** (gamma_db_wb / 10.0)
+    P_rx_mw = dbm_to_mw(P_rx_dbm)
+    mean_fading = np.mean(fading_lin, axis=1)
+    snr_lin_wb = (P_rx_mw * mean_fading) / np.maximum(I_wb_mw, 1e-30)
+    snr_lin_wb = np.maximum(snr_lin_wb, 1e-12)
     cap_wb = np.log2(1.0 + snr_lin_wb)                            # [UE]
 
     return cap, cap_wb, P_rx_dbm, I_total_dbm, snr_lin, snr_lin_wb
@@ -1313,7 +1365,7 @@ def run_once(config: Dict) -> Dict:
     ue_pos = generate_ue_positions(N_UE, X, Y, rng)
 
     # Geometry/beam, noise/bandwidth, power settings
-    L_fs_per_ue, G_rx_per_ue = compute_geometry_and_beam(config, X, Y, ue_pos)
+    L_fs_per_ue, G_rx_per_ue, elev_deg_per_ue = compute_geometry_and_beam(config, X, Y, ue_pos)
     noise_dbm, prb_bw_hz = resolve_noise_and_prb_bw(config)
     P_tx_per_ue_dbm = apply_open_loop_power_control(config, L_fs_per_ue, G_rx_per_ue)
 
@@ -1327,12 +1379,16 @@ def run_once(config: Dict) -> Dict:
         N0_dbm=noise_dbm,
         rx_nf_db=config.get("rx_nf_db", 0.0),
         impl_loss_db=config.get("impl_loss_db", 0.0),
-        seed=config["seed"]
+        seed=config["seed"],
+        elevation_deg=elev_deg_per_ue,
+        channel_model=config.get("channel_model", "3gpp_ntn"),
+        channel_params=config.get("channel_params"),
+        channel_profile=config.get("ntn_channel_profile", "s_band_handheld_urban"),
     )
 
     # Estimation error: optional static predicted metric for RadioMap scheduler
     metric_override = compute_metric_override_static_if_needed(
-        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, noise_dbm
+        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, noise_dbm, elev_deg_per_ue
     )
 
     # Orbit dynamics (measurement geometry) if enabled; no HO gating in minimal DL
@@ -1345,7 +1401,7 @@ def run_once(config: Dict) -> Dict:
 
     # Optional time variation
     time_series = build_time_variation_if_enabled(
-        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, P_tx_per_ue_dbm, noise_dbm, rng,
+        config, R_xyz_dbm, ue_pos, L_fs_per_ue, G_rx_per_ue, elev_deg_per_ue, P_tx_per_ue_dbm, noise_dbm, rng,
         None if config.get("enable_time_varying", False) else metric_override,
         orbit_model=orbit_model_meas,
     )
