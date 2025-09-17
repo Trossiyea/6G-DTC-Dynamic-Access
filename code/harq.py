@@ -99,6 +99,8 @@ class HarqManagerFull:
                 step_down_db=float(config.get("olla_step_down_db", 0.1)),
                 init_offset_db=float(config.get("olla_init_offset_db", config.get("csi_olla_offset_db", 0.0))),
                 p_target=float(config.get("harq_target_bler", 0.1)),
+                min_offset_db=float(config.get("olla_min_db", -6.0)),
+                max_offset_db=float(config.get("olla_max_db", 6.0)),
             )
             for _ in range(self.N)
         ]
@@ -123,6 +125,11 @@ class HarqManagerFull:
         # Initial transmission outcome stats
         self._init_ack = 0
         self._init_nack = 0
+        # TB-level counters
+        self._tb_started = 0
+        self._tb_acked = 0
+        self._tb_dropped = 0
+        self._sum_retx_acked = 0
 
     # ------------------------
     # Public API used by schedulers
@@ -161,6 +168,12 @@ class HarqManagerFull:
                     self._acked_bits_per_ue[u] += float(tb.get("tbs_bits", 0))
                     if int(tb.get('n_retx', 0)) == 0:
                         self._init_ack += 1
+                    # TB-level stats
+                    self._tb_acked += 1
+                    try:
+                        self._sum_retx_acked += int(tb.get('n_retx', 0))
+                    except Exception:
+                        pass
                     # Free the process
                     self._procs[u][pidx] = None
                     if self._outstanding[u] > 0:
@@ -169,8 +182,20 @@ class HarqManagerFull:
                     self._nack_count += 1
                     if int(tb.get('n_retx', 0)) == 0:
                         self._init_nack += 1
-                    # Mark for retransmission
-                    self._retx[u] = (pidx, tb_id)
+                    # If max retx reached, drop TB; else mark for retransmission
+                    max_retx = int(self.cfg.get('harq_max_retx', 4))
+                    n_retx_now = int(tb.get('n_retx', 0))
+                    if n_retx_now >= max_retx:
+                        # Final NACK -> drop TB and free process
+                        self._tb_dropped += 1
+                        self._procs[u][pidx] = None
+                        if self._outstanding[u] > 0:
+                            self._outstanding[u] -= 1
+                        # Ensure no retx is pending
+                        self._retx[u] = None
+                    else:
+                        # Mark for retransmission
+                        self._retx[u] = (pidx, tb_id)
                 i += 1
             # prune processed events
             self._acks[u] = [ev for ev in pending if ev[0] > self.t]
@@ -266,6 +291,8 @@ class HarqManagerFull:
                 }
                 self._tb_next[u] += 1
                 self._procs[u][pidx] = tb
+                # Started a new TB
+                self._tb_started += 1
                 # Schedule feedback
                 self._acks[u].append((self.t + self.D, tb['tb_id'], pidx))
 
@@ -319,6 +346,7 @@ class HarqManagerFull:
 
     def get_stats(self) -> Dict:
         """Return collected HARQ/link-adaptation statistics."""
+        avg_retx = float(self._sum_retx_acked) / float(self._tb_acked) if self._tb_acked > 0 else 0.0
         return {
             'ack_count': int(self._ack_count),
             'nack_count': int(self._nack_count),
@@ -328,4 +356,9 @@ class HarqManagerFull:
             'acked_bits_per_ue': self._acked_bits_per_ue.tolist(),
             'initial_ack_count': int(self._init_ack),
             'initial_nack_count': int(self._init_nack),
+            # TB-level aggregates
+            'tb_started': int(self._tb_started),
+            'tb_acked': int(self._tb_acked),
+            'tb_dropped': int(self._tb_dropped),
+            'avg_retx_per_acked': float(avg_retx),
         }

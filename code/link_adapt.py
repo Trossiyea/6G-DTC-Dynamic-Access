@@ -355,21 +355,30 @@ def bler_from_registered_curves(
 
 
 class OLLA:
-    def __init__(self, step_up_db: float = 0.1, step_down_db: float = 0.1, init_offset_db: float = 0.0, p_target: float = 0.1):
+    def __init__(self, step_up_db: float = 0.1, step_down_db: float = 0.1, init_offset_db: float = 0.0, p_target: float = 0.1,
+                 min_offset_db: float = -6.0, max_offset_db: float = 6.0):
         self.step_up_db = float(step_up_db)
         self.step_down_db = float(step_down_db)
         self.offset_db = float(init_offset_db)
         self.p_target = float(p_target)
+        self.min_offset_db = float(min_offset_db)
+        self.max_offset_db = float(max_offset_db)
 
     def apply(self, sinr_db: np.ndarray) -> np.ndarray:
         return np.asarray(sinr_db, dtype=float) + self.offset_db
 
     def update(self, is_ack: bool) -> None:
-        # NACK -> increase offset (more conservative); ACK -> decrease offset
+        # ACK -> increase offset (more aggressive next time)
+        # NACK -> decrease offset (more conservative next time)
         if is_ack:
-            self.offset_db -= self.step_down_db
-        else:
             self.offset_db += self.step_up_db
+        else:
+            self.offset_db -= self.step_down_db
+        # Clamp to avoid runaway
+        if self.offset_db > self.max_offset_db:
+            self.offset_db = self.max_offset_db
+        elif self.offset_db < self.min_offset_db:
+            self.offset_db = self.min_offset_db
 
 
 def choose_mcs_from_sinr(

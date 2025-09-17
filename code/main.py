@@ -729,6 +729,25 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
         if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
             harq_mgr.on_scheduled(np.unique(winners))
 
+    # Tail flush: realize ACKs that arrive after the last scheduled TTI (T-1)
+    if harq_mgr is not None and bool(cfg.get("harq_flush_tail", True)):
+        try:
+            D = int(cfg.get("harq_ack_delay_ttis", 0) or 0)
+        except Exception:
+            D = 0
+        if D > 0:
+            if re_per_prb_val is None:
+                re_per_prb_val = max(1, re_per_prb_from_config(cfg))
+            for s in range(1, D + 1):
+                try:
+                    ack_bits_tail = harq_mgr.advance_time((T - 1) + s)
+                except TypeError:
+                    ack_bits_tail = None
+                if ack_bits_tail is not None:
+                    thr_ack = np.asarray(ack_bits_tail, dtype=float) / float(re_per_prb_val)
+                    sum_rate += float(np.sum(thr_ack))
+                    Rbar = (1 - beta) * Rbar + beta * thr_ack
+
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
 
@@ -1031,14 +1050,94 @@ def pf_schedule_radiomap_blocks(
 
         if (harq_mgr is not None) and hasattr(harq_mgr, 'on_scheduled_blocks'):
             # Register TBs for HARQ manager; credit happens on feedback
+            # Optionally apply DL power allocation (e.g., water-filling) before building SINR vectors
+            winners_full = np.full(Z, -1, dtype=int)
+            for ue in range(N_UE):
+                if int(k_assigned[ue]) <= 0:
+                    continue
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                winners_full[li:ri+1] = ue
+
+            snr_scaled = np.array(snr_true, copy=True)
+            if str(dl_power_model).lower() == 'waterfill' and P_tot_dbm is not None:
+                # Group-level (per-UE block) water-filling: same power per PRB within a UE block
+                # This preserves single-MCS per block and reduces EESM penalty.
+                blocks = []  # (ue, li, ri)
+                for ue in range(N_UE):
+                    if int(k_assigned[ue]) <= 0:
+                        continue
+                    li, ri = int(l_idx[ue]), int(r_idx[ue])
+                    blocks.append((ue, li, ri))
+                if blocks:
+                    P_ref_dbm_eff = float(P_ref_dbm) if P_ref_dbm is not None else 0.0
+                    P_ref_mW = 10.0 ** (P_ref_dbm_eff / 10.0)
+                    P_tot_mW = 10.0 ** (float(P_tot_dbm) / 10.0)
+                    pmin_mW = 0.0 if p_min_dbm is None else 10.0 ** (float(p_min_dbm) / 10.0)
+                    pmax_mW = float('inf') if p_max_dbm is None else 10.0 ** (float(p_max_dbm) / 10.0)
+                    # Build group gains (a_bar per PRB) and weights (k = PRBs in block)
+                    a_g = []
+                    k_g = []
+                    for (ue, li, ri) in blocks:
+                        k = (ri - li + 1)
+                        P0 = P_ref_mW if P_ref_mW > 0.0 else 1.0
+                        a_vec = np.maximum(1e-12, snr_true[ue, li:ri+1]) / P0
+                        a_g.append(float(np.mean(a_vec)))
+                        k_g.append(int(k))
+                    a_g = np.asarray(a_g, dtype=float)
+                    k_g = np.asarray(k_g, dtype=float)
+                    # Handle infeasible lower bound: if sum k*pmin > P, relax pmin uniformly
+                    sum_min = float(np.sum(k_g) * pmin_mW)
+                    if pmin_mW > 0.0 and (sum_min > P_tot_mW):
+                        pmin_mW = P_tot_mW / float(np.sum(k_g))
+                    # Weighted water-filling on groups
+                    def waterfill_groups(a_vec: np.ndarray, w_vec: np.ndarray, P: float, pmin: float, pmax: float) -> np.ndarray:
+                        a_vec = np.asarray(a_vec, dtype=float)
+                        w_vec = np.asarray(w_vec, dtype=float)
+                        # Bisection on nu for sum w * p(nu) = P
+                        lo, hi = 1e-12, max(1.0, a_vec.max() * 1e3)
+                        def total(nu: float) -> float:
+                            p = np.maximum(0.0, 1.0/nu - 1.0/np.maximum(a_vec, 1e-30))
+                            if pmax < float('inf'):
+                                p = np.minimum(p, pmax)
+                            if pmin > 0.0:
+                                p = np.maximum(p, pmin)
+                            return float(np.sum(w_vec * p))
+                        # If even at hi the total < P, reduce hi to meet
+                        for _ in range(60):
+                            mid = (lo + hi) * 0.5
+                            s = total(mid)
+                            if s > P:
+                                lo = mid
+                            else:
+                                hi = mid
+                        # Final p per group
+                        nu = hi
+                        p = np.maximum(0.0, 1.0/nu - 1.0/np.maximum(a_vec, 1e-30))
+                        if pmax < float('inf'):
+                            p = np.minimum(p, pmax)
+                        if pmin > 0.0:
+                            p = np.maximum(p, pmin)
+                        # Normalize tiny residual due to clipping
+                        s = float(np.sum(w_vec * p))
+                        if s > 0 and abs(s - P) / P > 1e-3:
+                            p *= (P / s)
+                        return p
+                    p_grp = waterfill_groups(a_g, k_g, P_tot_mW, pmin_mW, pmax_mW)
+                    # Apply per-UE uniform PRB power
+                    for idx, (ue, li, ri) in enumerate(blocks):
+                        P0 = P_ref_mW if P_ref_mW > 0.0 else 1.0
+                        scale = p_grp[idx] / P0
+                        snr_scaled[ue, li:ri+1] = snr_true[ue, li:ri+1] * scale
+
             sched_info: Dict[int, Dict] = {}
             for ue in range(N_UE):
                 k0 = int(k_assigned[ue])
                 if k0 <= 0:
                     continue
                 li, ri = int(l_idx[ue]), int(r_idx[ue])
+                snr_vec_db = 10.0 * np.log10(np.maximum(snr_scaled[ue, li:ri + 1], 1e-12))
                 sched_info[int(ue)] = {
-                    'sinr_vec_db': 10.0 * np.log10(np.maximum(snr_true[ue, li:ri + 1], 1e-12)),
+                    'sinr_vec_db': snr_vec_db,
                     'n_prb': (ri - li + 1),
                     'eesm_beta_db': float(eesm_beta_db),
                     'li': li, 'ri': ri,
@@ -1590,7 +1689,7 @@ def run_once(config: Dict) -> Dict:
                 use_mcs=config.get("use_mcs", False),
                 power_split=config.get("power_split", False),
                 se_metric_override=None,
-                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                max_prbs_per_ue=config.get("baseline_max_prbs_per_ue", config.get("max_prbs_per_ue")),
                 mcs_params=mcs_params,
                 se_metric_time=se_time_base,
                 snr_lin_time=time_series["snr_time"],
@@ -1641,7 +1740,7 @@ def run_once(config: Dict) -> Dict:
                 use_mcs=config.get("use_mcs", False),
                 power_split=config.get("power_split", False),
                 se_metric_override=None if metric_override is None else metric_override,
-                max_prbs_per_ue=config.get("max_prbs_per_ue"),
+                max_prbs_per_ue=config.get("rm_max_prbs_per_ue", config.get("max_prbs_per_ue")),
                 mcs_params=mcs_params,
                 se_metric_time=se_time_rm,
                 snr_lin_time=time_series["snr_time"],
@@ -1684,7 +1783,7 @@ def run_once(config: Dict) -> Dict:
             use_mcs=config.get("use_mcs", False),
             power_split=config.get("power_split", False),
             se_metric_override=None,
-            max_prbs_per_ue=config.get("max_prbs_per_ue"),
+            max_prbs_per_ue=config.get("baseline_max_prbs_per_ue", config.get("max_prbs_per_ue")),
             mcs_params=mcs_params,
             se_metric_time=None,
             snr_lin_time=None,
@@ -1725,7 +1824,7 @@ def run_once(config: Dict) -> Dict:
             use_mcs=config.get("use_mcs", False),
             power_split=config.get("power_split", False),
             se_metric_override=metric_override,
-            max_prbs_per_ue=config.get("max_prbs_per_ue"),
+            max_prbs_per_ue=config.get("rm_max_prbs_per_ue", config.get("max_prbs_per_ue")),
             mcs_params=mcs_params,
             se_metric_time=None,
             snr_lin_time=None,
@@ -1873,6 +1972,37 @@ if __name__ == '__main__':
     print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
     print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
     print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
+
+    # Optional concise HARQ summary
+    if bool(CONFIG.get("print_harq_summary", True)):
+        def _print_harq(label: str, hs: dict, per_ue_key: str) -> None:
+            if not hs:
+                print(f"\n[HARQ] {label}: no HARQ stats available.")
+                return
+            tb_started = int(hs.get('tb_started', hs.get('initial_ack_count', 0) + hs.get('initial_nack_count', 0)))
+            tb_acked = int(hs.get('tb_acked', hs.get('ack_count', 0)))
+            tb_dropped = int(hs.get('tb_dropped', 0))
+            init_ack = int(hs.get('initial_ack_count', 0))
+            avg_retx = float(hs.get('avg_retx_per_acked', 0.0))
+            olla_hist = hs.get('olla_offset_avg', []) or []
+            olla_last = float(olla_hist[-1]) if len(olla_hist) > 0 else float(np.mean(hs.get('olla_last_per_ue', []) or [0.0]))
+            print(f"\n[HARQ] {label}:")
+            if tb_started > 0:
+                ack_rate = 100.0 * tb_acked / float(tb_started)
+                init_ack_rate = 100.0 * init_ack / float(tb_started)
+                print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}  (ACK rate={ack_rate:.1f}%, first-try ACK={init_ack_rate:.1f}%)")
+            else:
+                print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}")
+            print(f"  Avg retransmissions per ACKed TB: {avg_retx:.2f}")
+            print(f"  OLLA avg offset (last): {olla_last:+.2f} dB")
+            # Per-UE goodput (SE per PRB) if available
+            per_ue = single.get(per_ue_key)
+            if per_ue:
+                arr = np.asarray(per_ue, dtype=float)
+                print(f"  Per-UE avg SE: mean={arr.mean():.3f}, min={arr.min():.3f}, max={arr.max():.3f}")
+
+        _print_harq("Baseline-Default", single.get("harq_stats_base"), "per_ue_avg_se_base")
+        _print_harq("RadioMap", single.get("harq_stats_map"), "per_ue_avg_se_map")
 
     # -----------------------
     # Run multiple seeds to show robustness
