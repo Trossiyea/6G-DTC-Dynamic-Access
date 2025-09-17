@@ -60,6 +60,8 @@ CONFIG = {
     "csi_mcs_table": "nr_64qam",   # NR Table 1 (CQI->SE from 38.214)
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
     "csi_delay_ttis": 10,           # legacy knob (kept for compatibility)
+    # Use CQI quantization for baseline scheduling metric (more realistic than continuous SINR)
+    "enable_cqi_quantization": True,
     "baseline_csi_delay_ttis": 8,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
     "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (near real-time on-board, tighter)
     "power_split": False,           # DL default: no per-UE power split penalty
