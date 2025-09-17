@@ -37,17 +37,22 @@ CONFIG = {
     # Channel model
     "channel_model": "3gpp_ntn",
     "ntn_channel_profile": "s_band_handheld_urban",
-    "channel_params": None,   # optional overrides for NTN profile tables
+    # Starlink-like overrides: milder losses and stronger LoS K-factor than handheld
+    "channel_params": {
+        "additional_loss_db": {"slos": 7.0, "nlos": 16.0},
+        "shadow_sigma_db": {"slos": 4.0, "nlos": 6.0},
+        "k_factor_db": {"los": 14.0, "slos": 8.0},
+    },
 
     # DL transmit power and link budget
-    "P_tx_dbm": 30.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
+    "P_tx_dbm": 33.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
     # If geometry disabled, use fixed path loss + composite gain
     "L_fs_db": 154.0,         # ~600 km @ 2 GHz FSPL (dB)
-    "G_rx_db": 38.0,          # composite gain term (e.g., TX beam boresight) in dB
+    "G_rx_db": 42.0,          # composite gain term (e.g., TX boresight + UT) in dB
     "shadow_std_db": 7.0,     # lognormal shadowing std (dB)
-    "rx_nf_db": 7.0,          # UE receiver noise figure (dB)
-    "impl_loss_db": 1.5,      # implementation loss as noise rise (dB)
-    "overhead_eff": 0.8,      # PHY/MAC overhead efficiency factor (0.75–0.85 typical)
+    "rx_nf_db": 5.0,          # UE receiver noise figure (dB)
+    "impl_loss_db": 1.0,      # implementation loss as noise rise (dB)
+    "overhead_eff": 0.85,     # PHY/MAC overhead efficiency factor (Starlink-like)
     "pf_beta": 0.1,           # PF averaging factor
 
     # Scheduler realism
@@ -55,15 +60,15 @@ CONFIG = {
     "csi_mcs_table": "nr_64qam",   # NR Table 1 (CQI->SE from 38.214)
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
     "csi_delay_ttis": 10,           # legacy knob (kept for compatibility)
-    "baseline_csi_delay_ttis": 12,  # baseline CSI delay (ms slots) per 3GPP regen assumptions
-    "rm_csi_delay_ttis": 2,         # RadioMap CSI delay (near real-time on-board)
+    "baseline_csi_delay_ttis": 8,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
+    "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (near real-time on-board, tighter)
     "power_split": False,           # DL default: no per-UE power split penalty
     "max_prbs_per_ue": 12,
 
     # CSI periodicity / estimation error (baseline vs Radio Map)
     "enable_cqi_periodicity_base": True,
     "enable_cqi_periodicity_rm": False,
-    "cqi_period_ttis": 10,
+    "cqi_period_ttis": 5,
     "cqi_offset_ttis": 0,
     "radiomap_est_error_db": 1.5,
     "radiomap_blur_sigma": 1.0,
@@ -103,9 +108,10 @@ CONFIG.update({
     "sched_require_contiguous": True,  # one contiguous block per UE per TTI
     # Default EESM beta (fallback)
     "sched_eesm_beta_db": 2.5,
-    # Per-path overrides
-    "baseline_sched_eesm_beta_db": 2.5,
-    "rm_sched_eesm_beta_db": 3.0,
+    # Per-path overrides (slightly higher to reduce freq-selective penalty)
+    # Baseline tuned a bit more conservative than RM to stabilize ACKs
+    "baseline_sched_eesm_beta_db": 2.7,
+    "rm_sched_eesm_beta_db": 3.5,
 })
 
 # Access gating/HO removed in minimal DL-only preset
@@ -128,10 +134,10 @@ CONFIG.update({
     "bler_margin_db": 1.5,
     # Optional external BLER curves JSON (per table/MCS idx). If set, overrides AWGN model.
     "bler_curve_path": None,
-    # OLLA steps
-    "olla_step_up_db": 0.05,
-    "olla_step_down_db": 0.10,
-    "olla_init_offset_db": -1.0,
+    # OLLA steps (slightly stronger initial conservatism & steps)
+    "olla_step_up_db": 0.06,
+    "olla_step_down_db": 0.12,
+    "olla_init_offset_db": -1.5,
     "olla_min_db": -3.0,
     "olla_max_db": 6.0,
     # Retransmission scheduling priority boost in PF metric (additive)
@@ -147,7 +153,7 @@ CONFIG.update({
     # New: decouple CQI periodicity per path
     "enable_cqi_periodicity_base": True,   # apply periodic CQI to baseline metrics
     "enable_cqi_periodicity_rm": False,    # apply periodic CQI to RM metrics
-    "cqi_period_ttis": 10,
+    "cqi_period_ttis": 5,
     "cqi_offset_ttis": 0,
 })
 
@@ -187,14 +193,19 @@ CONFIG.update({
     "print_harq_summary": True,
     # RadioMap-specific DL power allocation: enable water-filling with total-power constraint
     "rm_dl_power_model": "waterfill",
-    # Power allocation knobs
-    "rm_P_tot_dbm": 47.0,
-    # Keep per-PRB power within ±4 dB around equal power to avoid starving blocks but allow focus
-    "rm_p_min_dbm": 26.0,
-    "rm_p_max_dbm": 34.0,
-    # Baseline keeps equal power to preserve contrast
-    "baseline_dl_power_model": "equal_prb",
+    # Power allocation knobs (≈ 33 dBm/PRB * 51 PRBs ≈ 50 dBm total)
+    "rm_P_tot_dbm": 50.0,
+    # Allow more concentration on high-SINR PRBs while avoiding starvation
+    "rm_p_min_dbm": 28.0,
+    "rm_p_max_dbm": 36.0,
+    # Baseline now uses moderated water-filling (tighter bounds vs RM)
+    "baseline_dl_power_model": "waterfill",
+    # Match equal-power budget to 33 dBm/PRB * 51 PRBs ≈ 50 dBm
+    "baseline_P_tot_dbm": 50.0,
+    # Allow slightly wider per-PRB box constraints for better fit
+    "baseline_p_min_dbm": 27.0,
+    "baseline_p_max_dbm": 33.0,
     # Split per-path PRB cap to widen RM advantage
-    "baseline_max_prbs_per_ue": 6,
+    "baseline_max_prbs_per_ue": 10,
     "rm_max_prbs_per_ue": 20,
 })
