@@ -101,7 +101,11 @@ CONFIG = {
 # Scheduler
 CONFIG.update({
     "sched_require_contiguous": True,  # one contiguous block per UE per TTI
+    # Default EESM beta (fallback)
     "sched_eesm_beta_db": 2.5,
+    # Per-path overrides
+    "baseline_sched_eesm_beta_db": 2.5,
+    "rm_sched_eesm_beta_db": 3.0,
 })
 
 # Access gating/HO removed in minimal DL-only preset
@@ -109,8 +113,8 @@ CONFIG.update({
 # HARQ/BLER/OLLA (optional; generic to DL)
 CONFIG.update({
     "enable_harq_deferral": True,      # off by default
-    "harq_max_procs": 32,               # typical NR max processes
-    "harq_ack_delay_ttis": 8,           # shorter ACK delay reduces process blocking
+    "harq_max_procs": 24,
+    "harq_ack_delay_ttis": 6,
     "enable_harq_full": True,          # keep off by default
     "harq_target_bler": 0.1,
     "harq_max_retx": 4,
@@ -130,14 +134,13 @@ CONFIG.update({
     "olla_init_offset_db": -1.0,
     "olla_min_db": -3.0,
     "olla_max_db": 6.0,
-    "olla_init_offset_db": 0.0,
     # Retransmission scheduling priority boost in PF metric (additive)
     "harq_retx_priority_bonus": 0.5,
     # Tail-ACK flush after last TTI to remove boundary loss
     "harq_flush_tail": True,
     # Optional path to 3GPP MCS tables (JSON). If set, you can choose '3gpp_table_1/2/3'.
     "mcs_3gpp_table_path": os.path.join(_BASE_DIR, "..", "docs", "mcs_tables_38_214.json"),
-    # Use 64QAM table while stabilizing OLLA/BLER; can switch to 256QAM later
+    # 256QAM (Table 2) now enabled per your test
     "csi_mcs_table": "nr_256qam",
     "mcs_table_kind": "3gpp_table_2",
     "enable_cqi_periodicity": False,    # legacy switch (applies to both if specific flags not set)
@@ -186,12 +189,12 @@ CONFIG.update({
     "rm_dl_power_model": "waterfill",
     # Power allocation knobs
     "rm_P_tot_dbm": 47.0,
-    # Keep per-PRB power within ±3 dB around equal power to avoid starving blocks
-    "rm_p_min_dbm": 27.0,
-    "rm_p_max_dbm": 33.0,
+    # Keep per-PRB power within ±4 dB around equal power to avoid starving blocks but allow focus
+    "rm_p_min_dbm": 26.0,
+    "rm_p_max_dbm": 34.0,
     # Baseline keeps equal power to preserve contrast
     "baseline_dl_power_model": "equal_prb",
     # Split per-path PRB cap to widen RM advantage
-    "baseline_max_prbs_per_ue": 8,
-    "rm_max_prbs_per_ue": 16,
+    "baseline_max_prbs_per_ue": 6,
+    "rm_max_prbs_per_ue": 20,
 })
