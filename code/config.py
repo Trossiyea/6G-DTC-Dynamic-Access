@@ -108,10 +108,10 @@ CONFIG.update({
 
 # HARQ/BLER/OLLA (optional; generic to DL)
 CONFIG.update({
-    "enable_harq_deferral": False,      # off by default
+    "enable_harq_deferral": True,      # off by default
     "harq_max_procs": 16,               # typical NR max processes
     "harq_ack_delay_ttis": 10,          # example ACK delay (TTIs)
-    "enable_harq_full": False,          # keep off by default
+    "enable_harq_full": True,          # keep off by default
     "harq_target_bler": 0.1,
     "harq_max_retx": 4,
     "mcs_table_kind": "3gpp_table_1",

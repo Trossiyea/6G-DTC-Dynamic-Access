@@ -598,13 +598,18 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
                          snr_lin_time_prb: Optional[np.ndarray] = None,
                          force_wideband_throughput: bool = False,
                          ue_mask_time: Optional[np.ndarray] = None,
-                         harq_mgr: Optional[HarqManager] = None) -> float:
+                         harq_mgr: Optional[HarqManager] = None,
+                         config: Optional[Dict] = None) -> float:
     """
     3GPP-like baseline: proportional fair with wideband CQI (same cap on every PRB).
     To avoid one-UE monopolization, assign PRBs in each TTI across the top sqrt(N) UEs 
     per PF metric, equally split.
     Returns average sum spectral efficiency per PRB (bits/s/Hz).
     """
+    cfg = config or {}
+    harq_priority_bonus = float(cfg.get("harq_retx_priority_bonus", 0.0))
+    re_per_prb_val: Optional[int] = None
+
     N_UE = cap_wb.shape[0]
     # Use Shannon cap as metric by default; if use_mcs, convert to MCS SE (k=1) for metric
     if se_metric_time is None:
@@ -620,9 +625,9 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
             except TypeError:
                 ack_bits = None
             if ack_bits is not None:
-                from link_adapt import re_per_prb_from_config
-                re_per_prb = re_per_prb_from_config(CONFIG)
-                thr_ack = np.asarray(ack_bits, dtype=float) / float(max(1, re_per_prb))
+                if re_per_prb_val is None:
+                    re_per_prb_val = max(1, re_per_prb_from_config(cfg))
+                thr_ack = np.asarray(ack_bits, dtype=float) / float(re_per_prb_val)
                 sum_rate += float(np.sum(thr_ack))
                 Rbar = (1 - beta) * Rbar + beta * thr_ack
         if se_metric_time is not None:
@@ -760,12 +765,17 @@ def pf_schedule_radiomap_blocks(
     # Optional per-TTI per-UE throughput (SE sum across assigned PRBs)
     record_ue_thr: bool = False,
     ue_thr_out: Optional[list] = None,
+    config: Optional[Dict] = None,
 ) -> float:
     """
     Enhanced Radio Map–aware PF with contiguous RB blocks (single-MCS via EESM),
     power-aware greedy allocation (marginal ΔSE with power split), and robust/exploration.
     Returns average sum spectral efficiency per PRB (bits/s/Hz).
     """
+    cfg = config or {}
+    harq_priority_bonus = float(cfg.get("harq_retx_priority_bonus", 0.0))
+    re_per_prb_val: Optional[int] = None
+
     N_UE, Z = cap.shape
     rng = np.random.default_rng(0) if rng is None else rng
 
@@ -785,9 +795,9 @@ def pf_schedule_radiomap_blocks(
             except TypeError:
                 ack_bits = None
             if ack_bits is not None:
-                from link_adapt import re_per_prb_from_config
-                re_per_prb = re_per_prb_from_config(CONFIG)
-                thr_ack = np.asarray(ack_bits, dtype=float) / float(max(1, re_per_prb))
+                if re_per_prb_val is None:
+                    re_per_prb_val = max(1, re_per_prb_from_config(cfg))
+                thr_ack = np.asarray(ack_bits, dtype=float) / float(re_per_prb_val)
                 sum_rate += float(np.sum(thr_ack))
                 Rbar = (1 - beta) * Rbar + beta * thr_ack
         mask_t = None
@@ -937,7 +947,7 @@ def pf_schedule_radiomap_blocks(
                             try:
                                 _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
                                 if _retx_mask[ue]:
-                                    metric += float(CONFIG.get("harq_retx_priority_bonus", 0.0))
+                                    metric += harq_priority_bonus
                             except Exception:
                                 pass
                         if metric > best_delta:
@@ -960,7 +970,7 @@ def pf_schedule_radiomap_blocks(
                             try:
                                 _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
                                 if _retx_mask[ue]:
-                                    metric += float(CONFIG.get("harq_retx_priority_bonus", 0.0))
+                                    metric += harq_priority_bonus
                             except Exception:
                                 pass
                         if metric > best_delta:
@@ -978,7 +988,7 @@ def pf_schedule_radiomap_blocks(
                             try:
                                 _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
                                 if _retx_mask[ue]:
-                                    metric += float(CONFIG.get("harq_retx_priority_bonus", 0.0))
+                                    metric += harq_priority_bonus
                             except Exception:
                                 pass
                         if metric > best_delta:
@@ -1598,6 +1608,7 @@ def run_once(config: Dict) -> Dict:
                 assignments_out=assignments_base,
                 record_ue_thr=_rec_base_thr,
                 ue_thr_out=ue_thr_base,
+                config=config,
             )
         # Also compute a simple wideband PF baseline (no PRB awareness)
         base_se_simple = pf_schedule_baseline(
@@ -1613,6 +1624,7 @@ def run_once(config: Dict) -> Dict:
             cap_prb=None,
             snr_lin_time_prb=None,
             force_wideband_throughput=True,
+            config=config,
         )
 
         base_se_subband = None
@@ -1647,6 +1659,7 @@ def run_once(config: Dict) -> Dict:
                 assignments_out=assignments_rm,
                 record_ue_thr=_rec_rm_thr,
                 ue_thr_out=ue_thr_rm,
+                config=config,
             )
             sched_stats = None
         else:
@@ -1683,6 +1696,7 @@ def run_once(config: Dict) -> Dict:
             P_ref_dbm=config.get("P_tx_dbm"),
             p_min_dbm=config.get("baseline_p_min_dbm", config.get("p_min_dbm")),
             p_max_dbm=config.get("baseline_p_max_dbm", config.get("p_max_dbm")),
+            config=config,
         )
         # Simple wideband PF baseline for static snapshot
         base_se_simple = pf_schedule_baseline(
@@ -1698,6 +1712,7 @@ def run_once(config: Dict) -> Dict:
             cap_prb=None,
             snr_lin_time_prb=None,
             force_wideband_throughput=True,
+            config=config,
         )
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
@@ -1725,6 +1740,7 @@ def run_once(config: Dict) -> Dict:
             p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
             record_assignments=_rec_rm2,
             assignments_out=assignments_rm2,
+            config=config,
         )
         sched_stats = None
         harq_stats_base = None
@@ -1761,11 +1777,11 @@ def run_once(config: Dict) -> Dict:
             thr_mat = np.stack(ue_thr_rm, axis=0)  # [T,UE]
             report["ue_thr_time_rm"] = thr_mat
             # Convert to average per-UE SE per PRB: sum over time / (T*Z)
-            report["per_ue_se_rm_avg"] = (np.sum(thr_mat, axis=0) / float(max(1, CONFIG.get("T", T)) * cap.shape[1])).tolist()
+            report["per_ue_se_rm_avg"] = (np.sum(thr_mat, axis=0) / float(max(1, config.get("T", T)) * cap.shape[1])).tolist()
         if 'ue_thr_base' in locals() and ue_thr_base is not None and len(ue_thr_base) > 0:
             thr_mat_b = np.stack(ue_thr_base, axis=0)
             report["ue_thr_time_base"] = thr_mat_b
-            report["per_ue_se_base_avg"] = (np.sum(thr_mat_b, axis=0) / float(max(1, CONFIG.get("T", T)) * cap.shape[1])).tolist()
+            report["per_ue_se_base_avg"] = (np.sum(thr_mat_b, axis=0) / float(max(1, config.get("T", T)) * cap.shape[1])).tolist()
     except Exception:
         pass
 
@@ -1780,8 +1796,8 @@ def run_once(config: Dict) -> Dict:
 
     # Compute per-UE avg SE (goodput) from acked bits if available
     try:
-        re_per_prb = re_per_prb_from_config(CONFIG)
-        T_total = int(CONFIG.get("T", T))
+        re_per_prb = re_per_prb_from_config(config)
+        T_total = int(config.get("T", T))
         Z_total = cap.shape[1]
         def per_ue_avg_se(hs):
             if not hs or not isinstance(hs, dict) or 'acked_bits_per_ue' not in hs:
@@ -1808,10 +1824,10 @@ def run_once(config: Dict) -> Dict:
 
     # Optionally write JSON to output directory
     try:
-        if bool(CONFIG.get("write_json_report", False)):
-            out_dir = CONFIG.get("plot_dir", "output")
+        if bool(config.get("write_json_report", False)):
+            out_dir = config.get("plot_dir", "output")
             os.makedirs(out_dir, exist_ok=True)
-            name = CONFIG.get("report_basename", "summary")
+            name = config.get("report_basename", "summary")
             path = os.path.join(out_dir, f"{name}.json")
             def serialize(obj):
                 import numpy as _np
