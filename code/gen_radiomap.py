@@ -65,7 +65,7 @@ def generate_strong_map(X=60, Y=60, K=51, scs_khz=30.0, seed=123,
 
 if __name__ == '__main__':
     # Strong heterogeneity preset aligned with 20 MHz @ 30 kHz (K=51)
-    X, Y, K = 60, 60, 51
+    X, Y, K = 50, 50, 51
     X_true, noise_dbm = generate_strong_map(X, Y, K, scs_khz=30.0)
     savemat('radio_map/Data_strong_51.mat', {'X_true': X_true})
     stats = (
@@ -74,4 +74,4 @@ if __name__ == '__main__':
         np.percentile(10*np.log10(X_true),90),
         10*np.log10(X_true).max()
     )
-    print(f'Saved radio_map/Data_strong_51.mat shape={X_true.shape}, noise_dbm={noise_dbm:.2f}, interf_dbm[min,p50,p90,max]={stats}')
+    print(f'Saved radio_map/Data_strong_50*50_51.mat shape={X_true.shape}, noise_dbm={noise_dbm:.2f}, interf_dbm[min,p50,p90,max]={stats}')

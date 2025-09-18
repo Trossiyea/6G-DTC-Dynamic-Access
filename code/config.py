@@ -14,8 +14,8 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CONFIG = {
     # Grid and traffic
-    "X": 60,                  # map width (matches radio_map grid)
-    "Y": 60,                  # map height
+    "X": 50,                  # map width (matches radio_map grid)
+    "Y": 50,                  # map height
     # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
     "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
     "N_UE": 40,               # active UEs in footprint (per-beam slice)
@@ -45,12 +45,12 @@ CONFIG = {
     },
 
     # DL transmit power and link budget
-    "P_tx_dbm": 33.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
+    "P_tx_dbm": 30.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
     # If geometry disabled, use fixed path loss + composite gain
     "L_fs_db": 154.0,         # ~600 km @ 2 GHz FSPL (dB)
-    "G_rx_db": 42.0,          # composite gain term (e.g., TX boresight + UT) in dB
+    "G_rx_db": 38.0,          # composite gain term (e.g., TX boresight + UT) in dB
     "shadow_std_db": 7.0,     # lognormal shadowing std (dB)
-    "rx_nf_db": 5.0,          # UE receiver noise figure (dB)
+    "rx_nf_db": 7.0,          # UE receiver noise figure (dB)
     "impl_loss_db": 1.0,      # implementation loss as noise rise (dB)
     "overhead_eff": 0.85,     # PHY/MAC overhead efficiency factor (Starlink-like)
     "pf_beta": 0.1,           # PF averaging factor
@@ -62,15 +62,15 @@ CONFIG = {
     "csi_delay_ttis": 10,           # legacy knob (kept for compatibility)
     # Use CQI quantization for baseline scheduling metric (more realistic than continuous SINR)
     "enable_cqi_quantization": True,
-    "baseline_csi_delay_ttis": 8,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
-    "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (near real-time on-board, tighter)
+    "baseline_csi_delay_ttis": 12,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
+    "rm_csi_delay_ttis": 2,         # RadioMap CSI delay (near real-time on-board, tighter)
     "power_split": False,           # DL default: no per-UE power split penalty
     "max_prbs_per_ue": 12,
 
     # CSI periodicity / estimation error (baseline vs Radio Map)
     "enable_cqi_periodicity_base": True,
     "enable_cqi_periodicity_rm": False,
-    "cqi_period_ttis": 5,
+    "cqi_period_ttis": 10,
     "cqi_offset_ttis": 0,
     "radiomap_est_error_db": 1.5,
     "radiomap_blur_sigma": 1.0,
@@ -83,7 +83,7 @@ CONFIG = {
     "beam_center_xy": None,   # default: map center
     "beam_half_bw_deg": 8.0,
     "beam_edge_drop_db": 3.0,
-    "cell_size_km": 5.0,      # ground resolution per pixel
+    "cell_size_km": 0.063,      # ground resolution per pixel
 
     # Orbit dynamics (optional; keep static for baseline comparisons)
     "enable_orbit_dynamics": True,
