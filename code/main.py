@@ -1549,7 +1549,10 @@ def run_once(config: Dict) -> Dict:
                 tle_name = str(config.get("tle_name", "SAT"))
                 start = str(config.get("orbit_start_datetime", "t0"))
                 auto_ref = bool(config.get("auto_ref_from_tle", False))
-                print(f"[Orbit] Using Skyfield/TLE orbit: {tle_name} (start={start}), auto_ref={auto_ref}.")
+                ref_lat = config.get("ref_lat_deg", None)
+                ref_lon = config.get("ref_lon_deg", None)
+                ref_txt = f", ref=({ref_lat:.4f}, {ref_lon:.4f})" if (isinstance(ref_lat, (int, float)) and isinstance(ref_lon, (int, float))) else ""
+                print(f"[Orbit] Using Skyfield/TLE orbit: {tle_name} (start={start}), auto_ref={auto_ref}{ref_txt}.")
             else:
                 v = float(config.get("sat_ground_speed_kms", 7.5))
                 hdg = float(config.get("sat_heading_deg", 0.0))

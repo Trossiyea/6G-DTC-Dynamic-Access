@@ -19,7 +19,7 @@ CONFIG = {
     # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
     "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
     "N_UE": 40,               # active UEs in footprint (per-beam slice)
-    "T": 1000,                 # number of TTIs per measurement window
+    "T": 2000,                 # number of TTIs per measurement window
     "K_interferers": 7,       # used only when synthetic map is generated
     "seed": 101,              # master RNG seed for reproducibility
 
@@ -63,7 +63,7 @@ CONFIG = {
     # Use CQI quantization for baseline scheduling metric (more realistic than continuous SINR)
     "enable_cqi_quantization": True,
     "baseline_csi_delay_ttis": 12,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
-    "rm_csi_delay_ttis": 2,         # RadioMap CSI delay (near real-time on-board, tighter)
+    "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (near real-time on-board, tighter)
     "power_split": False,           # DL default: no per-UE power split penalty
     "max_prbs_per_ue": 12,
 
@@ -179,13 +179,15 @@ CONFIG.update({
     # "tle_name": "STARLINK-11072 [DTC]",
     "tle_name": "STARLINK-11087 [DTC]",
     # Orbit start time for t=0 (ISO8601).
-    "orbit_start_datetime": "2025-09-13T18:38:42Z",
+    # Updated to the peak-elevation overpass over Shanghai (see tools/find_overpass_times.py)
+    "orbit_start_datetime": "2025-09-13T19:01:17.393469Z",
     # Mapping the simulation grid (x,y) to Earth surface around a reference lat/lon (degrees).
     # Each pixel corresponds to 'cell_size_km' in local ENU, with an optional rotation.
     # By default, auto-center the grid to the sub-satellite point at t=0 to ensure overpass.
-    "auto_ref_from_tle": True,
-    "ref_lat_deg": 31.2,   # fallback if auto_ref_from_tle is False
-    "ref_lon_deg": 121.5,  # fallback if auto_ref_from_tle is False
+    # Anchor the ground map at Shanghai city center
+    "auto_ref_from_tle": False,
+    "ref_lat_deg": 31.2304,
+    "ref_lon_deg": 121.4737,
     "map_rotation_deg": 0.0,
 })
 
