@@ -18,8 +18,8 @@ CONFIG = {
     "Y": 50,                  # map height
     # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
     "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
-    "N_UE": 40,               # active UEs in footprint (per-beam slice)
-    "T": 2000,                 # number of TTIs per measurement window
+    "N_UE": 100,               # active UEs in footprint (per-beam slice)
+    "T": 20000,                 # number of TTIs per measurement window
     "K_interferers": 7,       # used only when synthetic map is generated
     "seed": 101,              # master RNG seed for reproducibility
 
