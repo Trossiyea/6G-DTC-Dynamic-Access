@@ -213,3 +213,30 @@ CONFIG.update({
     "baseline_max_prbs_per_ue": 10,
     "rm_max_prbs_per_ue": 20,
 })
+
+# Constellation (multi-satellite) options
+CONFIG.update({
+    # Enable constellation mode by default for DTC evaluation
+    "enable_constellation": True,
+    # Path to DTC constellation TLE catalog
+    "tle_catalog_path": os.path.join(_BASE_DIR, "..", "docs", "DTC_tle.txt"),
+    # Candidate filtering near the ground map reference (km)
+    "constellation_max_ground_radius_km": 2000.0,
+    # Limit the number of satellites considered per TTI (after filtering)
+    "constellation_max_sats_per_tti": 16,
+    # Minimum UE elevation (deg) for visibility/association
+    "min_elev_deg": 10.0,
+    # Association metric: 'snr_wb' (linear), 'prx_dbm'
+    "association_metric": "snr_wb",
+    # Handover control (constellation mode)
+    "ho_enabled": True,
+    "ho_hyst_db": 2.0,
+    "ho_ttt_ttis": 20,
+    # Reporting
+    "write_json_report": True,
+    "report_basename": "constellation_summary",
+    # Whether to include full serving timeline [T, N_UE] in JSON (may be large)
+    "include_serving_trace": False,
+    # Unify per-satellite PRB cap in constellation mode for fair comparison
+    "constellation_prb_cap": 20,
+})

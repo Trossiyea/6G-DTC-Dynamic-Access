@@ -24,6 +24,7 @@ from ntn_csi import snr_to_se_sched
 from ntn_channel import sample_3gpp_ntn_fading
 from harq import HarqManager, HarqManagerFull
 from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file, register_bler_curves_from_file
+from constellation import ConstellationOrbit
 
 # -----------------------
 # Utility conversions
@@ -1962,109 +1963,485 @@ def run_many(config: Dict, seeds: np.ndarray) -> Dict:
         "improvement_vs_simple_pct": np.array(imp_simp_list),
     }
 
+# -----------------------
+# Constellation (multi-satellite) runner
+# -----------------------
+def run_constellation(config: Dict) -> Dict:
+    """Multi-satellite coverage with independent per-satellite scheduling.
+
+    - Reads a TLE catalog (docs/DTC_tle.txt) and builds a Skyfield constellation.
+    - At each TTI: compute geometry per candidate sat; associate UEs (with optional HO);
+      run per-satellite PF (RadioMap blocks + wideband baseline) on the served UE subset.
+    - Inter-satellite interference: not modeled.
+    """
+    rng = np.random.default_rng(config["seed"])
+    N_UE, T = int(config["N_UE"]), int(config["T"]) 
+
+    # Radio map and UEs
+    R_xyz_dbm, X, Y, Z = select_radio_map(config)
+    ue_pos = generate_ue_positions(N_UE, X, Y, rng)
+
+    # Noise and power
+    noise_dbm, prb_bw_hz = resolve_noise_and_prb_bw(config)
+    P_tx_dbm = apply_open_loop_power_control(config, 0.0, 0.0)  # returns config["P_tx_dbm"]
+
+    # Constellation orbit
+    orbit = ConstellationOrbit(config, X, Y)
+
+    # HO/association state
+    assoc_metric_kind = str(config.get("association_metric", "snr_wb")).lower()
+    ho_enabled = bool(config.get("ho_enabled", True))
+    ho_hyst_db = float(config.get("ho_hyst_db", 2.0))
+    ho_ttt = int(config.get("ho_ttt_ttis", 20))
+    min_elev = float(config.get("min_elev_deg", 5.0))
+    serving = np.full(N_UE, -1, dtype=int)
+    ho_timer = np.zeros(N_UE, dtype=int)
+    # Current metric in dB scale for HO comparison
+    curr_metric_db = np.full(N_UE, -1e9, dtype=float)
+    # HO/outage logs
+    ho_events: list = [[] for _ in range(N_UE)]
+    outage_ttis = np.zeros(N_UE, dtype=int)
+    include_trace = bool(config.get("include_serving_trace", False))
+    serving_trace = [] if include_trace else None
+
+    # Time-varying Radio Map (optional)
+    R_t = R_xyz_dbm.copy()
+    vx, vy = config.get("rm_drift_px", (0, 0))
+    flicker = float(config.get("rm_flicker_db_std", 0.0))
+    enable_tv = bool(config.get("enable_time_varying", False))
+
+    # KPI accumulators
+    sum_rate_rm = 0.0
+    sum_rate_base_def = 0.0
+    kpi_per_sat: Dict[int, Dict] = {}
+
+    # For optional per-UE throughput (debug): not recording HARQ here
+    for t_idx in range(T):
+        if t_idx > 0 and enable_tv:
+            if vx or vy:
+                R_t = np.roll(R_t, shift=(int(vx), int(vy), 0), axis=(0, 1, 2))
+            if flicker > 0.0:
+                R_t = R_t + rng.normal(0.0, flicker, size=R_t.shape)
+
+        cand = orbit.candidate_indices_at(t_idx)
+        if not cand:
+            continue
+
+        # Per-sat caches
+        caps: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+        # (cap, cap_wb, P_rx_dbm, I_total_dbm, snr_lin, snr_lin_wb), but we only keep some
+        snr_lin_s: Dict[int, np.ndarray] = {}
+        snr_wb_s: Dict[int, np.ndarray] = {}
+        cap_s: Dict[int, np.ndarray] = {}
+        prx_dbm_s: Dict[int, np.ndarray] = {}
+        elev_s: Dict[int, np.ndarray] = {}
+
+        # Build geometry and capacities per candidate sat
+        # Unified PRB cap and power model for fair baseline vs RM in constellation mode
+        prb_cap_unified = int(config.get("constellation_prb_cap", config.get("rm_max_prbs_per_ue", config.get("max_prbs_per_ue", 20))))
+        dlpm = str(config.get("rm_dl_power_model", config.get("dl_power_model", "equal_prb")))
+        Ptot = config.get("rm_P_tot_dbm", config.get("P_tot_dbm"))
+        pmin = config.get("rm_p_min_dbm", config.get("p_min_dbm"))
+        pmax = config.get("rm_p_max_dbm", config.get("p_max_dbm"))
+
+        for si in cand:
+            L_fs, G_rx, tau_s_arr, fd_hz_arr, elev = orbit.geometry_for_sat(ue_pos, si, t_idx)
+            # Cap/SNR (per UE, PRB). Channel per sat per t; no inter-sat interference.
+            cap, cap_wb, P_rx_dbm, I_total_dbm, snr_lin, snr_lin_wb = compute_caps(
+                R_t, ue_pos,
+                P_tx_dbm=P_tx_dbm,
+                L_fs_db=L_fs,
+                G_rx_db=G_rx,
+                shadow_db_std=config["shadow_std_db"],
+                N0_dbm=noise_dbm,
+                rx_nf_db=config.get("rx_nf_db", 0.0),
+                impl_loss_db=config.get("impl_loss_db", 0.0),
+                seed=config["seed"],
+                elevation_deg=elev,
+                channel_model=config.get("channel_model", "3gpp_ntn"),
+                channel_params=config.get("channel_params"),
+                channel_profile=config.get("ntn_channel_profile", "s_band_handheld_urban"),
+            )
+            snr_lin_s[si] = snr_lin
+            snr_wb_s[si] = snr_lin_wb
+            cap_s[si] = cap
+            prx_dbm_s[si] = P_rx_dbm
+            elev_s[si] = elev
+
+        # Association + (optional) HO
+        # Compute best sat per UE based on metric and min elevation
+        best_sat = np.full(N_UE, -1, dtype=int)
+        best_metric_db = np.full(N_UE, -1e9, dtype=float)
+        for si in cand:
+            elev = elev_s[si]
+            vis_mask = elev >= min_elev
+            if assoc_metric_kind == 'snr_wb':
+                met = snr_wb_s[si]
+                met_db = 10.0 * np.log10(np.maximum(1e-12, met))
+            elif assoc_metric_kind == 'prx_dbm':
+                met_db = prx_dbm_s[si]
+            else:
+                # default to snr_wb
+                met = snr_wb_s[si]
+                met_db = 10.0 * np.log10(np.maximum(1e-12, met))
+            # Apply visibility mask
+            met_db = np.where(vis_mask, met_db, -1e9)
+            take = met_db > best_metric_db
+            best_metric_db = np.where(take, met_db, best_metric_db)
+            best_sat = np.where(take, si, best_sat)
+
+        # Update serving with HO policy
+        for ue in range(N_UE):
+            s_old = int(serving[ue])
+            met_old = float(curr_metric_db[ue])
+            b = int(best_sat[ue])
+            if b < 0:
+                # No visible satellite
+                serving[ue] = -1
+                ho_timer[ue] = 0
+                curr_metric_db[ue] = -1e9
+                # Log outage start
+                if s_old >= 0:
+                    ho_events[ue].append({
+                        "t": int(t_idx), "type": "outage_start",
+                        "from": int(s_old), "to": -1,
+                        "prev_metric_db": met_old,
+                    })
+                continue
+            if serving[ue] < 0:
+                serving[ue] = b
+                curr_metric_db[ue] = best_metric_db[ue]
+                ho_timer[ue] = 0
+                ho_events[ue].append({
+                    "t": int(t_idx), "type": "attach",
+                    "from": -1, "to": int(b),
+                    "metric_db": float(best_metric_db[ue]),
+                })
+                continue
+            if b == serving[ue]:
+                # Same serving; refresh metric
+                curr_metric_db[ue] = best_metric_db[ue]
+                ho_timer[ue] = 0
+                # If continuing after outage end
+                if s_old < 0 and serving[ue] >= 0:
+                    ho_events[ue].append({
+                        "t": int(t_idx), "type": "outage_end",
+                        "from": -1, "to": int(serving[ue]),
+                        "metric_db": float(best_metric_db[ue]),
+                    })
+                continue
+            # Candidate different than serving
+            if not ho_enabled:
+                serving[ue] = b
+                curr_metric_db[ue] = best_metric_db[ue]
+                ho_timer[ue] = 0
+                ho_events[ue].append({
+                    "t": int(t_idx), "type": "handover",
+                    "from": int(s_old), "to": int(b),
+                    "prev_metric_db": met_old,
+                    "metric_db": float(best_metric_db[ue]),
+                })
+                continue
+            diff_db = best_metric_db[ue] - curr_metric_db[ue]
+            if diff_db > ho_hyst_db:
+                ho_timer[ue] += 1
+                if ho_timer[ue] >= ho_ttt:
+                    serving[ue] = b
+                    curr_metric_db[ue] = best_metric_db[ue]
+                    ho_timer[ue] = 0
+                    ho_events[ue].append({
+                        "t": int(t_idx), "type": "handover",
+                        "from": int(s_old), "to": int(b),
+                        "prev_metric_db": met_old,
+                        "metric_db": float(best_metric_db[ue]),
+                        "diff_db": float(diff_db),
+                        "hyst_db": float(ho_hyst_db),
+                        "ttt_ttis": int(ho_ttt),
+                    })
+            else:
+                ho_timer[ue] = 0
+
+        # Outage accumulation and optional serving trace
+        outage_ttis += (serving < 0).astype(int)
+        if include_trace and serving_trace is not None:
+            serving_trace.append(np.array(serving, copy=True))
+
+        # Build per-satellite UE subsets and schedule independently
+        mcs_params = {
+            "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
+            "mcs_table": config.get("csi_mcs_table", "legacy"),
+            "residual_freq_hz": config.get("residual_freq_hz", 0.0),
+            "scs_khz": config.get("scs_khz", 30),
+        }
+        per_sat_served_counts: Dict[int, int] = {}
+        for si in cand:
+            ue_idx = np.flatnonzero(serving == si)
+            if ue_idx.size == 0:
+                continue
+            per_sat_served_counts[si] = int(ue_idx.size)
+            # Slice arrays for this satellite
+            cap = cap_s[si][ue_idx, :]
+            snr_lin = snr_lin_s[si][ue_idx, :]
+            cap_wb = np.log2(1.0 + np.maximum(snr_wb_s[si][ue_idx], 1e-12))
+            snr_wb = snr_wb_s[si][ue_idx]
+
+            # One-TTI Baseline-Default: contiguous-block PF with baseline per-PRB metric
+            # Build per-PRB SE metric from instantaneous SNR, with optional CQI quantization
+            if bool(config.get("enable_cqi_quantization", False)):
+                se_base_prb = snr_to_se_sched(snr_lin, config.get("use_mcs", False), mcs_params,
+                                              enable_cqi_quant=True,
+                                              cqi_table=config.get("csi_mcs_table", "nr_64qam"))
+            else:
+                se_base_prb = se_from_snr(snr_lin, config.get("use_mcs", False), mcs_params=mcs_params)
+            base = pf_schedule_radiomap_blocks(
+                cap, 1, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None,
+                max_prbs_per_ue=prb_cap_unified,
+                mcs_params=mcs_params,
+                se_metric_time=se_base_prb[None, ...],
+                snr_lin_time=None,
+                eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                rng=rng,
+                ue_mask_time=None,
+                harq_mgr=None,
+                dl_power_model=dlpm,
+                P_tot_dbm=Ptot,
+                P_ref_dbm=config.get("P_tx_dbm"),
+                p_min_dbm=pmin,
+                p_max_dbm=pmax,
+                record_assignments=False,
+                assignments_out=None,
+                record_ue_thr=False,
+                ue_thr_out=None,
+                config=config,
+            )
+            rm = pf_schedule_radiomap_blocks(
+                cap, 1, beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None,
+                max_prbs_per_ue=prb_cap_unified,
+                mcs_params=mcs_params,
+                se_metric_time=None,
+                snr_lin_time=None,
+                eesm_beta_db=float(config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                rng=rng,
+                ue_mask_time=None,
+                harq_mgr=None,
+                dl_power_model=dlpm,
+                P_tot_dbm=Ptot,
+                P_ref_dbm=config.get("P_tx_dbm"),
+                p_min_dbm=pmin,
+                p_max_dbm=pmax,
+                record_assignments=False,
+                assignments_out=None,
+                record_ue_thr=False,
+                ue_thr_out=None,
+                config=config,
+            )
+            sum_rate_base_def += base * Z
+            sum_rate_rm += rm * Z
+            # Update per-satellite KPI
+            k = kpi_per_sat.get(si)
+            if k is None:
+                k = {
+                    "name": getattr(orbit.sats[si], 'name', f"SAT-{int(si)}"),
+                    "ttis_active": 0,
+                    "served_ue_sum": 0,
+                    "served_ue_max": 0,
+                    "sum_se_base_def": 0.0,
+                    "sum_se_rm": 0.0,
+                }
+                kpi_per_sat[si] = k
+            k["ttis_active"] += 1
+            k["served_ue_sum"] += int(ue_idx.size)
+            k["served_ue_max"] = max(int(k["served_ue_max"]), int(ue_idx.size))
+            k["sum_se_base_def"] += float(base * Z)
+            k["sum_se_rm"] += float(rm * Z)
+
+        # Initialize kpi dict if first time
+        # (Declared before loop to satisfy type checker.)
+        # Per-satellite no-UE case: not counted as active.
+
+    # Average across T and PRBs (per original convention): divide by T and Z
+    avg_se_base_def = sum_rate_base_def / max(1, T) / max(1, Z)
+    avg_se_rm = sum_rate_rm / max(1, T) / max(1, Z)
+
+    # Summarize per-satellite KPI
+    per_sat_summary = []
+    for si, k in sorted(kpi_per_sat.items(), key=lambda x: x[0]):
+        tt = int(k["ttis_active"]) or 1
+        per_sat_summary.append({
+            "sat_index": int(si),
+            "name": str(k["name"]),
+            "ttis_active": int(k["ttis_active"]),
+            "avg_served_ue": float(k["served_ue_sum"]) / float(tt),
+            "max_served_ue": int(k["served_ue_max"]),
+            "avg_se_base_default_per_prb": float(k["sum_se_base_def"]) / float(tt * max(1, Z)),
+            "avg_se_rm_per_prb": float(k["sum_se_rm"]) / float(tt * max(1, Z)),
+        })
+
+    imp_pct = (avg_se_rm - avg_se_base_def) / max(1e-9, avg_se_base_def) * 100.0 if avg_se_base_def > 0 else float('inf')
+
+    report = {
+        "avg_se_baseline_default": avg_se_base_def,
+        "avg_se_radiomap": avg_se_rm,
+        "improvement_vs_default_pct": imp_pct,
+        "R_xyz_dbm": R_xyz_dbm,
+        "ue_pos": ue_pos,
+        "T": int(T),
+        "Z": int(Z),
+        "N_UE": int(N_UE),
+        "ho_events_per_ue": ho_events,
+        "handover_count_per_ue": [int(sum(1 for e in ho_events[i] if e.get("type") == "handover")) for i in range(N_UE)],
+        "outage_ttis_per_ue": outage_ttis.tolist(),
+        "per_sat_kpis": per_sat_summary,
+        "sat_index_to_name": {int(i): getattr(orbit.sats[i], 'name', f"SAT-{int(i)}") for i in range(len(orbit.sats))},
+    }
+    if include_trace and serving_trace is not None:
+        report["serving_trace"] = np.stack(serving_trace, axis=0)
+
+    # Optional JSON report
+    try:
+        if bool(config.get("write_json_report", False)):
+            out_dir = config.get("plot_dir", "output")
+            os.makedirs(out_dir, exist_ok=True)
+            name = str(config.get("report_basename", "constellation_summary"))
+            path = os.path.join(out_dir, f"{name}.json")
+            def serialize(obj):
+                import numpy as _np
+                if isinstance(obj, _np.ndarray):
+                    return obj.tolist()
+                raise TypeError
+            with open(path, 'w') as f:
+                import json as _json
+                _json.dump(report, f, default=serialize)
+    except Exception as e:
+        print(f"[WARN] Constellation JSON report failed: {e}")
+
+    return report
+
 # CONFIG is provided by code/config.py
 
 if __name__ == '__main__':
     # -----------------------
-    # Run single experiment
+    # Run constellation or single-satellite experiment
     # -----------------------
-    single = run_once(CONFIG)
-    print("Single-run results")
-    print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
-    print(f"  Baseline-Simple  avg SE (bits/s/Hz): {single['avg_se_baseline_simple']:.3f}")
-    print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
-    print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
-    print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
+    if bool(CONFIG.get("enable_constellation", False)):
+        out = run_constellation(CONFIG)
+        print("Constellation-run results (independent scheduling, no inter-sat interference)")
+        print(f"  Baseline-Default avg SE (bits/s/Hz): {out['avg_se_baseline_default']:.3f}")
+        print(f"  RadioMap         avg SE (bits/s/Hz): {out['avg_se_radiomap']:.3f}")
+        try:
+            print(f"  Gain vs Default (%): {out['improvement_vs_default_pct']:.2f}")
+        except Exception:
+            pass
+    else:
+        single = run_once(CONFIG)
+        print("Single-run results")
+        print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
+        print(f"  Baseline-Simple  avg SE (bits/s/Hz): {single['avg_se_baseline_simple']:.3f}")
+        print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
+        print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
+        print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
 
-    # Optional concise HARQ summary
-    if bool(CONFIG.get("print_harq_summary", True)):
-        def _print_harq(label: str, hs: dict, per_ue_key: str) -> None:
-            if not hs:
-                print(f"\n[HARQ] {label}: no HARQ stats available.")
-                return
-            tb_started = int(hs.get('tb_started', hs.get('initial_ack_count', 0) + hs.get('initial_nack_count', 0)))
-            tb_acked = int(hs.get('tb_acked', hs.get('ack_count', 0)))
-            tb_dropped = int(hs.get('tb_dropped', 0))
-            init_ack = int(hs.get('initial_ack_count', 0))
-            avg_retx = float(hs.get('avg_retx_per_acked', 0.0))
-            olla_hist = hs.get('olla_offset_avg', []) or []
-            olla_last = float(olla_hist[-1]) if len(olla_hist) > 0 else float(np.mean(hs.get('olla_last_per_ue', []) or [0.0]))
-            print(f"\n[HARQ] {label}:")
-            if tb_started > 0:
-                ack_rate = 100.0 * tb_acked / float(tb_started)
-                init_ack_rate = 100.0 * init_ack / float(tb_started)
-                print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}  (ACK rate={ack_rate:.1f}%, first-try ACK={init_ack_rate:.1f}%)")
+        # Optional concise HARQ summary
+        if bool(CONFIG.get("print_harq_summary", True)):
+            def _print_harq(label: str, hs: dict, per_ue_key: str) -> None:
+                if not hs:
+                    print(f"\n[HARQ] {label}: no HARQ stats available.")
+                    return
+                tb_started = int(hs.get('tb_started', hs.get('initial_ack_count', 0) + hs.get('initial_nack_count', 0)))
+                tb_acked = int(hs.get('tb_acked', hs.get('ack_count', 0)))
+                tb_dropped = int(hs.get('tb_dropped', 0))
+                init_ack = int(hs.get('initial_ack_count', 0))
+                avg_retx = float(hs.get('avg_retx_per_acked', 0.0))
+                olla_hist = hs.get('olla_offset_avg', []) or []
+                olla_last = float(olla_hist[-1]) if len(olla_hist) > 0 else float(np.mean(hs.get('olla_last_per_ue', []) or [0.0]))
+                print(f"\n[HARQ] {label}:")
+                if tb_started > 0:
+                    ack_rate = 100.0 * tb_acked / float(tb_started)
+                    init_ack_rate = 100.0 * init_ack / float(tb_started)
+                    print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}  (ACK rate={ack_rate:.1f}%, first-try ACK={init_ack_rate:.1f}%)")
+                else:
+                    print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}")
+                print(f"  Avg retransmissions per ACKed TB: {avg_retx:.2f}")
+                print(f"  OLLA avg offset (last): {olla_last:+.2f} dB")
+                # Per-UE goodput (SE per PRB) if available
+                per_ue = single.get(per_ue_key)
+                if per_ue:
+                    arr = np.asarray(per_ue, dtype=float)
+                    print(f"  Per-UE avg SE: mean={arr.mean():.3f}, min={arr.min():.3f}, max={arr.max():.3f}")
+
+            _print_harq("Baseline-Default", single.get("harq_stats_base"), "per_ue_avg_se_base")
+            _print_harq("RadioMap", single.get("harq_stats_map"), "per_ue_avg_se_map")
+
+        # -----------------------
+        # Run multiple seeds to show robustness
+        # -----------------------
+        seeds = np.arange(1, 21)
+        multi = run_many(CONFIG, seeds)
+        print("\nMulti-seed summary (N=20)")
+        print(f"  Baseline-Default avg SE: {multi['baseline_default'].mean():.3f} ± {multi['baseline_default'].std():.3f}")
+        print(f"  Baseline-Simple  avg SE: {multi['baseline_simple'].mean():.3f} ± {multi['baseline_simple'].std():.3f}")
+        print(f"  RadioMap         avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
+        print(f"  Gain vs Default median: {np.median(multi['improvement_vs_default_pct']):.2f}% (min={multi['improvement_vs_default_pct'].min():.2f}%, max={multi['improvement_vs_default_pct'].max():.2f}%)")
+        print(f"  Gain vs Simple  median: {np.median(multi['improvement_vs_simple_pct']):.2f}% (min={multi['improvement_vs_simple_pct'].min():.2f}%, max={multi['improvement_vs_simple_pct'].max():.2f}%)")
+
+        # -----------------------
+        # Plots
+        # -----------------------
+        save_plots = CONFIG.get("save_plots", True)
+        show_plots = CONFIG.get("show_plots", False)
+        plot_dir = CONFIG.get("plot_dir", "output")
+        if save_plots and not os.path.exists(plot_dir):
+            os.makedirs(plot_dir, exist_ok=True)
+
+        def maybe_finalize(fig_name: str):
+            if save_plots:
+                plt.savefig(os.path.join(plot_dir, fig_name), dpi=140, bbox_inches='tight')
+            if show_plots:
+                plt.show()
             else:
-                print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}")
-            print(f"  Avg retransmissions per ACKed TB: {avg_retx:.2f}")
-            print(f"  OLLA avg offset (last): {olla_last:+.2f} dB")
-            # Per-UE goodput (SE per PRB) if available
-            per_ue = single.get(per_ue_key)
-            if per_ue:
-                arr = np.asarray(per_ue, dtype=float)
-                print(f"  Per-UE avg SE: mean={arr.mean():.3f}, min={arr.min():.3f}, max={arr.max():.3f}")
+                plt.close()
 
-        _print_harq("Baseline-Default", single.get("harq_stats_base"), "per_ue_avg_se_base")
-        _print_harq("RadioMap", single.get("harq_stats_map"), "per_ue_avg_se_map")
+        # 1) Improvement distribution
+        plt.figure(figsize=(6,4))
+        plt.hist(multi["improvement_vs_default_pct"], bins=10, edgecolor='black')
+        plt.title("Radio Map–aware gain vs Default baseline")
+        plt.xlabel("Gain vs. Default baseline (%)")
+        plt.ylabel("Count")
+        plt.tight_layout()
+        maybe_finalize("gain_distribution.png")
 
-    # -----------------------
-    # Run multiple seeds to show robustness
-    # -----------------------
-    seeds = np.arange(1, 21)
-    multi = run_many(CONFIG, seeds)
-    print("\nMulti-seed summary (N=20)")
-    print(f"  Baseline-Default avg SE: {multi['baseline_default'].mean():.3f} ± {multi['baseline_default'].std():.3f}")
-    print(f"  Baseline-Simple  avg SE: {multi['baseline_simple'].mean():.3f} ± {multi['baseline_simple'].std():.3f}")
-    print(f"  RadioMap         avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
-    print(f"  Gain vs Default median: {np.median(multi['improvement_vs_default_pct']):.2f}% (min={multi['improvement_vs_default_pct'].min():.2f}%, max={multi['improvement_vs_default_pct'].max():.2f}%)")
-    print(f"  Gain vs Simple  median: {np.median(multi['improvement_vs_simple_pct']):.2f}% (min={multi['improvement_vs_simple_pct'].min():.2f}%, max={multi['improvement_vs_simple_pct'].max():.2f}%)")
+        # 2) Example Interference Map slice (median over frequency)
+        R_med = np.median(single["R_xyz_dbm"], axis=2)
+        plt.figure(figsize=(5,5))
+        plt.imshow(R_med.T, origin='lower', aspect='equal')
+        plt.title("Interference Map (median over frequency), dBm")
+        plt.colorbar(label='dBm')
+        plt.tight_layout()
+        maybe_finalize("interference_map_median.png")
 
-    # -----------------------
-    # Plots
-    # -----------------------
-    save_plots = CONFIG.get("save_plots", True)
-    show_plots = CONFIG.get("show_plots", False)
-    plot_dir = CONFIG.get("plot_dir", "output")
-    if save_plots and not os.path.exists(plot_dir):
-        os.makedirs(plot_dir, exist_ok=True)
-
-    def maybe_finalize(fig_name: str):
-        if save_plots:
-            plt.savefig(os.path.join(plot_dir, fig_name), dpi=140, bbox_inches='tight')
-        if show_plots:
-            plt.show()
-        else:
-            plt.close()
-
-    # 1) Improvement distribution
-    plt.figure(figsize=(6,4))
-    plt.hist(multi["improvement_vs_default_pct"], bins=10, edgecolor='black')
-    plt.title("Radio Map–aware gain vs Default baseline")
-    plt.xlabel("Gain vs. Default baseline (%)")
-    plt.ylabel("Count")
-    plt.tight_layout()
-    maybe_finalize("gain_distribution.png")
-
-    # 2) Example Interference Map slice (median over frequency)
-    R_med = np.median(single["R_xyz_dbm"], axis=2)
-    plt.figure(figsize=(5,5))
-    plt.imshow(R_med.T, origin='lower', aspect='equal')
-    plt.title("Interference Map (median over frequency), dBm")
-    plt.colorbar(label='dBm')
-    plt.tight_layout()
-    maybe_finalize("interference_map_median.png")
-
-    # 3) Example per-UE wideband vs best-PRB capacity (first 10 UEs)
-    ue = np.arange(min(10, CONFIG["N_UE"]))
-    best_prb = single["cap"][ue].max(axis=1)
-    wb = single["cap_wb"][ue]
-    x = np.arange(ue.size)
-    plt.figure(figsize=(6,4))
-    plt.bar(x - 0.2, wb, width=0.4, label='Wideband (baseline)')
-    plt.bar(x + 0.2, best_prb, width=0.4, label='Best PRB (RadioMap)')
-    plt.xticks(x, [f"UE{int(i)}" for i in ue])
-    plt.ylabel("Spectral efficiency (bits/s/Hz)")
-    plt.title("Per-UE: wideband vs best PRB opportunity")
-    plt.legend()
-    plt.tight_layout()
-    maybe_finalize("per_ue_wb_vs_best_prb.png")
+        # 3) Example per-UE wideband vs best-PRB capacity (first 10 UEs)
+        ue = np.arange(min(10, CONFIG["N_UE"]))
+        best_prb = single["cap"][ue].max(axis=1)
+        wb = single["cap_wb"][ue]
+        x = np.arange(ue.size)
+        plt.figure(figsize=(6,4))
+        plt.bar(x - 0.2, wb, width=0.4, label='Wideband (baseline)')
+        plt.bar(x + 0.2, best_prb, width=0.4, label='Best PRB (RadioMap)')
+        plt.xticks(x, [f"UE{int(i)}" for i in ue])
+        plt.ylabel("Spectral efficiency (bits/s/Hz)")
+        plt.title("Per-UE: wideband vs best PRB opportunity")
+        plt.legend()
+        plt.tight_layout()
+        maybe_finalize("per_ue_wb_vs_best_prb.png")
