@@ -19,20 +19,17 @@ CONFIG = {
     # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
     "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
     "N_UE": 100,               # active UEs in footprint (per-beam slice)
-    "T": 20000,                 # number of TTIs per measurement window
-    "K_interferers": 7,       # used only when synthetic map is generated
+    "T": 200,                 # number of TTIs per measurement window
     "seed": 101,              # master RNG seed for reproducibility
 
-    'radio_map_mat_path': 'radio_map/Data_strong_51.mat',
+    'radio_map_mat_path': 'radio_map/combined_power_51_50_50.mat',
     'radio_map_mat_var': 'X_true',
     'radio_map_units': 'mW',
     
     # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
     "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz (20 MHz channel => 51 PRBs)
     "cp_type": "normal",      # cyclic prefix type (FR1 normal)
-    "noise_dbm": -121.45,     # fallback if PRB BW not set
     "noise_temp_K": 290.0,    # thermal noise temperature
-    # Alternatively you can set: "prb_bw_hz": 360000.0
 
     # Channel model
     "channel_model": "3gpp_ntn",
@@ -46,9 +43,8 @@ CONFIG = {
 
     # DL transmit power and link budget
     "P_tx_dbm": 30.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
-    # If geometry disabled, use fixed path loss + composite gain
-    "L_fs_db": 154.0,         # ~600 km @ 2 GHz FSPL (dB)
-    "G_rx_db": 38.0,          # composite gain term (e.g., TX boresight + UT) in dB
+    # Beam/antenna boresight gain (used by beam pattern)
+    "G_rx_db": 38.0,
     "shadow_std_db": 7.0,     # lognormal shadowing std (dB)
     "rx_nf_db": 7.0,          # UE receiver noise figure (dB)
     "impl_loss_db": 1.0,      # implementation loss as noise rise (dB)
@@ -57,15 +53,11 @@ CONFIG = {
 
     # Scheduler realism
     "use_mcs": True,          # use MCS table (vs Shannon)
-    "csi_mcs_table": "nr_64qam",   # NR Table 1 (CQI->SE from 38.214)
     "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
-    "csi_delay_ttis": 10,           # legacy knob (kept for compatibility)
-    # Use CQI quantization for baseline scheduling metric (more realistic than continuous SINR)
-    "enable_cqi_quantization": True,
+    # Baseline uses CQI quantization (fixed in code)
     "baseline_csi_delay_ttis": 12,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
     "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (near real-time on-board, tighter)
     "power_split": False,           # DL default: no per-UE power split penalty
-    "max_prbs_per_ue": 12,
 
     # CSI periodicity / estimation error (baseline vs Radio Map)
     "enable_cqi_periodicity_base": True,
@@ -76,7 +68,6 @@ CONFIG = {
     "radiomap_blur_sigma": 1.0,
 
     # Geometry + beam (NR-NTN LEO S-band)
-    "enable_geometry": True,  # enable per-UE FSPL and beam gain
     "sat_altitude_km": 600.0,
     # Center frequency 2.000 GHz (1990–2010 MHz band edges, 20 MHz BW)
     "carrier_freq_GHz": 2.000,  # FR1 S-band center (1990–2010 MHz)
@@ -95,14 +86,6 @@ CONFIG = {
     "enable_time_varying": True,
     "rm_flicker_db_std": 1.5,
     "rm_drift_px": (1, 0),
-
-    # DL power allocation model
-    # equal_prb: constant per‑PRB EIRP = P_tx_dbm
-    # waterfill: total power P_tot_dbm allocated per PRB via water‑filling
-    "dl_power_model": "equal_prb",
-    "P_tot_dbm": None,        # set (e.g., 50.0) to enable water‑filling
-    "p_min_dbm": None,
-    "p_max_dbm": None,
 }
 
 # Scheduler
@@ -120,13 +103,15 @@ CONFIG.update({
 
 # HARQ/BLER/OLLA (optional; generic to DL)
 CONFIG.update({
-    "enable_harq_deferral": True,      # off by default
+    # Always use full HARQ in this build
+    "enable_harq_deferral": False,
     "harq_max_procs": 24,
     "harq_ack_delay_ttis": 6,
-    "enable_harq_full": True,          # keep off by default
+    "enable_harq_full": True,
     "harq_target_bler": 0.1,
     "harq_max_retx": 4,
-    "mcs_table_kind": "3gpp_table_1",
+    # 3GPP Table 2 (256QAM-capable)
+    "mcs_table_kind": "3gpp_table_2",
     # PDSCH DMRS/overhead for N_RE computation
     "pdsch_dmrs_sym_per_slot": 1,
     "dmrs_re_per_sym_per_prb": 6,
@@ -148,13 +133,11 @@ CONFIG.update({
     "harq_flush_tail": True,
     # Optional path to 3GPP MCS tables (JSON). If set, you can choose '3gpp_table_1/2/3'.
     "mcs_3gpp_table_path": os.path.join(_BASE_DIR, "..", "docs", "mcs_tables_38_214.json"),
-    # 256QAM (Table 2) now enabled per your test
+    # 256QAM (Table 2)
     "csi_mcs_table": "nr_256qam",
-    "mcs_table_kind": "3gpp_table_2",
-    "enable_cqi_periodicity": False,    # legacy switch (applies to both if specific flags not set)
-    # New: decouple CQI periodicity per path
-    "enable_cqi_periodicity_base": True,   # apply periodic CQI to baseline metrics
-    "enable_cqi_periodicity_rm": False,    # apply periodic CQI to RM metrics
+    # Decoupled CQI periodicity per path
+    "enable_cqi_periodicity_base": True,
+    "enable_cqi_periodicity_rm": False,
     "cqi_period_ttis": 5,
     "cqi_offset_ttis": 0,
 })
@@ -163,27 +146,20 @@ CONFIG.update({
 
 # A3/HO parameters removed
 
-# Optional Skyfield/TLE-driven orbit (disabled by default)
+# Skyfield/TLE-driven orbit (required when dynamics are enabled)
 CONFIG.update({
-    "enable_skyfield_orbit": True,   # enable TLE-driven orbit by default per request
     # Provide either two-line TLE via 'tle_lines' (list[str,str]) or a file path via 'tle_path'
-    # "tle_lines": [
-    #     "1 58705C 24002A   25256.77687500  .00004774  00000+0  39334-4 0  2566",
-    #     "2 58705  53.1569  66.1378 0000804  91.2245 181.2078 15.69698397    13",
-    # ],
     "tle_lines": [
         "1 59421C 24065A   25259.10395833  .00000071  00000+0  58945-6 0  2596",
         "2 59421  53.1566 234.6672 0001137  93.5671 155.3063 15.69664283    16",
-    ],    
+    ],
     "tle_path": None,
-    # "tle_name": "STARLINK-11072 [DTC]",
     "tle_name": "STARLINK-11087 [DTC]",
     # Orbit start time for t=0 (ISO8601).
     # Updated to the peak-elevation overpass over Shanghai (see tools/find_overpass_times.py)
     "orbit_start_datetime": "2025-09-13T19:01:17.393469Z",
     # Mapping the simulation grid (x,y) to Earth surface around a reference lat/lon (degrees).
     # Each pixel corresponds to 'cell_size_km' in local ENU, with an optional rotation.
-    # By default, auto-center the grid to the sub-satellite point at t=0 to ensure overpass.
     # Anchor the ground map at Shanghai city center
     "auto_ref_from_tle": False,
     "ref_lat_deg": 31.2304,
@@ -209,7 +185,7 @@ CONFIG.update({
     # Allow slightly wider per-PRB box constraints for better fit
     "baseline_p_min_dbm": 27.0,
     "baseline_p_max_dbm": 33.0,
-    # Split per-path PRB cap to widen RM advantage
+    # Per-path PRB caps
     "baseline_max_prbs_per_ue": 10,
     "rm_max_prbs_per_ue": 20,
 })
@@ -219,7 +195,7 @@ CONFIG.update({
     # Enable constellation mode by default for DTC evaluation
     "enable_constellation": True,
     # Path to DTC constellation TLE catalog
-    "tle_catalog_path": os.path.join(_BASE_DIR, "..", "docs", "DTC_tle.txt"),
+    "tle_catalog_path": os.path.join(_BASE_DIR, "..", "tles", "starlink_DTC_tle.txt"),
     # Candidate filtering near the ground map reference (km)
     "constellation_max_ground_radius_km": 2000.0,
     # Limit the number of satellites considered per TTI (after filtering)

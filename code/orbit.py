@@ -50,62 +50,44 @@ def compute_geometry_and_beam(
     Y: int,
     ue_pos: np.ndarray,
 ) -> Tuple[Union[np.ndarray, float], Union[np.ndarray, float], np.ndarray]:
-    """Resolve per-UE FSPL, beam gain and elevation angle."""
-    if config.get("enable_geometry", False):
-        bc = config.get("beam_center_xy", None)
-        if bc is None:
-            cx, cy = (X // 2, Y // 2)
-        else:
-            cx, cy = bc
-        dx = (ue_pos[:, 0] - cx) * config.get("cell_size_km", 1.0)
-        dy = (ue_pos[:, 1] - cy) * config.get("cell_size_km", 1.0)
-        r_ground = np.sqrt(dx * dx + dy * dy)  # km
-        alt_km = config.get("sat_altitude_km", 600.0)
-        slant_km = np.sqrt(r_ground * r_ground + alt_km * alt_km)
-        L_fs_per_ue = fspl_db(slant_km, config.get("carrier_freq_GHz", 2.0))
-        offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km))
-        elev_deg = np.rad2deg(np.arctan2(alt_km, np.maximum(r_ground, 1e-6)))
-        G_rx_per_ue = simple_beam_gain_db(
-            offaxis_deg,
-            boresight_gain_db=config.get("G_rx_db", 32.0),
-            half_bw_deg=config.get("beam_half_bw_deg", 4.0),
-            edge_drop_db=config.get("beam_edge_drop_db", 3.0)
-        )
+    """Resolve per-UE FSPL, beam gain and elevation angle (always enabled)."""
+    bc = config.get("beam_center_xy", None)
+    if bc is None:
+        cx, cy = (X // 2, Y // 2)
     else:
-        L_fs_val = config.get("L_fs_db")
-        G_rx_val = config.get("G_rx_db")
-        L_fs_per_ue = float(L_fs_val) if isinstance(L_fs_val, (int, float)) else L_fs_val
-        G_rx_per_ue = float(G_rx_val) if isinstance(G_rx_val, (int, float)) else G_rx_val
-        elev_deg = np.full(ue_pos.shape[0], 90.0, dtype=float)
+        cx, cy = bc
+    dx = (ue_pos[:, 0] - cx) * config.get("cell_size_km", 1.0)
+    dy = (ue_pos[:, 1] - cy) * config.get("cell_size_km", 1.0)
+    r_ground = np.sqrt(dx * dx + dy * dy)  # km
+    alt_km = config.get("sat_altitude_km", 600.0)
+    slant_km = np.sqrt(r_ground * r_ground + alt_km * alt_km)
+    L_fs_per_ue = fspl_db(slant_km, config.get("carrier_freq_GHz", 2.0))
+    offaxis_deg = np.rad2deg(np.arctan2(r_ground, alt_km))
+    elev_deg = np.rad2deg(np.arctan2(alt_km, np.maximum(r_ground, 1e-6)))
+    G_rx_per_ue = simple_beam_gain_db(
+        offaxis_deg,
+        boresight_gain_db=config.get("G_rx_db", 32.0),
+        half_bw_deg=config.get("beam_half_bw_deg", 4.0),
+        edge_drop_db=config.get("beam_edge_drop_db", 3.0)
+    )
     return L_fs_per_ue, G_rx_per_ue, np.asarray(elev_deg, dtype=float)
 
 
 class OrbitModel:
     """
-    Minimal orbit/beam placeholder for future time-varying geometry.
-    For now, returns fixed altitude and boresight centered at a point.
+    TLE-driven orbit/beam model (Skyfield required). No simple fallback.
     """
 
     def __init__(self, config: Dict, X: int, Y: int):
+        if not _SKYFIELD_OK:
+            raise RuntimeError("Skyfield/sgp4 not available. Please install them to run with TLE dynamics.")
         self.config = dict(config)
         self.X = X
         self.Y = Y
         self.cell_km = float(config.get("cell_size_km", 1.0))
-        self._mode = 'simple'
-
-        # Simple (legacy) model state
-        bc = config.get("beam_center_xy")
-        self.cx0 = float(X // 2) if bc is None else float(bc[0])
-        self.cy0 = float(Y // 2) if bc is None else float(bc[1])
         self.alt_km = float(config.get("sat_altitude_km", 600.0))
         self.tti_s = float(config.get("tti_ms", 1.0)) * 1e-3
-        v_kmps = float(config.get("sat_ground_speed_kms", 7.5))
-        head_deg = float(config.get("sat_heading_deg", 0.0))
-        head_rad = math.radians(head_deg)
-        self.vx_kmps = v_kmps * math.cos(head_rad)
-        self.vy_kmps = v_kmps * math.sin(head_rad)
-
-        # Skyfield (TLE-driven) optional state
+        # Skyfield state
         self.sf_sat = None
         self.sf_ts = None
         self.sf_t0 = None
@@ -113,72 +95,48 @@ class OrbitModel:
         self.ref_lon_deg = None
         self.auto_ref_from_tle = bool(config.get("auto_ref_from_tle", False))
         self.map_rot_deg = float(config.get("map_rotation_deg", 0.0))
-        if bool(config.get("enable_skyfield_orbit", False)) and _SKYFIELD_OK:
-            try:
-                tle_lines = config.get("tle_lines")
-                tle_path = config.get("tle_path")
-                if tle_lines is None and tle_path:
-                    with open(tle_path, 'r') as f:
-                        lines = [ln.strip() for ln in f.readlines() if ln.strip()]
-                    # Accept 2-line or name+2-line
-                    if len(lines) >= 2:
-                        tle_lines = lines[-2:]
-                if (isinstance(tle_lines, (list, tuple)) and len(tle_lines) >= 2
-                        and isinstance(tle_lines[0], str) and isinstance(tle_lines[1], str)):
-                    name = config.get("tle_name", "SAT")
-                    self.sf_sat = EarthSatellite(tle_lines[0], tle_lines[1], name)
-                    self.sf_ts = load.timescale()
-                    # Start time
-                    t0_str = config.get("orbit_start_datetime", None)
-                    if t0_str:
-                        try:
-                            self.sf_t0 = datetime.fromisoformat(str(t0_str).replace('Z', '+00:00'))
-                        except Exception:
-                            self.sf_t0 = datetime(2025, 1, 1)
-                    else:
-                        self.sf_t0 = datetime(2025, 1, 1)
-                    # Local map reference (lat/lon)
-                    self.ref_lat_deg = config.get("ref_lat_deg", None)
-                    self.ref_lon_deg = config.get("ref_lon_deg", None)
-                    self._mode = 'skyfield'
-                    # If requested, set reference to sub-satellite point at t0
-                    if self.auto_ref_from_tle:
-                        ts0 = self.sf_ts.utc(self.sf_t0.year, self.sf_t0.month, self.sf_t0.day,
-                                             self.sf_t0.hour, self.sf_t0.minute, self.sf_t0.second + self.sf_t0.microsecond * 1e-6)
-                        itrs0 = self.sf_sat.at(ts0)
-                        sub0 = wgs84.subpoint_of(itrs0)
-                        self.ref_lat_deg = float(sub0.latitude.degrees)
-                        self.ref_lon_deg = float(sub0.longitude.degrees)
+        try:
+            tle_lines = config.get("tle_lines")
+            tle_path = config.get("tle_path")
+            if tle_lines is None and tle_path:
+                with open(tle_path, 'r') as f:
+                    lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+                # Accept 2-line or name+2-line
+                if len(lines) >= 2:
+                    tle_lines = lines[-2:]
+            if (isinstance(tle_lines, (list, tuple)) and len(tle_lines) >= 2
+                    and isinstance(tle_lines[0], str) and isinstance(tle_lines[1], str)):
+                name = config.get("tle_name", "SAT")
+                self.sf_sat = EarthSatellite(tle_lines[0], tle_lines[1], name)
+                self.sf_ts = load.timescale()
+                # Start time
+                t0_str = config.get("orbit_start_datetime", None)
+                if t0_str:
+                    try:
+                        self.sf_t0 = datetime.fromisoformat(str(t0_str).replace('Z', '+00:00'))
+                    except Exception:
+                        from datetime import timezone
+                        self.sf_t0 = datetime.now(tz=timezone.utc)
                 else:
-                    # Fallback to simple if TLE not provided
-                    self._mode = 'simple'
-            except Exception:
-                # Fallback to simple on any error
-                self._mode = 'simple'
-
-        if abs(float(config.get("sat_ground_speed_kms", 7.5))) < 1e-9:
-            # Preserve expected behaviour for tests that rely on zero Doppler when
-            # the configurable ground speed is forced to zero.
-            self._mode = 'simple'
-
-    def beam_center_at(self, t: int) -> Tuple[float, float]:
-        # Advance beam center with wrap-around on the tile
-        step_km = self.tti_s
-        cx = self.cx0 + (self.vx_kmps * step_km / self.cell_km) * t
-        cy = self.cy0 + (self.vy_kmps * step_km / self.cell_km) * t
-        # wrap around to keep within [0, X), [0, Y)
-        cx = cx % self.X
-        cy = cy % self.Y
-        return cx, cy
-
-    def get_slant_and_offaxis(self, ue_pos: np.ndarray, t: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-        cx, cy = self.beam_center_at(t)
-        dx = (ue_pos[:, 0].astype(float) - cx) * self.cell_km
-        dy = (ue_pos[:, 1].astype(float) - cy) * self.cell_km
-        r_ground = np.sqrt(dx * dx + dy * dy)
-        slant_km = np.sqrt(r_ground * r_ground + self.alt_km * self.alt_km)
-        offaxis_deg = np.rad2deg(np.arctan2(r_ground, self.alt_km))
-        return slant_km, offaxis_deg
+                    from datetime import timezone
+                    self.sf_t0 = datetime.now(tz=timezone.utc)
+                # Local map reference (lat/lon)
+                self.ref_lat_deg = config.get("ref_lat_deg", None)
+                self.ref_lon_deg = config.get("ref_lon_deg", None)
+                # If requested, set reference to sub-satellite point at t0
+                if self.auto_ref_from_tle:
+                    ts0 = self.sf_ts.utc(self.sf_t0.year, self.sf_t0.month, self.sf_t0.day,
+                                         self.sf_t0.hour, self.sf_t0.minute, self.sf_t0.second + self.sf_t0.microsecond * 1e-6)
+                    itrs0 = self.sf_sat.at(ts0)
+                    sub0 = wgs84.subpoint_of(itrs0)
+                    self.ref_lat_deg = float(sub0.latitude.degrees)
+                    self.ref_lon_deg = float(sub0.longitude.degrees)
+                if self.ref_lat_deg is None or self.ref_lon_deg is None:
+                    raise RuntimeError("ref_lat_deg/ref_lon_deg must be set or auto_ref_from_tle=True")
+            else:
+                raise ValueError("TLE lines or tle_path must be provided for OrbitModel")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize TLE orbit: {e}")
 
     def get_geometry(
         self,
@@ -186,35 +144,6 @@ class OrbitModel:
         t: int = 0,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return FSPL, beam gain, delay, Doppler and elevation per UE."""
-        if self._mode != 'skyfield':
-            # Legacy simple model
-            cx, cy = self.beam_center_at(t)
-            x_ue_km = ue_pos[:, 0].astype(float) * self.cell_km
-            y_ue_km = ue_pos[:, 1].astype(float) * self.cell_km
-            x_sat_km = cx * self.cell_km
-            y_sat_km = cy * self.cell_km
-            dx = x_sat_km - x_ue_km
-            dy = y_sat_km - y_ue_km
-            r_ground = np.sqrt(dx * dx + dy * dy)
-            slant_km = np.sqrt(r_ground * r_ground + self.alt_km * self.alt_km)
-            offaxis_deg = np.rad2deg(np.arctan2(r_ground, self.alt_km))
-            L_fs = fspl_db(slant_km, self.config.get("carrier_freq_GHz", 2.0))
-            G_rx = simple_beam_gain_db(
-                offaxis_deg,
-                boresight_gain_db=self.config.get("G_rx_db", 32.0),
-                half_bw_deg=self.config.get("beam_half_bw_deg", 4.0),
-                edge_drop_db=self.config.get("beam_edge_drop_db", 3.0),
-            )
-            c_kmps = 299792.458
-            tau_s = slant_km / c_kmps
-            u_x = dx / slant_km
-            u_y = dy / slant_km
-            v_r_kmps = self.vx_kmps * u_x + self.vy_kmps * u_y
-            f_c_hz = float(self.config.get("carrier_freq_GHz", 2.0)) * 1e9
-            f_d_hz = (v_r_kmps / c_kmps) * f_c_hz
-            elev_deg = np.rad2deg(np.arctan2(self.alt_km, np.maximum(r_ground, 1e-6)))
-            return L_fs, G_rx, tau_s, f_d_hz, elev_deg
-
         # Skyfield path
         # Build Skyfield time object for this TTI
         dt = self.sf_t0 + timedelta(seconds=self.tti_s * t)

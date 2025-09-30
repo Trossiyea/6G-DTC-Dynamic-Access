@@ -68,39 +68,8 @@ def blur1d(a: np.ndarray, k: int, axis: int = 0) -> np.ndarray:
     return window_sum / float(2 * k)
 
 # -----------------------
-# Radio Map generator
+# Radio Map I/O
 # -----------------------
-def gen_radio_map(X: int, Y: int, Z: int,
-                  K: int = 7, base_noise_dbm: float = -121.45, seed: int = 1) -> np.ndarray:
-    """
-    Create a synthetic terrestrial interference map R[x,y,z] in dBm (no thermal noise).
-    We place K Gaussian interference 'lobes' in the 3D space-frequency volume. The
-    lobe peak power is scaled relative to a reference thermal noise floor (base_noise_dbm),
-    but the returned tensor contains INTERFERENCE ONLY. Thermal noise is added later
-    in compute_caps().
-    """
-    rng = np.random.default_rng(seed)
-    # Interference-only power (mW), initialized to 0 to avoid double-counting noise.
-    interf_mw = np.zeros((X, Y, Z), dtype=float)
-
-    xs = np.arange(X).reshape(-1, 1, 1)
-    ys = np.arange(Y).reshape(1, -1, 1)
-    zs = np.arange(Z).reshape(1, 1, -1)
-
-    for _ in range(K):
-        cx, cy, cz = rng.uniform(0, X), rng.uniform(0, Y), rng.uniform(0, Z)
-        ax, ay, az = rng.uniform(5, 15), rng.uniform(5, 15), rng.uniform(2, 8)
-        peak_rel_db = rng.uniform(10, 35)  # peak above noise (dB)
-        peak_rel_mw = 10 ** (peak_rel_db / 10.0)
-
-        weight = np.exp(-(((xs - cx) ** 2) / (2 * ax ** 2)
-                          + ((ys - cy) ** 2) / (2 * ay ** 2)
-                          + ((zs - cz) ** 2) / (2 * az ** 2)))
-        interf_mw += dbm_to_mw(base_noise_dbm) * peak_rel_mw * weight
-
-    # Avoid -inf when converting 0 mW to dBm for visualization convenience.
-    interf_mw = np.maximum(interf_mw, 1e-30)
-    return mw_to_dbm(interf_mw)
 
 def load_radio_map_from_mat(path: str,
                             var_name: str = "X_true",
@@ -260,27 +229,24 @@ def _resample_radiomap_z_dbm(R_dbm: np.ndarray, target_Z: int) -> np.ndarray:
 
 def select_radio_map(config: Dict) -> Tuple[np.ndarray, int, int, int]:
     """
-    Load external Radio Map if provided; else generate synthetic interference-only map.
-    Always adapt the frequency dimension (Z) to match config['Z'] when needed.
+    Load Radio Map from a MATLAB .mat file and adapt Z to match PRB count.
     Returns (R_xyz_dbm, X, Y, Z).
     """
     target_Z = int(config["Z"]) if ("Z" in config and config["Z"] is not None) else None
-    if config.get("radio_map_mat_path"):
-        R_xyz_dbm = load_radio_map_from_mat(
-            config["radio_map_mat_path"],
-            var_name=config.get("radio_map_mat_var", "X_true"),
-            units=config.get("radio_map_units", "mW")
-        )
-        if R_xyz_dbm.ndim != 3:
-            raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
-        # Resample Z to target PRB count if requested
-        if target_Z is not None and R_xyz_dbm.shape[2] != target_Z:
-            R_xyz_dbm = _resample_radiomap_z_dbm(R_xyz_dbm, target_Z)
-        X, Y, Z = R_xyz_dbm.shape
-    else:
-        X, Y, Z = config["X"], config["Y"], config["Z"]
-        R_xyz_dbm = gen_radio_map(X, Y, Z, K=config["K_interferers"],
-                                  base_noise_dbm=config["noise_dbm"], seed=config["seed"])
+    path = config.get("radio_map_mat_path")
+    if not path:
+        raise ValueError("radio_map_mat_path must be provided (MAT file with 3D Radio Map)")
+    R_xyz_dbm = load_radio_map_from_mat(
+        path,
+        var_name=config.get("radio_map_mat_var", "X_true"),
+        units=config.get("radio_map_units", "mW")
+    )
+    if R_xyz_dbm.ndim != 3:
+        raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
+    # Resample Z to target PRB count if requested
+    if target_Z is not None and R_xyz_dbm.shape[2] != target_Z:
+        R_xyz_dbm = _resample_radiomap_z_dbm(R_xyz_dbm, target_Z)
+    X, Y, Z = R_xyz_dbm.shape
     return R_xyz_dbm, X, Y, Z
 
 def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -> np.ndarray:
@@ -291,18 +257,12 @@ def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -
 
 def resolve_noise_and_prb_bw(config: Dict) -> Tuple[float, Optional[float]]:
     """
-    Resolve thermal noise level (dBm) and PRB bandwidth (Hz) based on config.
-    Prefers explicit PRB bandwidth; else SCS; else fixed noise_dbm.
+    Resolve thermal noise level (dBm) from SCS -> PRB BW; require SCS.
     """
-    if "prb_bw_hz" in config and config["prb_bw_hz"] is not None:
-        prb_bw_hz = float(config["prb_bw_hz"])
-        noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
-    elif "scs_khz" in config and config["scs_khz"] is not None:
-        prb_bw_hz = float(config["scs_khz"]) * 1e3 * 12.0
-        noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
-    else:
-        prb_bw_hz = None
-        noise_dbm = config["noise_dbm"]
+    if "scs_khz" not in config or config["scs_khz"] is None:
+        raise ValueError("scs_khz must be set to compute PRB bandwidth for noise")
+    prb_bw_hz = float(config["scs_khz"]) * 1e3 * 12.0
+    noise_dbm = thermal_noise_dbm(prb_bw_hz, temp_K=config.get("noise_temp_K", 290.0))
     return noise_dbm, prb_bw_hz
 
 def apply_open_loop_power_control(config: Dict,
@@ -1545,20 +1505,13 @@ def run_once(config: Dict) -> Dict:
         if orbit_model_meas is None:
             print("[Orbit] Dynamics disabled: using static geometry (no time-varying orbit).")
         else:
-            mode = getattr(orbit_model_meas, "_mode", "simple")
-            if str(mode).lower() == "skyfield":
-                tle_name = str(config.get("tle_name", "SAT"))
-                start = str(config.get("orbit_start_datetime", "t0"))
-                auto_ref = bool(config.get("auto_ref_from_tle", False))
-                ref_lat = config.get("ref_lat_deg", None)
-                ref_lon = config.get("ref_lon_deg", None)
-                ref_txt = f", ref=({ref_lat:.4f}, {ref_lon:.4f})" if (isinstance(ref_lat, (int, float)) and isinstance(ref_lon, (int, float))) else ""
-                print(f"[Orbit] Using Skyfield/TLE orbit: {tle_name} (start={start}), auto_ref={auto_ref}{ref_txt}.")
-            else:
-                v = float(config.get("sat_ground_speed_kms", 7.5))
-                hdg = float(config.get("sat_heading_deg", 0.0))
-                alt = float(config.get("sat_altitude_km", 600.0))
-                print(f"[Orbit] Using simple ground-track model: v={v:.2f} km/s, heading={hdg:.1f} deg, alt={alt:.0f} km.")
+            tle_name = str(config.get("tle_name", "SAT"))
+            start = str(config.get("orbit_start_datetime", "t0"))
+            auto_ref = bool(config.get("auto_ref_from_tle", False))
+            ref_lat = config.get("ref_lat_deg", None)
+            ref_lon = config.get("ref_lon_deg", None)
+            ref_txt = f", ref=({ref_lat:.4f}, {ref_lon:.4f})" if (isinstance(ref_lat, (int, float)) and isinstance(ref_lon, (int, float))) else ""
+            print(f"[Orbit] Using Skyfield/TLE orbit: {tle_name} (start={start}), auto_ref={auto_ref}{ref_txt}.")
     except Exception:
         pass
 
@@ -1613,8 +1566,8 @@ def run_once(config: Dict) -> Dict:
                     out[t] = arr[t] if last is None else last
             return out
 
-        baseline_delay = int(config.get("baseline_csi_delay_ttis", config.get("csi_delay_ttis", 0)))
-        rm_delay = int(config.get("rm_csi_delay_ttis", config.get("csi_delay_ttis", 0)))
+        baseline_delay = int(config.get("baseline_csi_delay_ttis", 0))
+        rm_delay = int(config.get("rm_csi_delay_ttis", 0))
 
         # Wideband metric (baseline)
         se_time_wb = delay_series(time_series["se_time_wb"], baseline_delay)
@@ -1625,28 +1578,22 @@ def run_once(config: Dict) -> Dict:
         # Baseline per-PRB SE metric derived from instantaneous SNR, then delay and optional CQI quant
         se_time_base = np.empty_like(time_series["se_time_rm"])  # [T, UE, Z]
         for tt in range(time_series["snr_time"].shape[0]):
-            if bool(config.get("enable_cqi_quantization", False)):
-                se_time_base[tt] = snr_to_se_sched(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
-                                                   enable_cqi_quant=True,
-                                                   cqi_table=config.get("csi_mcs_table", "nr_64qam"))
-            else:
-                se_time_base[tt] = se_from_snr(time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params=mcs_params)
+            # Baseline fixed: use CQI quantization for metric
+            se_time_base[tt] = snr_to_se_sched(
+                time_series["snr_time"][tt], config.get("use_mcs", False), mcs_params,
+                enable_cqi_quant=True,
+                cqi_table=config.get("csi_mcs_table", "nr_256qam")
+            )
         se_time_base = delay_series(se_time_base, baseline_delay)
         # Optional CQI reporting periodicity (hold-last), decoupled per-path
         period = int(config.get("cqi_period_ttis", 0) or 0)
         offset = int(config.get("cqi_offset_ttis", 0) or 0)
         if period and period > 1:
-            if bool(config.get("enable_cqi_periodicity", False)):
-                # Backward-compatible: apply to all
+            if bool(config.get("enable_cqi_periodicity_base", False)):
                 se_time_wb = hold_series(se_time_wb, period, offset)
-                se_time_rm = hold_series(se_time_rm, period, offset)
                 se_time_base = hold_series(se_time_base, period, offset)
-            else:
-                if bool(config.get("enable_cqi_periodicity_base", False)):
-                    se_time_wb = hold_series(se_time_wb, period, offset)
-                    se_time_base = hold_series(se_time_base, period, offset)
-                if bool(config.get("enable_cqi_periodicity_rm", False)):
-                    se_time_rm = hold_series(se_time_rm, period, offset)
+            if bool(config.get("enable_cqi_periodicity_rm", False)):
+                se_time_rm = hold_series(se_time_rm, period, offset)
         # Keep tau/fd for downstream users
         tau_time = time_series.get("tau_time")
         fd_time = time_series.get("fd_time")
@@ -1702,11 +1649,11 @@ def run_once(config: Dict) -> Dict:
                 rng=rng,
                 ue_mask_time=None,
                 harq_mgr=harq_mgr_base,
-                dl_power_model=str(config.get("baseline_dl_power_model", config.get("dl_power_model", "equal_prb"))),
-                P_tot_dbm=config.get("baseline_P_tot_dbm", config.get("P_tot_dbm")),
+                dl_power_model=str(config.get("baseline_dl_power_model", "equal_prb")),
+                P_tot_dbm=config.get("baseline_P_tot_dbm", None),
                 P_ref_dbm=config.get("P_tx_dbm"),
-                p_min_dbm=config.get("baseline_p_min_dbm", config.get("p_min_dbm")),
-                p_max_dbm=config.get("baseline_p_max_dbm", config.get("p_max_dbm")),
+                p_min_dbm=config.get("baseline_p_min_dbm", None),
+                p_max_dbm=config.get("baseline_p_max_dbm", None),
                 record_assignments=_rec_base,
                 assignments_out=assignments_base,
                 record_ue_thr=_rec_base_thr,
@@ -1753,11 +1700,11 @@ def run_once(config: Dict) -> Dict:
                 rng=rng,
                 ue_mask_time=None,
                 harq_mgr=harq_mgr_map,
-                dl_power_model=str(config.get("rm_dl_power_model", config.get("dl_power_model", "equal_prb"))),
-                P_tot_dbm=config.get("rm_P_tot_dbm", config.get("P_tot_dbm")),
+                dl_power_model=str(config.get("rm_dl_power_model", "equal_prb")),
+                P_tot_dbm=config.get("rm_P_tot_dbm", None),
                 P_ref_dbm=config.get("P_tx_dbm"),
-                p_min_dbm=config.get("rm_p_min_dbm", config.get("p_min_dbm")),
-                p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
+                p_min_dbm=config.get("rm_p_min_dbm", None),
+                p_max_dbm=config.get("rm_p_max_dbm", None),
                 record_assignments=_rec_rm,
                 assignments_out=assignments_rm,
                 record_ue_thr=_rec_rm_thr,
@@ -1794,11 +1741,11 @@ def run_once(config: Dict) -> Dict:
             eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
             require_contiguous=bool(config.get("sched_require_contiguous", True)),
             rng=rng,
-            dl_power_model=str(config.get("baseline_dl_power_model", config.get("dl_power_model", "equal_prb"))),
-            P_tot_dbm=config.get("baseline_P_tot_dbm", config.get("P_tot_dbm")),
+            dl_power_model=str(config.get("baseline_dl_power_model", "equal_prb")),
+            P_tot_dbm=config.get("baseline_P_tot_dbm", None),
             P_ref_dbm=config.get("P_tx_dbm"),
-            p_min_dbm=config.get("baseline_p_min_dbm", config.get("p_min_dbm")),
-            p_max_dbm=config.get("baseline_p_max_dbm", config.get("p_max_dbm")),
+            p_min_dbm=config.get("baseline_p_min_dbm", None),
+            p_max_dbm=config.get("baseline_p_max_dbm", None),
             config=config,
         )
         # Simple wideband PF baseline for static snapshot
@@ -1836,11 +1783,11 @@ def run_once(config: Dict) -> Dict:
             require_contiguous=bool(config.get("sched_require_contiguous", True)),
             rng=rng,
             ue_mask_time=None,
-            dl_power_model=str(config.get("rm_dl_power_model", config.get("dl_power_model", "equal_prb"))),
-            P_tot_dbm=config.get("rm_P_tot_dbm", config.get("P_tot_dbm")),
+            dl_power_model=str(config.get("rm_dl_power_model", "equal_prb")),
+            P_tot_dbm=config.get("rm_P_tot_dbm", None),
             P_ref_dbm=config.get("P_tx_dbm"),
-            p_min_dbm=config.get("rm_p_min_dbm", config.get("p_min_dbm")),
-            p_max_dbm=config.get("rm_p_max_dbm", config.get("p_max_dbm")),
+            p_min_dbm=config.get("rm_p_min_dbm", None),
+            p_max_dbm=config.get("rm_p_max_dbm", None),
             record_assignments=_rec_rm2,
             assignments_out=assignments_rm2,
             config=config,
@@ -2038,11 +1985,11 @@ def run_constellation(config: Dict) -> Dict:
 
         # Build geometry and capacities per candidate sat
         # Unified PRB cap and power model for fair baseline vs RM in constellation mode
-        prb_cap_unified = int(config.get("constellation_prb_cap", config.get("rm_max_prbs_per_ue", config.get("max_prbs_per_ue", 20))))
-        dlpm = str(config.get("rm_dl_power_model", config.get("dl_power_model", "equal_prb")))
-        Ptot = config.get("rm_P_tot_dbm", config.get("P_tot_dbm"))
-        pmin = config.get("rm_p_min_dbm", config.get("p_min_dbm"))
-        pmax = config.get("rm_p_max_dbm", config.get("p_max_dbm"))
+        prb_cap_unified = int(config.get("constellation_prb_cap", config.get("rm_max_prbs_per_ue", 20)))
+        dlpm = str(config.get("rm_dl_power_model", "equal_prb"))
+        Ptot = config.get("rm_P_tot_dbm", None)
+        pmin = config.get("rm_p_min_dbm", None)
+        pmax = config.get("rm_p_max_dbm", None)
 
         for si in cand:
             L_fs, G_rx, tau_s_arr, fd_hz_arr, elev = orbit.geometry_for_sat(ue_pos, si, t_idx)
@@ -2186,13 +2133,12 @@ def run_constellation(config: Dict) -> Dict:
             snr_wb = snr_wb_s[si][ue_idx]
 
             # One-TTI Baseline-Default: contiguous-block PF with baseline per-PRB metric
-            # Build per-PRB SE metric from instantaneous SNR, with optional CQI quantization
-            if bool(config.get("enable_cqi_quantization", False)):
-                se_base_prb = snr_to_se_sched(snr_lin, config.get("use_mcs", False), mcs_params,
-                                              enable_cqi_quant=True,
-                                              cqi_table=config.get("csi_mcs_table", "nr_64qam"))
-            else:
-                se_base_prb = se_from_snr(snr_lin, config.get("use_mcs", False), mcs_params=mcs_params)
+            # Fixed: use CQI quantization to form baseline metric
+            se_base_prb = snr_to_se_sched(
+                snr_lin, config.get("use_mcs", False), mcs_params,
+                enable_cqi_quant=True,
+                cqi_table=config.get("csi_mcs_table", "nr_256qam")
+            )
             base = pf_schedule_radiomap_blocks(
                 cap, 1, beta=config["pf_beta"],
                 snr_lin=snr_lin,
