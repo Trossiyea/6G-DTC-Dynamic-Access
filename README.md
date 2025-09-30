@@ -11,27 +11,20 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
-- **Radio-map aware proportional fair scheduling** with contiguous PRB blocks,
-  optional water-filling power allocation, and time-varying interference maps.
-- **3GPP-aligned link adaptation**: CQI and spectral efficiency curves follow
-  TS 38.214; default MCS tables load from `docs/mcs_tables_38_214.json`. BLER is
-  calibrated around the 10% AWGN anchors and can be refined with external
-  curves.
-- **Orbit & beam dynamics** via a configurable `OrbitModel` (simple kinematics
-  or Skyfield/TLE when available). The simulator tracks slant range, Doppler,
-  and propagation delay per UE.
-- **HARQ (optional)** with process management, soft combining (EESM), OLLA, and
-  delayed ACK gating. Disable it for the lighter Stage-1 style analyses.
-- **Extensive configurability**: CSI periodicity and delay, interference map
-  estimation error, Doppler residuals, scheduler realism knobs, and plotting /
-  reporting switches.
+- Radio-map aware proportional fair scheduling with contiguous PRB blocks,
+  optional water-filling, and time-varying interference maps.
+- 3GPP-aligned link adaptation (TS 38.214). MCS tables load from
+  `docs/mcs_tables_38_214.json` by default; optional external BLER curves.
+- Orbit & beam dynamics via Skyfield/TLE. The simulator tracks slant range,
+  Doppler, and propagation delay per UE。单星与星座两种场景均支持。
+- HARQ（默认启用 Full 模式）包含进程管理、EESM 软合并、OLLA 及延迟 ACK。
+- 清晰的配置接口：CSI 延迟与周期、Radio Map 估计误差/模糊、Doppler 残差，及调度/功率分配参数。
 
 
 Prerequisites
 -------------
-- Python 3.9+ with NumPy, SciPy, Matplotlib, and (optionally) Skyfield/sgp4 for
-  TLE-driven geometry. The repository has been exercised in a Conda
-  environment named `ns3env` that already bundles these dependencies.
+- Python 3.9+ with NumPy, SciPy, Matplotlib, and Skyfield/sgp4（用于 TLE 轨道）。
+  建议使用 Conda 环境（例如 `ns3env`）。
 - To avoid Matplotlib cache permission warnings on shared machines, set
   `export MPLCONFIGDIR=$(mktemp -d)` before running.
 
@@ -56,27 +49,32 @@ MEAS_T=120 MEAS_N_UE=50 python code/main.py
 
 Configuration Highlights
 ------------------------
-All tunables live in `code/config.py`. Key groups include:
+全部配置在 `code/config.py`。核心分组如下：
 
-- **Radio maps & traffic**: `X/Y/Z`, `N_UE`, `radio_map_mat_path`,
-  `K_interferers`, `seed`.
-- **Geometry & orbit**: `enable_geometry`, `enable_orbit_dynamics`,
-  `sat_ground_speed_kms`, `sat_heading_deg`, `sat_altitude_km`,
-  `cell_size_km`. Skyfield support is enabled by default; provide TLE lines via
-  `CONFIG['tle_lines']` or `tle_path`.
-- **Link budget**: `P_tx_dbm`, `L_fs_db`, `G_rx_db`, `rx_nf_db`, `impl_loss_db`.
-- **Scheduler realism**: `use_mcs`, `csi_delay_ttis`,
-  `baseline_csi_delay_ttis`, `rm_csi_delay_ttis`, `power_split`,
-  `sched_require_contiguous`, `sched_eesm_beta_db`, `dl_power_model`.
-- **HARQ / OLLA / BLER** (optional): `enable_harq_full`, `harq_max_procs`,
-  `harq_ack_delay_ttis`, `harq_target_bler`, `harq_max_retx`,
-  `olla_step_up_db`, `olla_step_down_db`, `olla_init_offset_db`,
-  `bler_slope_db`, `bler_margin_db`.
-- **MCS tables**: defaults point to the official 38.214 JSON file via
-  `mcs_3gpp_table_path` plus `mcs_table_kind='3gpp_table_1'`. You can load the
-  256-QAM set (`3gpp_table_2`) or low-SE set (`3gpp_table_3`) without code
-  changes. The earlier approximate tables remain available as
-  `table_1_64qam`, `table_2_256qam`, and `table_3_low_se`.
+- Radio Map 与业务规模：`X/Y/Z`, `N_UE`, `radio_map_mat_path`, `radio_map_mat_var`, `radio_map_units`, `seed`。
+  - 说明：必须使用 MAT Radio Map；若 Z 与 PRB 数不一致，会自动按频率轴重采样到 `Z`。
+- 频谱与噪声：`scs_khz`（自动推导 PRB 带宽并按 kTB 计算热噪声）、`noise_temp_K`。
+- 几何与轨道：`enable_orbit_dynamics`、`sat_altitude_km`、`carrier_freq_GHz`、
+  `beam_center_xy`、`beam_half_bw_deg`、`beam_edge_drop_db`、`cell_size_km`；
+  TLE：`tle_lines` 或 `tle_path`、`tle_name`、`orbit_start_datetime`、
+  `ref_lat_deg/ref_lon_deg`、`auto_ref_from_tle`、`map_rotation_deg`。
+- 链路预算：`P_tx_dbm`、`G_rx_db`（波束主瓣值）、`rx_nf_db`、`impl_loss_db`。
+- 调度与链路自适应：`use_mcs`、`csi_mcs_table`（默认 `nr_256qam`）、`pf_beta`、
+  `overhead_eff`、`sched_require_contiguous`、`baseline_csi_delay_ttis`、
+  `rm_csi_delay_ttis`、`baseline_sched_eesm_beta_db`、`rm_sched_eesm_beta_db`。
+- 功率分配（按路径）：`baseline_dl_power_model`、`baseline_P_tot_dbm`、
+  `baseline_p_min_dbm`、`baseline_p_max_dbm`、`rm_dl_power_model`、
+  `rm_P_tot_dbm`、`rm_p_min_dbm`、`rm_p_max_dbm`、`baseline_max_prbs_per_ue`、
+  `rm_max_prbs_per_ue`。
+- HARQ/OLLA/BLER：`enable_harq_full`（默认 True）、`harq_max_procs`、
+  `harq_ack_delay_ttis`、`harq_target_bler`、`harq_max_retx`、`olla_*`、`bler_*`。
+- MCS 表：`mcs_3gpp_table_path`（默认 `docs/mcs_tables_38_214.json`）、
+  `mcs_table_kind`（默认 `3gpp_table_2`）。
+
+已移除/不再支持的键：`K_interferers`、`prb_bw_hz`、`noise_dbm`（噪声改用 SCS→kTB）、
+`enable_geometry`/`L_fs_db`（始终计算几何）、`csi_delay_ttis`（使用 per-path 延迟）、
+全局 `enable_cqi_periodicity`（改用 per-path）、通用功率回退 `dl_power_model`、
+`P_tot_dbm`、`p_min_dbm`、`p_max_dbm`、`max_prbs_per_ue`。
 
 
 Example: custom experiment
@@ -119,12 +117,9 @@ true, the summary is serialized to `output/<report_basename>.json`.
 
 Troubleshooting
 ---------------
-- **MCS table fails to load**: ensure `mcs_3gpp_table_path` points to a valid
-  JSON file that follows the template in `docs/mcs_tables_38_214_template.json`.
-- **Matplotlib cache warnings**: export `MPLCONFIGDIR` to a writable temporary
-  directory.
-- **Skyfield unavailable**: the simulator falls back to the simple orbit model;
-  set `enable_skyfield_orbit=False` to silence warnings.
+- MCS 表：确保 `mcs_3gpp_table_path` 指向合法 JSON（参考 `docs/mcs_tables_38_214_template.json`）。
+- Matplotlib 缓存：在受限环境下可 `export MPLCONFIGDIR=$(mktemp -d)`。
+- TLE/轨道：星座模式需要有效 TLE catalog；单星启用 `enable_orbit_dynamics` 时推荐提供 `tle_lines/tle_path`。
 
 
 Repository Layout

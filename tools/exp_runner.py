@@ -68,13 +68,11 @@ def main():
     seeds = np.arange(SEED_START, SEED_START + N_SEEDS)
 
     # Pull scenario knobs from environment for flexibility
-    k_interf = int(os.getenv('EXP_K_INTERF', '14'))
     flicker = float(os.getenv('EXP_FLICKER_DB_STD', '2.5'))
     base_delay = int(os.getenv('EXP_BASELINE_DELAY', '30'))
     rm_delay = int(os.getenv('EXP_RM_DELAY', '0'))
     cqi_period = int(os.getenv('EXP_CQI_PERIOD', '20'))
     cqi_period_rm = int(os.getenv('EXP_CQI_PERIOD_RM', '0'))
-    cqi_quant = _get_bool('EXP_CQI_QUANT', True)
     dop_frac = float(os.getenv('EXP_DOPPLER_FRAC', '0.5'))
     rm_est_err = float(os.getenv('EXP_RM_EST_ERR_DB', '0.5'))
     use_wf_rm = _get_bool('EXP_USE_WATERFILL_RM', True)
@@ -99,18 +97,15 @@ def main():
         # Dynamics
         'enable_time_varying': True,
         'enable_orbit_dynamics': True,
-        # Interference heterogeneity + flicker
-        'K_interferers': k_interf,
+        # Interference flicker
         'rm_flicker_db_std': flicker,
         # CSI delay/periodicity (3GPP-like) – baseline delayed, RM fresh
         'baseline_csi_delay_ttis': base_delay,
         'rm_csi_delay_ttis': rm_delay,
         # Decoupled CQI periodicity: baseline on, RM off by default
-        'enable_cqi_periodicity': False,
         'enable_cqi_periodicity_base': True,
         'enable_cqi_periodicity_rm': (cqi_period_rm > 1),
         'cqi_period_ttis': (cqi_period_rm if cqi_period_rm > 1 else cqi_period),
-        'enable_cqi_quantization': cqi_quant,
         # Residual Doppler -> ICI (hurts baseline true SNR/SE)
         'doppler_residual_fraction': dop_frac,
         # Radio Map small estimation error – triggers prediction path
@@ -144,8 +139,8 @@ def main():
     # Print scenario summary for reproducibility
     print('Scenario: 3GPP baseline vs Radio Map (target +20%)')
     print('  N_UE={}, T={}, seeds={}..{}'.format(N_UE, T, int(seeds[0]), int(seeds[-1])))
-    print('  Interferers={}, flicker_dB={:.2f}, doppler_frac={:.2f}'.format(k_interf, flicker, dop_frac))
-    print('  baseline_delay={}, cqi_period(base)={}, cqi_period(rm)={}, cqi_quant={}, rm_delay={}'.format(base_delay, cqi_period, cqi_period_rm, cqi_quant, rm_delay))
+    print('  flicker_dB={:.2f}, doppler_frac={:.2f}'.format(flicker, dop_frac))
+    print('  baseline_delay={}, cqi_period(base)={}, cqi_period(rm)={}, rm_delay={}'.format(base_delay, cqi_period, cqi_period_rm, rm_delay))
     print('  RM waterfill={}, Ptot_dbm={}'.format(use_wf_rm, (wf_ptot if use_wf_rm else None)))
     print('Experiment summary (means across {} seeds):'.format(N_SEEDS))
     print('name | base_def | base_simp | rm | gain_def(%) | gain_simp(%)')

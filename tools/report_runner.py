@@ -14,7 +14,7 @@ Default scenario (can override via env):
 - N_UE=50, T=200, seeds=1..20
 - use_mcs=True, 3GPP table_2, contiguous blocks
 - enable_time_varying=True, enable_orbit_dynamics=True
-- Interference heterogeneity: K_interferers=14, rm_flicker_db_std=2.5
+- Interference flicker: rm_flicker_db_std=2.5
 - Residual Doppler fraction: 0.5
 - Baseline: CSI delay=30 TTI, CQI periodicity=20 (quantized)
 - RM: rm_delay=0, CQI periodicity off
@@ -58,15 +58,12 @@ def main():
         'sched_require_contiguous': True,
         'enable_time_varying': True,
         'enable_orbit_dynamics': True,
-        'K_interferers': 14,
         'rm_flicker_db_std': 2.5,
         'baseline_csi_delay_ttis': 30,
         'rm_csi_delay_ttis': 0,
-        'enable_cqi_periodicity': False,
         'enable_cqi_periodicity_base': True,
         'enable_cqi_periodicity_rm': False,
         'cqi_period_ttis': 20,
-        'enable_cqi_quantization': True,
         'doppler_residual_fraction': 0.5,
         'baseline_dl_power_model': 'equal_prb',
         'rm_dl_power_model': 'waterfill',

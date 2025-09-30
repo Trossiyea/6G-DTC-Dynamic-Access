@@ -582,7 +582,8 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
         if harq_mgr is not None:
             ack_bits = None
             try:
-                ack_bits = harq_mgr.advance_time(t_idx)
+                # Incremental time advancement to support both T-steps and repeated T=1 calls
+                ack_bits = harq_mgr.advance_time()
             except TypeError:
                 ack_bits = None
             if ack_bits is not None:
@@ -701,7 +702,8 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
                 re_per_prb_val = max(1, re_per_prb_from_config(cfg))
             for s in range(1, D + 1):
                 try:
-                    ack_bits_tail = harq_mgr.advance_time((T - 1) + s)
+                    # Incremental tail advancement
+                    ack_bits_tail = harq_mgr.advance_time()
                 except TypeError:
                     ack_bits_tail = None
                 if ack_bits_tail is not None:
@@ -771,7 +773,8 @@ def pf_schedule_radiomap_blocks(
         if harq_mgr is not None:
             ack_bits = None
             try:
-                ack_bits = harq_mgr.advance_time(t_idx)
+                # Incremental time advancement to support both T-steps and repeated T=1 calls
+                ack_bits = harq_mgr.advance_time()
             except TypeError:
                 ack_bits = None
             if ack_bits is not None:
@@ -1932,6 +1935,18 @@ def run_constellation(config: Dict) -> Dict:
     noise_dbm, prb_bw_hz = resolve_noise_and_prb_bw(config)
     P_tx_dbm = apply_open_loop_power_control(config, 0.0, 0.0)  # returns config["P_tx_dbm"]
 
+    # Register 3GPP MCS tables and optional BLER curves for HARQ/MCS selection
+    try:
+        if config.get("mcs_3gpp_table_path"):
+            register_mcs_tables_from_file(config.get("mcs_3gpp_table_path"))
+    except Exception as e:
+        print(f"[WARN] Failed to load 3GPP MCS tables: {e}")
+    try:
+        if config.get("bler_curve_path"):
+            register_bler_curves_from_file(config.get("bler_curve_path"))
+    except Exception as e:
+        print(f"[WARN] Failed to load BLER curves: {e}")
+
     # Constellation orbit
     orbit = ConstellationOrbit(config, X, Y)
 
@@ -1961,6 +1976,9 @@ def run_constellation(config: Dict) -> Dict:
     sum_rate_rm = 0.0
     sum_rate_base_def = 0.0
     kpi_per_sat: Dict[int, Dict] = {}
+    # Per-satellite HARQ managers (persist across TTIs)
+    harq_base_by_sat: Dict[int, HarqManagerFull] = {}
+    harq_rm_by_sat: Dict[int, HarqManagerFull] = {}
 
     # For optional per-UE throughput (debug): not recording HARQ here
     for t_idx in range(T):
@@ -2126,11 +2144,14 @@ def run_constellation(config: Dict) -> Dict:
             if ue_idx.size == 0:
                 continue
             per_sat_served_counts[si] = int(ue_idx.size)
-            # Slice arrays for this satellite
-            cap = cap_s[si][ue_idx, :]
-            snr_lin = snr_lin_s[si][ue_idx, :]
-            cap_wb = np.log2(1.0 + np.maximum(snr_wb_s[si][ue_idx], 1e-12))
-            snr_wb = snr_wb_s[si][ue_idx]
+            # Use full UE arrays; apply scheduling mask to restrict served UEs for this satellite
+            cap = cap_s[si]
+            snr_lin = snr_lin_s[si]
+            cap_wb = np.log2(1.0 + np.maximum(snr_wb_s[si], 1e-12))
+            snr_wb = snr_wb_s[si]
+            mask = np.zeros(N_UE, dtype=bool)
+            mask[ue_idx] = True
+            ue_mask = mask[None, :]
 
             # One-TTI Baseline-Default: contiguous-block PF with baseline per-PRB metric
             # Fixed: use CQI quantization to form baseline metric
@@ -2139,6 +2160,28 @@ def run_constellation(config: Dict) -> Dict:
                 enable_cqi_quant=True,
                 cqi_table=config.get("csi_mcs_table", "nr_256qam")
             )
+            # Prepare per-satellite HARQ managers if enabled
+            harq_base = harq_base_by_sat.get(si)
+            harq_rm = harq_rm_by_sat.get(si)
+            if harq_base is None and bool(config.get("enable_harq_full", False)):
+                harq_base = HarqManagerFull(
+                    num_ue=N_UE,
+                    num_procs=int(config.get("harq_max_procs", 16)),
+                    ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                    config=config,
+                )
+                harq_base_by_sat[si] = harq_base
+            if harq_rm is None and bool(config.get("enable_harq_full", False)):
+                harq_rm = HarqManagerFull(
+                    num_ue=N_UE,
+                    num_procs=int(config.get("harq_max_procs", 16)),
+                    ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                    config=config,
+                )
+                harq_rm_by_sat[si] = harq_rm
+
+            # Disable tail flush in streaming mode (we call per TTI)
+            _cfg_base = dict(config); _cfg_base['harq_flush_tail'] = False
             base = pf_schedule_radiomap_blocks(
                 cap, 1, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -2153,8 +2196,8 @@ def run_constellation(config: Dict) -> Dict:
                 eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
-                ue_mask_time=None,
-                harq_mgr=None,
+                ue_mask_time=ue_mask,
+                harq_mgr=harq_base,
                 dl_power_model=dlpm,
                 P_tot_dbm=Ptot,
                 P_ref_dbm=config.get("P_tx_dbm"),
@@ -2164,8 +2207,9 @@ def run_constellation(config: Dict) -> Dict:
                 assignments_out=None,
                 record_ue_thr=False,
                 ue_thr_out=None,
-                config=config,
+                config=_cfg_base,
             )
+            _cfg_rm = dict(config); _cfg_rm['harq_flush_tail'] = False
             rm = pf_schedule_radiomap_blocks(
                 cap, 1, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -2180,8 +2224,8 @@ def run_constellation(config: Dict) -> Dict:
                 eesm_beta_db=float(config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
                 require_contiguous=bool(config.get("sched_require_contiguous", True)),
                 rng=rng,
-                ue_mask_time=None,
-                harq_mgr=None,
+                ue_mask_time=ue_mask,
+                harq_mgr=harq_rm,
                 dl_power_model=dlpm,
                 P_tot_dbm=Ptot,
                 P_ref_dbm=config.get("P_tx_dbm"),
@@ -2191,7 +2235,7 @@ def run_constellation(config: Dict) -> Dict:
                 assignments_out=None,
                 record_ue_thr=False,
                 ue_thr_out=None,
-                config=config,
+                config=_cfg_rm,
             )
             sum_rate_base_def += base * Z
             sum_rate_rm += rm * Z
@@ -2237,6 +2281,47 @@ def run_constellation(config: Dict) -> Dict:
 
     imp_pct = (avg_se_rm - avg_se_base_def) / max(1e-9, avg_se_base_def) * 100.0 if avg_se_base_def > 0 else float('inf')
 
+    # Aggregate HARQ stats across satellites (concise summary)
+    def _aggregate_harq(hdict: Dict[int, HarqManagerFull]):
+        if not hdict:
+            return None
+        total_started = 0
+        total_acked = 0
+        total_dropped = 0
+        total_init_ack = 0
+        total_retx_weighted = 0.0
+        for si, mgr in hdict.items():
+            if mgr is None or not hasattr(mgr, 'get_stats'):
+                continue
+            hs = mgr.get_stats()
+            tb_started = int(hs.get('tb_started', hs.get('initial_ack_count', 0) + hs.get('initial_nack_count', 0)))
+            tb_acked = int(hs.get('tb_acked', hs.get('ack_count', 0)))
+            tb_dropped = int(hs.get('tb_dropped', 0))
+            init_ack = int(hs.get('initial_ack_count', 0))
+            avg_retx = float(hs.get('avg_retx_per_acked', 0.0))
+            total_started += tb_started
+            total_acked += tb_acked
+            total_dropped += tb_dropped
+            total_init_ack += init_ack
+            # Weighted by acked TBs
+            total_retx_weighted += avg_retx * max(0, tb_acked)
+        if total_started <= 0:
+            return None
+        ack_rate = total_acked / float(total_started)
+        first_try = total_init_ack / float(total_started)
+        avg_retx = (total_retx_weighted / float(total_acked)) if total_acked > 0 else 0.0
+        return {
+            'tb_started': int(total_started),
+            'tb_acked': int(total_acked),
+            'tb_dropped': int(total_dropped),
+            'ack_rate': float(ack_rate),
+            'first_try_ack_rate': float(first_try),
+            'avg_retx_per_acked': float(avg_retx),
+        }
+
+    harq_stats_base = _aggregate_harq(harq_base_by_sat)
+    harq_stats_map = _aggregate_harq(harq_rm_by_sat)
+
     report = {
         "avg_se_baseline_default": avg_se_base_def,
         "avg_se_radiomap": avg_se_rm,
@@ -2251,6 +2336,8 @@ def run_constellation(config: Dict) -> Dict:
         "outage_ttis_per_ue": outage_ttis.tolist(),
         "per_sat_kpis": per_sat_summary,
         "sat_index_to_name": {int(i): getattr(orbit.sats[i], 'name', f"SAT-{int(i)}") for i in range(len(orbit.sats))},
+        "harq_stats_base": harq_stats_base,
+        "harq_stats_map": harq_stats_map,
     }
     if include_trace and serving_trace is not None:
         report["serving_trace"] = np.stack(serving_trace, axis=0)
@@ -2290,6 +2377,26 @@ if __name__ == '__main__':
             print(f"  Gain vs Default (%): {out['improvement_vs_default_pct']:.2f}")
         except Exception:
             pass
+        # Optional concise HARQ summary (constellation aggregate)
+        if bool(CONFIG.get("print_harq_summary", True)):
+            def _print_harq_const(label: str, hs: dict) -> None:
+                if not hs:
+                    print(f"\n[HARQ] {label}: no HARQ stats available.")
+                    return
+                tb_started = int(hs.get('tb_started', 0))
+                tb_acked = int(hs.get('tb_acked', 0))
+                tb_dropped = int(hs.get('tb_dropped', 0))
+                ack_rate = float(hs.get('ack_rate', 0.0)) * 100.0
+                first_try = float(hs.get('first_try_ack_rate', 0.0)) * 100.0
+                avg_retx = float(hs.get('avg_retx_per_acked', 0.0))
+                print(f"\n[HARQ] {label} (aggregate):")
+                print(f"  TB started/ACKed/dropped: {tb_started}/{tb_acked}/{tb_dropped}  (ACK rate={ack_rate:.1f}%, first-try ACK={first_try:.1f}%)")
+                print(f"  Avg retransmissions per ACKed TB: {avg_retx:.2f}")
+            try:
+                _print_harq_const("Baseline-Default", out.get("harq_stats_base"))
+                _print_harq_const("RadioMap", out.get("harq_stats_map"))
+            except Exception:
+                pass
     else:
         single = run_once(CONFIG)
         print("Single-run results")
