@@ -1,3 +1,12 @@
 .DS_Store
 
 *.png
+
+__pycache__/
+*.pyc
+
+radio_map/*.png
+radio_map/*.mat
+radio_map/*.npy
+
+output/
