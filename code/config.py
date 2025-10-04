@@ -195,7 +195,8 @@ CONFIG.update({
     # Enable constellation mode by default for DTC evaluation
     "enable_constellation": True,
     # Path to DTC constellation TLE catalog
-    "tle_catalog_path": os.path.join(_BASE_DIR, "..", "tles", "starlink_DTC_tle.txt"),
+    # Switched to filtered Satnet (590 km) catalog to match current experiment
+    "tle_catalog_path": os.path.join(_BASE_DIR, "..", "tles", "Satnet_DTC.txt"),
     # Candidate filtering near the ground map reference (km)
     "constellation_max_ground_radius_km": 2000.0,
     # Limit the number of satellites considered per TTI (after filtering)
