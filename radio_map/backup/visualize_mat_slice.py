@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 from scipy.io import loadmat
+import h5py
 import matplotlib.pyplot as plt
 
 
@@ -11,16 +12,16 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Visualize a z-axis slice from a 3D matrix stored in a .mat file. "
-            "Assumes the 3D array layout is (H, W, C) and values are in mW. "
-            "The script converts to dBm for visualization."
+            "Assumes the 3D array layout is (H, W, C) and values are already in dBm. "
+            "The script displays the data directly without unit conversion."
         )
     )
     parser.add_argument("input_mat", type=str, help="Path to input .mat file")
     parser.add_argument(
         "--varname",
         type=str,
-        default="X_true",
-        help="Variable name inside .mat (default: X_true)",
+        default="XdB_recon_tensor",
+        help="Variable name inside .mat (default: XdB_recon_tensor)",
     )
     parser.add_argument(
         "--z",
@@ -60,11 +61,42 @@ def parse_args():
     return parser.parse_args()
 
 
-def mw_to_dbm(power_mw: np.ndarray) -> np.ndarray:
-    # Avoid log of non-positive values; map <=0 to NaN
-    with np.errstate(divide="ignore"):
-        dbm = np.where(power_mw > 0, 10.0 * np.log10(power_mw), np.nan)
-    return dbm
+def load_mat_file(filepath: str, varname: str = "X_true"):
+    """
+    Load a .mat file, automatically detecting the format and using the appropriate reader.
+    Returns the data array for the specified variable.
+    """
+    try:
+        # First try with scipy.io.loadmat (for older MATLAB formats)
+        mdict = loadmat(filepath)
+        if varname in mdict:
+            return mdict[varname]
+        else:
+            # If variable not found, list available variables
+            keys = [k for k in mdict.keys() if not k.startswith('__')]
+            raise KeyError(f"Variable '{varname}' not found. Available variables: {keys}")
+    except Exception as e:
+        # If scipy fails, try with h5py (for MATLAB v7.3 format)
+        try:
+            with h5py.File(filepath, 'r') as f:
+                if varname in f:
+                    # For MATLAB v7.3 files, data might be stored as references
+                    data = f[varname]
+                    if isinstance(data, h5py.Dataset):
+                        return np.array(data)
+                    else:
+                        # Handle MATLAB cell arrays or other structures
+                        return np.array(data)
+                else:
+                    # List available variables
+                    keys = list(f.keys())
+                    raise KeyError(f"Variable '{varname}' not found. Available variables: {keys}")
+        except Exception as h5py_error:
+            # If both methods fail, raise the original scipy error
+            raise Exception(f"Failed to load .mat file with both scipy and h5py: {e}. h5py error: {h5py_error}")
+
+
+# 数据已经是dBm单位，不需要转换
 
 
 def main():
@@ -75,19 +107,10 @@ def main():
         sys.exit(1)
 
     try:
-        mdict = loadmat(args.input_mat)
+        arr = load_mat_file(args.input_mat, args.varname)
     except Exception as e:
         print(f"[ERROR] Failed to load .mat: {e}")
         sys.exit(1)
-
-    if args.varname not in mdict:
-        print(f"[ERROR] Variable '{args.varname}' not found in {args.input_mat}")
-        # List candidates
-        keys = [k for k in mdict.keys() if not k.startswith('__')]
-        print(f" Available variables: {keys}")
-        sys.exit(1)
-
-    arr = mdict[args.varname]
     if arr.ndim != 3:
         print(f"[ERROR] Expected 3D array for '{args.varname}', got shape {arr.shape}")
         sys.exit(1)
@@ -97,8 +120,7 @@ def main():
         print(f"[ERROR] z index {args.z} out of range [0, {c-1}]")
         sys.exit(1)
 
-    slice_mw = arr[:, :, args.z]
-    slice_dbm = mw_to_dbm(slice_mw.astype(np.float64, copy=False))
+    slice_dbm = arr[:, :, args.z].astype(np.float64, copy=False)
 
     fig, ax = plt.subplots(figsize=(6, 5), dpi=120)
     im = ax.imshow(

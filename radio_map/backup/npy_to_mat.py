@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument(
         "--varname",
         type=str,
-        default="X_true",
+        default="XdB_recon_tensor",
         help="Variable name to store in .mat file (default: X_true)",
     )
     return parser.parse_args()
@@ -61,12 +61,16 @@ def main():
     # Perform a generic axes reorder: (C, H, W) -> (H, W, C)
     reordered = np.transpose(data, (1, 2, 0))
 
-    # Convert units: W -> mW by multiplying 1000
-    # Save as float64 to align with typical MATLAB double precision
-    reordered_mw = (reordered * 1000.0).astype(np.float64, copy=False)
+    # Convert units: W -> dBm
+    # First convert W to mW, then to dBm: dBm = 10 * log10(P_mW)
+    # Handle zero/negative values by adding small epsilon to avoid log(0)
+    epsilon = 1e-12
+    reordered_mw = reordered * 1000.0  # W -> mW
+    reordered_dbm = 10.0 * np.log10(np.maximum(reordered_mw, epsilon))
+    reordered_dbm = reordered_dbm.astype(np.float64, copy=False)
 
     try:
-        savemat(output_path, {args.varname: reordered_mw})
+        savemat(output_path, {args.varname: reordered_dbm})
     except Exception as e:
         print(f"[ERROR] Failed to save mat file: {e}")
         sys.exit(1)
@@ -74,7 +78,7 @@ def main():
     print(f"Converted: {input_path}")
     print(f" Original shape: {tuple(data.shape)}")
     print(f" Reordered shape: {tuple(reordered.shape)}")
-    print(" Units converted: W -> mW (x1000)")
+    print(" Units converted: W -> dBm (10*log10(P_mW))")
     print(f"Saved .mat to: {output_path} (variable: {args.varname})")
 
 
