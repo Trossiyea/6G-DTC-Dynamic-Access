@@ -24,7 +24,7 @@ CONFIG = {
         "2     4  85.0000   0.0000 0000000   0.0000  36.0000 14.92546055    09",
     ],
     # Start time near a visible pass window (UTC)
-    "orbit_start_datetime": "2025-10-08T02:15:03.377455+00:00Z",
+    "orbit_start_datetime": "2025-10-08T02:15:03.377455+00:00",
 
     # Keep other behaviors from main config (scheduler, HARQ, etc.)
     # Optionally shorten/extend the sim window here if needed

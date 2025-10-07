@@ -21,7 +21,7 @@ CONFIG = {
         "2 58706  53.1569  16.9264 0001111  95.9280 143.4400 15.69671433    14",
     ],
     # Start time near a visible pass window (UTC)
-    "orbit_start_datetime": "2025-10-08T09:22:45.447459+00:00Z",
+    "orbit_start_datetime": "2025-10-08T09:22:45.447459+00:00",
 
     # Reporting
     "write_json_report": True,
