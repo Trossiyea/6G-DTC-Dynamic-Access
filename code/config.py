@@ -53,7 +53,7 @@ CONFIG = {
     "csi_olla_offset_db": 0.0,   # OLLA offset (dB)
     # Baseline uses CQI quantization (fixed in code)
     "baseline_csi_delay_ttis": 12,  # baseline CSI delay (TTIs)
-    "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (TTIs)
+    "rm_csi_delay_ttis": 0,         # RadioMap CSI delay (TTIs)
     "power_split": False,           # per-UE power split penalty
 
     # --- CSI periodicity / RM estimation ---
@@ -80,8 +80,8 @@ CONFIG = {
 
     # --- Radio Map dynamics ---
     "enable_time_varying": True,
-    "rm_flicker_db_std": 1.5,
-    "rm_drift_px": (1, 0),
+    "rm_flicker_db_std": 0.5,
+    "rm_drift_px": (0, 0),
 }
 
 # Scheduler
@@ -185,7 +185,7 @@ CONFIG.update({
     "baseline_p_min_dbm": 27.0,
     "baseline_p_max_dbm": 33.0,
     # Per-path PRB caps
-    "baseline_max_prbs_per_ue": 10,
+    "baseline_max_prbs_per_ue": 20,
     "rm_max_prbs_per_ue": 20,
 })
 
