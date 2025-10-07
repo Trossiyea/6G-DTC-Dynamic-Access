@@ -76,20 +76,44 @@ def load_radio_map_from_mat(path: str,
                             units: str = "mW") -> np.ndarray:
     """
     Load a Radio Map from a MATLAB .mat file and return dBm tensor R[x,y,z].
+    Supports both traditional MAT files and HDF5-based MAT files (v7.3).
     - units: one of {"mW", "W", "dBm"}
     - var_name: variable name inside MAT file
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Radio Map file not found: {path}")
-    data = loadmat(path)
-    # MATLAB loader brings meta keys like __header__/__version__/__globals__
-    keys = [k for k in data.keys() if not k.startswith("__")]
-    pick_key = var_name if var_name in data else (keys[0] if keys else None)
-    if pick_key is None:
-        raise KeyError(f"No data variables found in {path}. Raw keys: {list(data.keys())}")
-    if var_name not in data:
-        print(f"[load_radio_map_from_mat] '{var_name}' not found. Using '{pick_key}' instead.")
-    X = np.array(data[pick_key], dtype=float)
+    
+    # Check if file is HDF5 format (MATLAB v7.3)
+    try:
+        import h5py
+        with h5py.File(path, 'r') as f:
+            # HDF5 format - MATLAB v7.3
+            if var_name in f:
+                X = np.array(f[var_name], dtype=float)
+            else:
+                # Find first dataset if var_name not found
+                keys = list(f.keys())
+                if not keys:
+                    raise KeyError(f"No data variables found in {path}")
+                pick_key = keys[0]
+                print(f"[load_radio_map_from_mat] '{var_name}' not found. Using '{pick_key}' instead.")
+                X = np.array(f[pick_key], dtype=float)
+    except (OSError, ImportError):
+        # Traditional MAT format - try scipy.io.loadmat
+        try:
+            data = loadmat(path)
+            # MATLAB loader brings meta keys like __header__/__version__/__globals__
+            keys = [k for k in data.keys() if not k.startswith("__")]
+            pick_key = var_name if var_name in data else (keys[0] if keys else None)
+            if pick_key is None:
+                raise KeyError(f"No data variables found in {path}. Raw keys: {list(data.keys())}")
+            if var_name not in data:
+                print(f"[load_radio_map_from_mat] '{var_name}' not found. Using '{pick_key}' instead.")
+            X = np.array(data[pick_key], dtype=float)
+        except Exception as e:
+            raise ValueError(f"Failed to load MAT file {path}: {e}")
+    
+    # Convert units to dBm
     if units.lower() == "dbm":
         R_dbm = X
     elif units.lower() == "mw":

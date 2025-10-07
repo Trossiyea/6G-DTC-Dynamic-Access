@@ -14,18 +14,22 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 CONFIG = {
     # Grid and traffic
-    "X": 50,                  # map width (matches radio_map grid)
-    "Y": 50,                  # map height
+    "X": 40,                  # map width (matches radio_map grid)
+    "Y": 40,                  # map height
     # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Radio Map Z must match PRB count.
     "Z": 51,                  # frequency subbands (must match Radio Map Z dimension; 51 PRBs for 20 MHz @ 30 kHz)
     "N_UE": 100,               # active UEs in footprint (per-beam slice)
     "T": 200,                 # number of TTIs per measurement window
     "seed": 101,              # master RNG seed for reproducibility
 
-    'radio_map_mat_path': 'radio_map/combined_power_51_50_50.mat',
-    'radio_map_mat_var': 'X_true',
-    'radio_map_units': 'mW',
-    
+    # 'radio_map_mat_path': 'radio_map/combined_power_51_50_50.mat',
+    # 'radio_map_mat_var': 'X_true',
+    # 'radio_map_units': 'mW',
+
+    'radio_map_mat_path': 'radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat',
+    'radio_map_mat_var': 'XdB_recon_tensor',
+    'radio_map_units': 'dBm',
+
     # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
     "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz (20 MHz channel => 51 PRBs)
     "cp_type": "normal",      # cyclic prefix type (FR1 normal)
