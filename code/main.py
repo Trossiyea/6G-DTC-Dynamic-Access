@@ -201,38 +201,12 @@ def se_metric_strategy(use_mcs: bool,
         return cap_shannon
     raise ValueError("se_metric_strategy requires snr_lin or (cap_shannon with use_mcs=False)")
 
-def _resample_radiomap_z_dbm(R_dbm: np.ndarray, target_Z: int) -> np.ndarray:
-    """Resample a 3D Radio Map along frequency (Z-axis) from its current size to target_Z.
-
-    - Input and output are in dBm (interference-only). Interpolate in linear mW domain.
-    - If target_Z equals current Z, returns input unchanged.
-    """
-    X, Y, Z0 = R_dbm.shape
-    tz = int(target_Z)
-    if tz <= 0 or tz == Z0:
-        return R_dbm
-    # Convert to linear power (mW)
-    P_mw = 10.0 ** (np.asarray(R_dbm, dtype=float) / 10.0)
-    # Prepare interpolation grids
-    old_idx = np.linspace(0.0, float(Z0 - 1), num=Z0)
-    new_idx = np.linspace(0.0, float(Z0 - 1), num=tz)
-    # Flatten spatial dims and interpolate per (x,y) slice
-    flat = P_mw.reshape(-1, Z0)
-    flat_out = np.empty((flat.shape[0], tz), dtype=float)
-    for i in range(flat.shape[0]):
-        flat_out[i, :] = np.interp(new_idx, old_idx, flat[i, :])
-    P_mw_out = flat_out.reshape(X, Y, tz)
-    # Guard against zeros before log
-    P_mw_out = np.maximum(P_mw_out, 1e-30)
-    return 10.0 * np.log10(P_mw_out)
-
-
 def select_radio_map(config: Dict) -> Tuple[np.ndarray, int, int, int]:
     """
-    Load Radio Map from a MATLAB .mat file and adapt Z to match PRB count.
+    Load Radio Map from a MATLAB .mat file. The map's Z dimension must match the PRB count.
     Returns (R_xyz_dbm, X, Y, Z).
     """
-    target_Z = int(config["Z"]) if ("Z" in config and config["Z"] is not None) else None
+    expected_Z = int(config["Z"]) if ("Z" in config and config["Z"] is not None) else None
     path = config.get("radio_map_mat_path")
     if not path:
         raise ValueError("radio_map_mat_path must be provided (MAT file with 3D Radio Map)")
@@ -243,10 +217,11 @@ def select_radio_map(config: Dict) -> Tuple[np.ndarray, int, int, int]:
     )
     if R_xyz_dbm.ndim != 3:
         raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
-    # Resample Z to target PRB count if requested
-    if target_Z is not None and R_xyz_dbm.shape[2] != target_Z:
-        R_xyz_dbm = _resample_radiomap_z_dbm(R_xyz_dbm, target_Z)
     X, Y, Z = R_xyz_dbm.shape
+    # Verify Z matches expected PRB count
+    if expected_Z is not None and Z != expected_Z:
+        raise ValueError(f"Radio Map Z dimension ({Z}) does not match configured PRB count ({expected_Z}). "
+                         f"Please provide a map with Z={expected_Z} or update config['Z'] to {Z}.")
     return R_xyz_dbm, X, Y, Z
 
 def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -> np.ndarray:

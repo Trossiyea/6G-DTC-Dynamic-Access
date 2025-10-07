@@ -16,8 +16,8 @@ CONFIG = {
     # Grid and traffic
     "X": 50,                  # map width (matches radio_map grid)
     "Y": 50,                  # map height
-    # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Align Radio Map Z to PRB count.
-    "Z": 51,                  # frequency subbands (align to NR PRBs = 51 for 20 MHz @ 30 kHz)
+    # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Radio Map Z must match PRB count.
+    "Z": 51,                  # frequency subbands (must match Radio Map Z dimension; 51 PRBs for 20 MHz @ 30 kHz)
     "N_UE": 100,               # active UEs in footprint (per-beam slice)
     "T": 200,                 # number of TTIs per measurement window
     "seed": 101,              # master RNG seed for reproducibility
