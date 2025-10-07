@@ -1,0 +1,25 @@
+"""
+Constellation config for Shanghai using Satnet catalog.
+"""
+
+CONFIG = {
+    # Area of interest: Shanghai
+    "ref_lat_deg": 31.2304,
+    "ref_lon_deg": 121.4737,
+
+    # Use Shanghai Radio Map
+    "radio_map_mat_path": "radio_map/Shanghai/RadioMap/RM_shanghai125_dBm.mat",
+    "radio_map_mat_var": "XdB_recon_tensor",
+    "radio_map_units": "dBm",
+
+    # Constellation mode
+    "enable_constellation": True,
+    "tle_catalog_path": "tles/Satnet_DTC.txt",
+    # Start time (UTC) for the scenario
+    "orbit_start_datetime": "2025-09-13T19:01:17Z",
+
+    # Reporting
+    "write_json_report": True,
+    "report_basename": "shanghai_constellation",
+}
+

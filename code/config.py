@@ -16,7 +16,7 @@ CONFIG = {
     # --- Core simulation ---
     "Z": 51,                 # PRBs (must match Radio Map Z)
     "N_UE": 100,             # active UEs per run
-    "T": 2000,               # TTIs per run
+    "T": 3000,               # TTIs per run
     "seed": 101,             # RNG seed
 
     # --- Radio Map input ---
@@ -140,21 +140,29 @@ CONFIG.update({
 # Skyfield/TLE-driven orbit (required when dynamics are enabled)
 CONFIG.update({
     # Provide either two-line TLE via 'tle_lines' (list[str,str]) or a file path via 'tle_path'
+    # "tle_name": "STARLINK-11087 [DTC]",
+    # "tle_lines": [
+    #     "1 59421C 24065A   25259.10395833  .00000071  00000+0  58945-6 0  2596",
+    #     "2 59421  53.1566 234.6672 0001137  93.5671 155.3063 15.69664283    16",
+    # ],
+    "tle_name": "STARLINK-11090 [DTC]",
     "tle_lines": [
-        "1 59421C 24065A   25259.10395833  .00000071  00000+0  58945-6 0  2596",
-        "2 59421  53.1566 234.6672 0001137  93.5671 155.3063 15.69664283    16",
+        "1 59422C 24065B   25266.77548611  .00029064  00000+0  23954-3 0  2662",
+        "2 59422  53.1572 196.6800 0001379  82.5466  65.8632 15.69667376    15",
     ],
     "tle_path": None,
-    "tle_name": "STARLINK-11087 [DTC]",
     # Orbit start time for t=0 (ISO8601).
     # Updated to the peak-elevation overpass over Shanghai (see tools/find_overpass_times.py)
-    "orbit_start_datetime": "2025-09-13T19:01:17.393469Z",
+    # "orbit_start_datetime": "2025-09-13T19:01:17.393469Z",
+    "orbit_start_datetime": "2025-10-07T21:38:31.574982+00:00",
     # Mapping the simulation grid (x,y) to Earth surface around a reference lat/lon (degrees).
     # Each pixel corresponds to 'cell_size_km' in local ENU, with an optional rotation.
     # Anchor the ground map at Shanghai city center
     "auto_ref_from_tle": False,
-    "ref_lat_deg": 31.2304,
-    "ref_lon_deg": 121.4737,
+    # "ref_lat_deg": 31.2304,
+    # "ref_lon_deg": 121.4737,
+    "ref_lat_deg": 43.65108,
+    "ref_lon_deg": -79.34702,
     "map_rotation_deg": 0.0,
 })
 

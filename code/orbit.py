@@ -8,7 +8,8 @@ to keep behavior unchanged, while preparing for time-varying orbits.
 from typing import Dict, Tuple, Union, Optional
 import numpy as np
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import re
 
 try:
     # Optional Skyfield import; used only if enabled via config
@@ -19,6 +20,66 @@ except Exception:  # pragma: no cover
     load = None  # type: ignore
     wgs84 = None  # type: ignore
     _SKYFIELD_OK = False
+
+
+def _parse_orbit_start_utc(t0_val) -> datetime:
+    """Parse various ISO8601-like inputs to a timezone-aware UTC datetime.
+
+    Accepts strings like:
+      - '2025-10-07T21:38:31.574982Z'
+      - '2025-10-07T21:38:31.574982+00:00'
+      - '2025-10-07 21:38:31'
+      - accidental '...+00:00Z' (will be normalized)
+
+    Falls back to current UTC time if parsing fails or t0_val is None.
+    """
+    # If already a datetime, normalize to UTC
+    if isinstance(t0_val, datetime):
+        try:
+            if t0_val.tzinfo is None:
+                return t0_val.replace(tzinfo=timezone.utc)
+            return t0_val.astimezone(timezone.utc)
+        except Exception:
+            return datetime.now(tz=timezone.utc)
+
+    if t0_val is None:
+        return datetime.now(tz=timezone.utc)
+
+    s = str(t0_val).strip()
+    if not s:
+        return datetime.now(tz=timezone.utc)
+
+    # Remove any trailing 'Z' (UTC marker) — we'll normalize the tz offset below.
+    s_noz = re.sub(r"[Zz]+$", "", s)
+
+    # Ensure there is exactly one timezone offset at the end.
+    # Accept forms like +HH:MM or -HH:MM (fromisoformat requirement).
+    # If there is no offset, append '+00:00'. If there is an offset without colon, insert it.
+    # Patterns:
+    #   - with colon:   ...[+-]HH:MM
+    #   - without:      ...[+-]HHMM
+    m_with_colon = re.search(r"([+-]\d{2}:\d{2})$", s_noz)
+    m_without = re.search(r"([+-])(\d{2})(\d{2})$", s_noz)
+    if m_with_colon:
+        s_norm = s_noz  # already standard
+    elif m_without:
+        sign, hh, mm = m_without.groups()
+        s_norm = re.sub(r"([+-]\d{2}\d{2})$", f"{sign}{hh}:{mm}", s_noz)
+    else:
+        # No explicit offset present; append UTC offset
+        s_norm = s_noz + "+00:00"
+
+    # Replace whitespace separator with 'T' to be safe (fromisoformat accepts both)
+    s_norm = s_norm.replace(" ", "T")
+
+    try:
+        dt = datetime.fromisoformat(s_norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        # Final fallback: now in UTC
+        return datetime.now(tz=timezone.utc)
 
 
 def fspl_db(distance_km: np.ndarray, freq_GHz: float) -> np.ndarray:
@@ -109,17 +170,8 @@ class OrbitModel:
                 name = config.get("tle_name", "SAT")
                 self.sf_sat = EarthSatellite(tle_lines[0], tle_lines[1], name)
                 self.sf_ts = load.timescale()
-                # Start time
-                t0_str = config.get("orbit_start_datetime", None)
-                if t0_str:
-                    try:
-                        self.sf_t0 = datetime.fromisoformat(str(t0_str).replace('Z', '+00:00'))
-                    except Exception:
-                        from datetime import timezone
-                        self.sf_t0 = datetime.now(tz=timezone.utc)
-                else:
-                    from datetime import timezone
-                    self.sf_t0 = datetime.now(tz=timezone.utc)
+                # Start time (robust ISO8601 parsing to UTC)
+                self.sf_t0 = _parse_orbit_start_utc(config.get("orbit_start_datetime", None))
                 # Local map reference (lat/lon)
                 self.ref_lat_deg = config.get("ref_lat_deg", None)
                 self.ref_lon_deg = config.get("ref_lon_deg", None)
