@@ -13,80 +13,72 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 CONFIG = {
-    # Grid and traffic
-    "X": 40,                  # map width (matches radio_map grid)
-    "Y": 40,                  # map height
-    # For 20 MHz @ 30 kHz SCS, NR has 51 PRBs. Radio Map Z must match PRB count.
-    "Z": 51,                  # frequency subbands (must match Radio Map Z dimension; 51 PRBs for 20 MHz @ 30 kHz)
-    "N_UE": 100,               # active UEs in footprint (per-beam slice)
-    "T": 200,                 # number of TTIs per measurement window
-    "seed": 101,              # master RNG seed for reproducibility
+    # --- Core simulation ---
+    "Z": 51,                 # PRBs (must match Radio Map Z)
+    "N_UE": 100,             # active UEs per run
+    "T": 2000,               # TTIs per run
+    "seed": 101,             # RNG seed
 
-    # 'radio_map_mat_path': 'radio_map/combined_power_51_50_50.mat',
-    # 'radio_map_mat_var': 'X_true',
-    # 'radio_map_units': 'mW',
+    # --- Radio Map input ---
+    "radio_map_mat_path": "radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat",
+    "radio_map_mat_var": "XdB_recon_tensor",
+    "radio_map_units": "dBm",  # one of {"dBm", "mW", "W"}
 
-    'radio_map_mat_path': 'radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat',
-    'radio_map_mat_var': 'XdB_recon_tensor',
-    'radio_map_units': 'dBm',
+    # --- Noise / numerology ---
+    "scs_khz": 30,           # PRB BW = 12*30 kHz = 360 kHz
+    "cp_type": "normal",     # FR1 CP
+    "noise_temp_K": 290.0,
 
-    # Noise: prefer SCS -> PRB BW for kTB; fallback to fixed noise_dbm
-    "scs_khz": 30,            # PRB BW = 12 * 30 kHz = 360 kHz (20 MHz channel => 51 PRBs)
-    "cp_type": "normal",      # cyclic prefix type (FR1 normal)
-    "noise_temp_K": 290.0,    # thermal noise temperature
-
-    # Channel model
+    # --- Channel model (3GPP NTN) ---
     "channel_model": "3gpp_ntn",
     "ntn_channel_profile": "s_band_handheld_urban",
-    # Starlink-like overrides: milder losses and stronger LoS K-factor than handheld
+    # Optional overrides to the profile
     "channel_params": {
         "additional_loss_db": {"slos": 7.0, "nlos": 16.0},
         "shadow_sigma_db": {"slos": 4.0, "nlos": 6.0},
         "k_factor_db": {"los": 14.0, "slos": 8.0},
     },
 
-    # DL transmit power and link budget
-    "P_tx_dbm": 30.0,         # DL per‑PRB EIRP (dBm) baseline in equal-power mode
-    # Beam/antenna boresight gain (used by beam pattern)
-    "G_rx_db": 38.0,
-    "shadow_std_db": 7.0,     # lognormal shadowing std (dB)
-    "rx_nf_db": 7.0,          # UE receiver noise figure (dB)
-    "impl_loss_db": 1.0,      # implementation loss as noise rise (dB)
-    "overhead_eff": 0.85,     # PHY/MAC overhead efficiency factor (Starlink-like)
-    "pf_beta": 0.1,           # PF averaging factor
+    # --- Link budget ---
+    "P_tx_dbm": 30.0,        # DL per‑PRB EIRP baseline (equal-power)
+    "G_rx_db": 38.0,         # beam boresight gain
+    "shadow_std_db": 7.0,    # lognormal shadowing std (dB)
+    "rx_nf_db": 7.0,         # UE noise figure (dB)
+    "impl_loss_db": 1.0,     # implementation loss as noise rise (dB)
+    "overhead_eff": 0.85,    # PHY/MAC overhead factor
+    "pf_beta": 0.1,          # PF averaging factor
 
-    # Scheduler realism
-    "use_mcs": True,          # use MCS table (vs Shannon)
-    "csi_olla_offset_db": 0.0,      # OLLA offset (dB)
+    # --- Scheduler realism ---
+    "use_mcs": True,         # map SNR->SE via MCS table
+    "csi_olla_offset_db": 0.0,   # OLLA offset (dB)
     # Baseline uses CQI quantization (fixed in code)
-    "baseline_csi_delay_ttis": 12,   # baseline CSI delay (ms slots) per 3GPP regen assumptions (reduced)
-    "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (near real-time on-board, tighter)
-    "power_split": False,           # DL default: no per-UE power split penalty
+    "baseline_csi_delay_ttis": 12,  # baseline CSI delay (TTIs)
+    "rm_csi_delay_ttis": 1,         # RadioMap CSI delay (TTIs)
+    "power_split": False,           # per-UE power split penalty
 
-    # CSI periodicity / estimation error (baseline vs Radio Map)
+    # --- CSI periodicity / RM estimation ---
     "enable_cqi_periodicity_base": True,
     "enable_cqi_periodicity_rm": False,
-    "cqi_period_ttis": 10,
+    "cqi_period_ttis": 5,
     "cqi_offset_ttis": 0,
     "radiomap_est_error_db": 1.5,
     "radiomap_blur_sigma": 1.0,
 
-    # Geometry + beam (NR-NTN LEO S-band)
+    # --- Geometry / beam ---
     "sat_altitude_km": 600.0,
-    # Center frequency 2.000 GHz (1990–2010 MHz band edges, 20 MHz BW)
-    "carrier_freq_GHz": 2.000,  # FR1 S-band center (1990–2010 MHz)
-    "beam_center_xy": None,   # default: map center
+    "carrier_freq_GHz": 2.000,
+    "beam_center_xy": None,      # default: map center
     "beam_half_bw_deg": 8.0,
     "beam_edge_drop_db": 3.0,
-    "cell_size_km": 0.063,      # ground resolution per pixel
+    "cell_size_km": 0.125,       # ground resolution per pixel
 
-    # Orbit dynamics (optional; keep static for baseline comparisons)
+    # --- Orbit dynamics ---
     "enable_orbit_dynamics": True,
     "tti_ms": 1.0,
     "sat_ground_speed_kms": 7.5,
-    "sat_heading_deg": 0.0,   # 0: +x direction
+    "sat_heading_deg": 0.0,
 
-    # Radio Map dynamics (interference drift & flicker)
+    # --- Radio Map dynamics ---
     "enable_time_varying": True,
     "rm_flicker_db_std": 1.5,
     "rm_drift_px": (1, 0),
@@ -139,11 +131,6 @@ CONFIG.update({
     "mcs_3gpp_table_path": os.path.join(_BASE_DIR, "..", "docs", "mcs_tables_38_214.json"),
     # 256QAM (Table 2)
     "csi_mcs_table": "nr_256qam",
-    # Decoupled CQI periodicity per path
-    "enable_cqi_periodicity_base": True,
-    "enable_cqi_periodicity_rm": False,
-    "cqi_period_ttis": 5,
-    "cqi_offset_ttis": 0,
 })
 
 # Multi-beam and external orbit models removed in minimal preset
@@ -197,7 +184,7 @@ CONFIG.update({
 # Constellation (multi-satellite) options
 CONFIG.update({
     # Enable constellation mode by default for DTC evaluation
-    "enable_constellation": True,
+    "enable_constellation": False,
     # Path to DTC constellation TLE catalog
     # Switched to filtered Satnet (590 km) catalog to match current experiment
     "tle_catalog_path": os.path.join(_BASE_DIR, "..", "tles", "Satnet_DTC.txt"),

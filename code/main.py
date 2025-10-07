@@ -1662,22 +1662,7 @@ def run_once(config: Dict) -> Dict:
                 ue_thr_out=ue_thr_base,
                 config=config,
             )
-        # Also compute a simple wideband PF baseline (no PRB awareness)
-        base_se_simple = pf_schedule_baseline(
-            cap_wb, Z, T, beta=config["pf_beta"],
-            snr_lin_wb=snr_lin_wb,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            mcs_params=mcs_params,
-            se_metric_time=se_time_wb,
-            snr_lin_wb_time=time_series["snr_wb_time"],
-            snr_lin_prb=None,
-            cap_prb=None,
-            snr_lin_time_prb=None,
-            force_wideband_throughput=True,
-            config=config,
-        )
+        
 
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
@@ -1750,22 +1735,7 @@ def run_once(config: Dict) -> Dict:
             p_max_dbm=config.get("baseline_p_max_dbm", None),
             config=config,
         )
-        # Simple wideband PF baseline for static snapshot
-        base_se_simple = pf_schedule_baseline(
-            cap_wb, Z, T, beta=config["pf_beta"],
-            snr_lin_wb=snr_lin_wb,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            mcs_params=mcs_params,
-            se_metric_time=None,
-            snr_lin_wb_time=None,
-            snr_lin_prb=None,
-            cap_prb=None,
-            snr_lin_time_prb=None,
-            force_wideband_throughput=True,
-            config=config,
-        )
+        
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
         _rec_rm2 = bool(config.get("record_assignments", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all"))
@@ -1801,10 +1771,8 @@ def run_once(config: Dict) -> Dict:
     # Optional JSON report with per-UE throughput/fairness and events
     report = {
         "avg_se_baseline_default": base_se_default,
-        "avg_se_baseline_simple": base_se_simple,
         "avg_se_radiomap": map_se,
         "improvement_vs_default_pct": (map_se - base_se_default) / max(1e-9, base_se_default) * 100.0,
-        "improvement_vs_simple_pct": (map_se - base_se_simple) / max(1e-9, base_se_simple) * 100.0,
         "R_xyz_dbm": R_xyz_dbm,
         "ue_pos": ue_pos,
         "cap": cap,
@@ -1894,22 +1862,18 @@ def run_once(config: Dict) -> Dict:
     return report
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
-    base_def_list, base_simp_list, map_list, imp_def_list, imp_simp_list = [], [], [], [], []
+    base_def_list, map_list, imp_def_list = [], [], []
     for s in seeds:
         c2 = dict(config)
         c2["seed"] = int(s)
         out = run_once(c2)
         base_def_list.append(out["avg_se_baseline_default"])
-        base_simp_list.append(out["avg_se_baseline_simple"])
         map_list.append(out["avg_se_radiomap"])
         imp_def_list.append(out["improvement_vs_default_pct"])
-        imp_simp_list.append(out["improvement_vs_simple_pct"])
     return {
         "baseline_default": np.array(base_def_list),
-        "baseline_simple": np.array(base_simp_list),
         "radiomap": np.array(map_list),
         "improvement_vs_default_pct": np.array(imp_def_list),
-        "improvement_vs_simple_pct": np.array(imp_simp_list),
     }
 
 # -----------------------
@@ -2400,10 +2364,8 @@ if __name__ == '__main__':
         single = run_once(CONFIG)
         print("Single-run results")
         print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
-        print(f"  Baseline-Simple  avg SE (bits/s/Hz): {single['avg_se_baseline_simple']:.3f}")
         print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
         print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
-        print(f"  Gain vs Simple  (%): {single['improvement_vs_simple_pct']:.2f}")
 
         # Optional concise HARQ summary
         if bool(CONFIG.get("print_harq_summary", True)):
@@ -2443,10 +2405,8 @@ if __name__ == '__main__':
         multi = run_many(CONFIG, seeds)
         print("\nMulti-seed summary (N=20)")
         print(f"  Baseline-Default avg SE: {multi['baseline_default'].mean():.3f} ± {multi['baseline_default'].std():.3f}")
-        print(f"  Baseline-Simple  avg SE: {multi['baseline_simple'].mean():.3f} ± {multi['baseline_simple'].std():.3f}")
         print(f"  RadioMap         avg SE: {multi['radiomap'].mean():.3f} ± {multi['radiomap'].std():.3f}")
         print(f"  Gain vs Default median: {np.median(multi['improvement_vs_default_pct']):.2f}% (min={multi['improvement_vs_default_pct'].min():.2f}%, max={multi['improvement_vs_default_pct'].max():.2f}%)")
-        print(f"  Gain vs Simple  median: {np.median(multi['improvement_vs_simple_pct']):.2f}% (min={multi['improvement_vs_simple_pct'].min():.2f}%, max={multi['improvement_vs_simple_pct'].max():.2f}%)")
 
         # -----------------------
         # Plots
