@@ -8,3 +8,5 @@ __pycache__/
 radio_map/*.png
 
 output/
+
+WARP.md

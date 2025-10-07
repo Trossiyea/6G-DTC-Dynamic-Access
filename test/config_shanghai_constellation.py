@@ -17,6 +17,11 @@ CONFIG = {
     "tle_catalog_path": "tles/Satnet_DTC.txt",
     # Start time (UTC) for the scenario
     "orbit_start_datetime": "2025-09-13T19:01:17Z",
+    
+    # Disable single-satellite TLE (use catalog instead)
+    "tle_name": None,
+    "tle_lines": None,
+    "tle_path": None,
 
     # Reporting
     "write_json_report": True,

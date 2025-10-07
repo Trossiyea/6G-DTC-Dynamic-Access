@@ -15,13 +15,17 @@ CONFIG = {
     # Enable single-satellite dynamic orbit
     "enable_orbit_dynamics": True,
     # Pick one Starlink satellite from tles/starlink_DTC_tle.txt
-    "tle_name": "STARLINK-11075 [DTC]",
+    "tle_name": "STARLINK-11090 [DTC]",
     "tle_lines": [
-        "1 58706C 24002B   25266.77201389  .00026832  00000+0  22113-3 0  2661",
-        "2 58706  53.1569  16.9264 0001111  95.9280 143.4400 15.69671433    14",
+        "1 59422C 24065B   25266.77548611  .00029064  00000+0  23954-3 0  2662",
+        "2 59422  53.1572 196.6800 0001379  82.5466  65.8632 15.69667376    15",
     ],
     # Start time near a visible pass window (UTC)
-    "orbit_start_datetime": "2025-10-08T09:22:45.447459+00:00",
+    "orbit_start_datetime": "2025-10-07T21:38:31.574982+00:00",
+    
+    # Disable constellation mode (use single satellite)
+    "enable_constellation": False,
+    "tle_catalog_path": None,
 
     # Reporting
     "write_json_report": True,

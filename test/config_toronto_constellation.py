@@ -16,7 +16,12 @@ CONFIG = {
     "enable_constellation": True,
     "tle_catalog_path": "tles/starlink_DTC_tle.txt",
     # Start time (UTC) for the scenario
-    "orbit_start_datetime": "2025-09-23T12:00:00Z",
+    "orbit_start_datetime": "2025-10-07T21:38:31.574982+00:00",
+    
+    # Disable single-satellite TLE (use catalog instead)
+    "tle_name": None,
+    "tle_lines": None,
+    "tle_path": None,
 
     # Reporting
     "write_json_report": True,

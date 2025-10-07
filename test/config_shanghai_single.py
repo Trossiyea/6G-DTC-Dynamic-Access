@@ -20,11 +20,15 @@ CONFIG = {
     # Pick one Satnet satellite (from tles/Satnet_DTC.txt)
     "tle_name": "SATNET-590-00004 [DTC]",
     "tle_lines": [
-        "1     4U 00000A   25274.57027601 .00000000  00000-0 0 000           4",
-        "2     4  85.0000   0.0000 0000000   0.0000  36.0000 14.92546055    09",
+        "1     3U 00000A   25274.57027601 .00000000  00000-0 0 000           3",
+        "2     3  85.0000   0.0000 0000000   0.0000  24.0000 14.92546055    05",
     ],
     # Start time near a visible pass window (UTC)
-    "orbit_start_datetime": "2025-10-08T02:15:03.377455+00:00",
+    "orbit_start_datetime": "2025-10-08T02:19:16.314794+00:00",
+    
+    # Disable constellation mode (use single satellite)
+    "enable_constellation": False,
+    "tle_catalog_path": None,
 
     # Keep other behaviors from main config (scheduler, HARQ, etc.)
     # Optionally shorten/extend the sim window here if needed

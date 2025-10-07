@@ -16,7 +16,7 @@ CONFIG = {
     # --- Core simulation ---
     "Z": 51,                 # PRBs (must match Radio Map Z)
     "N_UE": 100,             # active UEs per run
-    "T": 3000,               # TTIs per run
+    "T": 2000,               # TTIs per run
     "seed": 101,             # RNG seed
 
     # --- Radio Map input ---
