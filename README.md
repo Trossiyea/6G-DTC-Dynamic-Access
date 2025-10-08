@@ -31,45 +31,77 @@ Prerequisites
 
 Quick Start
 -----------
+
+### 方式1: 使用 Make 命令（推荐）
+```bash
+# 查看所有可用命令
+make help
+
+# 列出所有测试场景
+make list
+
+# 运行单个测试场景
+make test-toronto-single
+make test-shanghai-constellation
+
+# 运行所有场景
+make test-all
+```
+
+### 方式2: 使用 Python 测试脚本
+```bash
+# 运行单个场景
+python run_test.py --scenario toronto_single
+python run_test.py -s shanghai_single
+
+# 运行所有场景
+python run_test.py --all
+
+# 列出所有可用场景
+python run_test.py --list
+```
+
+### 方式3: 分辨率对比测试
+```bash
+# 对比不同 Radio Map 分辨率的影响（125m vs 150m）
+python run_resolution_comparison.py --city toronto
+python run_resolution_comparison.py --all --save-report
+```
+
+### 方式4: 直接运行（使用默认配置）
 ```bash
 python code/main.py
 ```
 
-The entry point `code/main.py` executes a single experiment with the default
-configuration (`code/config.py`) and then runs a multi-seed sweep for summary
-statistics. Plots (gain histogram, radio-map slice, wideband vs best PRB
-comparison) are saved under `output/` by default.
-
-Environment variables can override selected knobs on the fly, e.g.
-
-```bash
-MEAS_T=120 MEAS_N_UE=50 python code/main.py
-```
+详细使用说明请参考 [QUICKSTART.md](QUICKSTART.md) 和 [TEST_SCENARIOS.md](TEST_SCENARIOS.md)。
 
 
 Configuration Highlights
 ------------------------
 全部配置在 `code/config.py`。核心分组如下：
 
-- Radio Map 与业务规模：`X/Y/Z`, `N_UE`, `radio_map_mat_path`, `radio_map_mat_var`, `radio_map_units`, `seed`。
-  - 说明：必须使用 MAT Radio Map；若 Z 与 PRB 数不一致，会自动按频率轴重采样到 `Z`。
-- 频谱与噪声：`scs_khz`（自动推导 PRB 带宽并按 kTB 计算热噪声）、`noise_temp_K`。
-- 几何与轨道：`enable_orbit_dynamics`、`sat_altitude_km`、`carrier_freq_GHz`、
+- **Radio Map 与业务规模**：`X/Y/Z`, `N_UE`, `radio_map_mat_path`, `radio_map_mat_var`, `radio_map_units`, `seed`。
+  - 说明：使用 MAT 或 HDF5 格式的 Radio Map；Z 维度必须与 PRB 数匹配。
+- **频谱与噪声**：`scs_khz`（自动推导 PRB 带宽并按 kTB 计算热噪声）、`noise_temp_K`。
+- **几何与轨道**：`enable_orbit_dynamics`、`sat_altitude_km`、`carrier_freq_GHz`、
   `beam_center_xy`、`beam_half_bw_deg`、`beam_edge_drop_db`、`cell_size_km`；
   TLE：`tle_lines` 或 `tle_path`、`tle_name`、`orbit_start_datetime`、
   `ref_lat_deg/ref_lon_deg`、`auto_ref_from_tle`、`map_rotation_deg`。
-- 链路预算：`P_tx_dbm`、`G_rx_db`（波束主瓣值）、`rx_nf_db`、`impl_loss_db`。
-- 调度与链路自适应：`use_mcs`、`csi_mcs_table`（默认 `nr_256qam`）、`pf_beta`、
+- **链路预算**：`P_tx_dbm`、`G_rx_db`（波束主瓣值）、`rx_nf_db`、`impl_loss_db`。
+- **调度与链路自适应**：`use_mcs`、`csi_mcs_table`（默认 `3gpp_table_1`）、`pf_beta`、
   `overhead_eff`、`sched_require_contiguous`、`baseline_csi_delay_ttis`、
   `rm_csi_delay_ttis`、`baseline_sched_eesm_beta_db`、`rm_sched_eesm_beta_db`。
-- 功率分配（按路径）：`baseline_dl_power_model`、`baseline_P_tot_dbm`、
+- **功率分配（按路径）**：`baseline_dl_power_model`、`baseline_P_tot_dbm`、
   `baseline_p_min_dbm`、`baseline_p_max_dbm`、`rm_dl_power_model`、
   `rm_P_tot_dbm`、`rm_p_min_dbm`、`rm_p_max_dbm`、`baseline_max_prbs_per_ue`、
   `rm_max_prbs_per_ue`。
-- HARQ/OLLA/BLER：`enable_harq_full`（默认 True）、`harq_max_procs`、
+- **HARQ/OLLA/BLER**：`enable_harq_full`（默认 True）、`harq_max_procs`、
   `harq_ack_delay_ttis`、`harq_target_bler`、`harq_max_retx`、`olla_*`、`bler_*`。
-- MCS 表：`mcs_3gpp_table_path`（默认 `docs/mcs_tables_38_214.json`）、
-  `mcs_table_kind`（默认 `3gpp_table_2`）。
+- **MCS 表**：`mcs_3gpp_table_path`（默认 `docs/mcs_tables_38_214.json`）、
+  `mcs_table_kind`（默认 `3gpp_table_2`）、`csi_mcs_table`（默认 `3gpp_table_1`）。
+- **星座模式**：`enable_constellation`（默认 False）、`tle_catalog_path`、
+  `constellation_max_ground_radius_km`、`min_elev_deg`、`association_metric`、
+  `ho_enabled`、`ho_hyst_db`、`ho_ttt_ttis`。
 
 已移除/不再支持的键：`K_interferers`、`prb_bw_hz`、`noise_dbm`（噪声改用 SCS→kTB）、
 `enable_geometry`/`L_fs_db`（始终计算几何）、`csi_delay_ttis`（使用 per-path 延迟）、
@@ -115,20 +147,53 @@ snapshots when dynamics are enabled. When `CONFIG['write_json_report']` is
 true, the summary is serialized to `output/<report_basename>.json`.
 
 
+Test Scenarios
+--------------
+项目包含四个预配置的测试场景：
+
+| 场景 | 配置文件 | 地点 | 类型 | 运行命令 |
+|------|---------|------|------|----------|
+| Toronto 单卫星 | `test/config_toronto_single.py` | Toronto | 单星 | `make test-toronto-single` |
+| Toronto 星座 | `test/config_toronto_constellation.py` | Toronto | 星座 | `make test-toronto-constellation` |
+| Shanghai 单卫星 | `test/config_shanghai_single.py` | Shanghai | 单星 | `make test-shanghai-single` |
+| Shanghai 星座 | `test/config_shanghai_constellation.py` | Shanghai | 星座 | `make test-shanghai-constellation` |
+
+此外还支持分辨率对比测试（125m vs 150m）：
+```bash
+python run_resolution_comparison.py --city toronto
+python run_resolution_comparison.py --city shanghai
+python run_resolution_comparison.py --all --save-report
+```
+
+详见 [TEST_SCENARIOS.md](TEST_SCENARIOS.md) 和 [QUICKSTART.md](QUICKSTART.md)。
+
+
 Troubleshooting
 ---------------
-- MCS 表：确保 `mcs_3gpp_table_path` 指向合法 JSON（参考 `docs/mcs_tables_38_214_template.json`）。
-- Matplotlib 缓存：在受限环境下可 `export MPLCONFIGDIR=$(mktemp -d)`。
-- TLE/轨道：星座模式需要有效 TLE catalog；单星启用 `enable_orbit_dynamics` 时推荐提供 `tle_lines/tle_path`。
+- **MCS 表**：确保 `mcs_3gpp_table_path` 指向合法 JSON（默认 `docs/mcs_tables_38_214.json`）。
+- **Matplotlib 缓存**：在受限环境下可 `export MPLCONFIGDIR=$(mktemp -d)`。
+- **TLE/轨道**：星座模式需要有效 TLE catalog；单星启用 `enable_orbit_dynamics` 时推荐提供 `tle_lines/tle_path`。
+- **Radio Map 格式**：支持传统 MAT 和 HDF5 (v7.3) 格式；Z 维度必须与配置的 PRB 数匹配。
+- **导入错误**：如遇 `ModuleNotFoundError`，请确保从项目根目录运行命令，详见 [VERIFICATION.md](VERIFICATION.md)。
 
 
 Repository Layout
 -----------------
-- `code/`: simulation modules (`main.py`, `orbit.py`, `link_adapt.py`,
-  `harq.py`, `ntn_channel.py`, etc.).
-- `docs/`: official 38.214 MCS tables and templates for customization.
-- `radio_map/`: example interference maps.
-- `output/`: generated reports and plots (created on demand).
+- `code/`: simulation modules (`main.py`, `config.py`, `orbit.py`, `constellation.py`,
+  `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, etc.).
+- `docs/`: official 38.214 MCS tables (JSON format) and templates.
+- `radio_map/`: Radio Map 数据文件（Toronto 和 Shanghai，支持 MAT/HDF5 格式）。
+- `test/`: 测试场景配置文件（`config_toronto_single.py`, `config_shanghai_constellation.py` 等）。
+- `tles/`: TLE 轨道数据文件（Starlink 和 Satnet 星座）。
+- `tools/`: 辅助工具脚本（`find_best_satellite.py`, `diagnose_zero_se.py` 等）。
+- `output/`: 生成的报告和图表（按需创建）。
+- `run_test.py`: 多场景测试运行脚本。
+- `run_resolution_comparison.py`: Radio Map 分辨率对比测试脚本。
+- `run_all_tests.sh`: 批量运行所有测试场景。
+- `Makefile`: Make 命令快捷方式。
+- `QUICKSTART.md`: 快速开始指南。
+- `TEST_SCENARIOS.md`: 测试场景详细说明。
+- `VERIFICATION.md`: 验证和故障排查指南。
 
 
 Roadmap (indicative)
