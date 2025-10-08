@@ -12,6 +12,9 @@ CONFIG = {
     "radio_map_mat_var": "XdB_recon_tensor",
     "radio_map_units": "dBm",
 
+    # Shanghai frequency band: 1890-1910 MHz, center at 1900 MHz
+    "carrier_freq_GHz": 1.90,
+
     # Constellation mode
     "enable_constellation": True,
     "tle_catalog_path": "tles/Satnet_DTC.txt",

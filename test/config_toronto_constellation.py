@@ -12,6 +12,9 @@ CONFIG = {
     "radio_map_mat_var": "XdB_recon_tensor",
     "radio_map_units": "dBm",
 
+    # Toronto frequency band: 2180-2200 MHz, center at 2190 MHz
+    "carrier_freq_GHz": 2.19,
+
     # Constellation mode
     "enable_constellation": True,
     "tle_catalog_path": "tles/starlink_DTC_tle.txt",

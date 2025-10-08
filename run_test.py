@@ -15,6 +15,8 @@ import sys
 import os
 import importlib.util
 from pathlib import Path
+import time
+from datetime import datetime, timedelta
 
 # 将当前目录和 code 目录添加到 Python 路径
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -71,40 +73,75 @@ def load_main_module():
     return module
 
 
-def run_scenario(scenario_name, config_path):
+def run_scenario(scenario_name, config_path, current_idx=None, total_count=None):
     """运行单个场景"""
+    start_time = time.time()
+    
+    # 进度信息
+    progress_info = ""
+    if current_idx is not None and total_count is not None:
+        progress_info = f" [{current_idx}/{total_count}]"
+    
     print(f"\n{'='*70}")
-    print(f"运行场景: {scenario_name}")
-    print(f"配置文件: {config_path}")
+    print(f"🚀 运行场景{progress_info}: {scenario_name}")
+    print(f"⏰ 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📄 配置文件: {config_path}")
     print(f"{'='*70}\n")
     
     # 加载基础配置和场景配置
+    print("📝 [1/4] 加载配置文件...")
     base_config = load_base_config()
     test_config = load_config_from_file(config_path)
     
     # 合并配置（场景配置覆盖基础配置）
     config = base_config.copy()
     config.update(test_config)
+    print("✓ 配置加载完成\n")
     
     # 加载并运行 main 模块
+    print("📦 [2/4] 加载仿真模块...")
     main_module = load_main_module()
+    print("✓ 模块加载完成\n")
     
     # 根据配置决定调用哪个函数
+    sim_start_time = time.time()
     if bool(config.get("enable_constellation", False)):
         # 星座模式
+        print("🛰️  [3/4] 运行仿真 (星座模式)...")
+        print(f"ℹ️  模式: ConstellationOrbit")
+        print(f"ℹ️  UE数量: {config.get('N_UE', 'N/A')}")
+        print(f"ℹ️  TTI数量: {config.get('T', 'N/A')}")
+        print(f"ℹ️  中心频率: {config.get('carrier_freq_GHz', 'N/A')} GHz")
+        print()
         results = main_module.run_constellation(config)
-        print(f"\nℹ️  使用星座模式 (ConstellationOrbit)")
     else:
         # 单星模式
+        print("🛰️  [3/4] 运行仿真 (单星模式)...")
+        print(f"ℹ️  模式: OrbitModel")
+        print(f"ℹ️  UE数量: {config.get('N_UE', 'N/A')}")
+        print(f"ℹ️  TTI数量: {config.get('T', 'N/A')}")
+        print(f"ℹ️  中心频率: {config.get('carrier_freq_GHz', 'N/A')} GHz")
+        print()
         results = main_module.run_once(config)
-        print(f"\nℹ️  使用单星模式 (OrbitModel)")
+    
+    sim_elapsed = time.time() - sim_start_time
+    print(f"\n✓ 仿真完成 (耗时: {sim_elapsed:.1f}秒)\n")
     
     # 输出结果摘要
+    print("📊 [4/4] 生成结果报告...")
+    total_elapsed = time.time() - start_time
+    
     print(f"\n{'-'*70}")
-    print(f"场景 [{scenario_name}] 结果:")
-    print(f"  基线平均SE: {results['avg_se_baseline_default']:.4f} bits/s/Hz")
+    print(f"✅ 场景 [{scenario_name}] 完成")
+    print(f"{'-'*70}")
+    print(f"📈 性能结果:")
+    print(f"  基线平均SE:     {results['avg_se_baseline_default']:.4f} bits/s/Hz")
     print(f"  RadioMap平均SE: {results['avg_se_radiomap']:.4f} bits/s/Hz")
-    print(f"  提升百分比: {results['improvement_vs_default_pct']:.2f}%")
+    print(f"  提升百分比:     {results['improvement_vs_default_pct']:+.2f}%")
+    print(f"\n⏱️  运行时间:")
+    print(f"  总耗时: {total_elapsed:.1f}秒 ({total_elapsed/60:.1f}分钟)")
+    print(f"  仿真时间: {sim_elapsed:.1f}秒")
+    print(f"  完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'-'*70}\n")
     
     return results
@@ -162,29 +199,60 @@ def main():
         return 1
     
     # 运行场景
+    print(f"\n{'#'*70}")
+    print(f"# 测试批次概览")
+    print(f"{'#'*70}")
+    print(f"📋 计划运行 {len(scenarios_to_run)} 个场景")
+    print(f"⏰ 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'#'*70}\n")
+    
     all_results = {}
-    for scenario_name in scenarios_to_run:
+    start_time_all = time.time()
+    
+    for idx, scenario_name in enumerate(scenarios_to_run, 1):
         config_path = SCENARIOS[scenario_name]
         try:
-            results = run_scenario(scenario_name, config_path)
+            results = run_scenario(scenario_name, config_path, idx, len(scenarios_to_run))
             all_results[scenario_name] = results
+            
+            # 显示整体进度
+            elapsed = time.time() - start_time_all
+            avg_time_per_scenario = elapsed / idx
+            remaining = (len(scenarios_to_run) - idx) * avg_time_per_scenario
+            eta = datetime.now() + timedelta(seconds=remaining)
+            
+            print(f"📊 整体进度: {idx}/{len(scenarios_to_run)} ({idx*100//len(scenarios_to_run)}%)")
+            if idx < len(scenarios_to_run):
+                print(f"⏱️  预计剩余时间: {remaining/60:.1f}分钟")
+                print(f"🎯 预计完成时间: {eta.strftime('%H:%M:%S')}")
+            print()
+            
         except Exception as e:
-            print(f"错误: 场景 [{scenario_name}] 运行失败: {e}")
+            print(f"❌ 错误: 场景 [{scenario_name}] 运行失败: {e}")
             import traceback
             traceback.print_exc()
             continue
     
     # 汇总所有结果
+    total_elapsed_all = time.time() - start_time_all
+    
     if len(all_results) > 1:
         print(f"\n{'='*70}")
-        print("所有场景结果汇总:")
+        print("📊 所有场景结果汇总")
         print(f"{'='*70}")
         for scenario_name, results in all_results.items():
             print(f"\n{scenario_name}:")
             print(f"  基线SE:    {results['avg_se_baseline_default']:.4f} bits/s/Hz")
             print(f"  RadioMap:  {results['avg_se_radiomap']:.4f} bits/s/Hz")
             print(f"  提升:      {results['improvement_vs_default_pct']:+.2f}%")
-        print(f"\n{'='*70}\n")
+        print(f"\n{'='*70}")
+        print(f"\n⏱️  总计耗时: {total_elapsed_all:.1f}秒 ({total_elapsed_all/60:.1f}分钟)")
+        print(f"✅ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"✅ 成功运行 {len(all_results)}/{len(scenarios_to_run)} 个场景")
+        print(f"{'='*70}\n")
+    elif len(all_results) == 1:
+        print(f"\n⏱️  总计耗时: {total_elapsed_all:.1f}秒 ({total_elapsed_all/60:.1f}分钟)")
+        print(f"✅ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     
     return 0
 

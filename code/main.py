@@ -17,6 +17,7 @@ from typing import Tuple, Dict, Optional, Union
 import os
 import json
 from scipy.io import loadmat
+from tqdm import tqdm
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
 from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
@@ -576,7 +577,12 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
         metric_se = se_metric_strategy(use_mcs, snr_lin=snr_lin_wb, cap_shannon=cap_wb, mcs_params=mcs_params)
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
-    for t_idx in range(T):
+    
+    # Progress bar for TTI loop (only show if enabled in config)
+    show_progress = bool(cfg.get("show_progress", True))
+    pbar_iter = tqdm(range(T), desc="Baseline", unit="TTI", disable=not show_progress, 
+                     bar_format='{l_bar}{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    for t_idx in pbar_iter:
         # Apply HARQ feedback and credit goodput if a full HARQ manager is used
         if harq_mgr is not None:
             ack_bits = None
@@ -768,7 +774,11 @@ def pf_schedule_radiomap_blocks(
     Rbar = np.full(N_UE, 1e-3)
     sum_rate = 0.0
 
-    for t_idx in range(T):
+    # Progress bar for TTI loop
+    show_progress = bool(cfg.get("show_progress", True))
+    pbar_iter = tqdm(range(T), desc="RadioMap", unit="TTI", disable=not show_progress,
+                     bar_format='{l_bar}{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    for t_idx in pbar_iter:
         if harq_mgr is not None:
             ack_bits = None
             try:
@@ -1944,7 +1954,11 @@ def run_constellation(config: Dict) -> Dict:
     harq_rm_by_sat: Dict[int, HarqManagerFull] = {}
 
     # For optional per-UE throughput (debug): not recording HARQ here
-    for t_idx in range(T):
+    # Progress bar for constellation TTI loop
+    show_progress = bool(config.get("show_progress", True))
+    pbar_iter = tqdm(range(T), desc="Constellation", unit="TTI", disable=not show_progress,
+                     bar_format='{l_bar}{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    for t_idx in pbar_iter:
         if t_idx > 0 and enable_tv:
             if vx or vy:
                 R_t = np.roll(R_t, shift=(int(vx), int(vy), 0), axis=(0, 1, 2))

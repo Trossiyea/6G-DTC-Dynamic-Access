@@ -18,7 +18,8 @@ import os
 import importlib.util
 from pathlib import Path
 import json
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 # 将当前目录和 code 目录添加到 Python 路径
 SCRIPT_DIR = Path(__file__).parent.absolute()
@@ -85,34 +86,58 @@ def load_main_module():
     return module
 
 
-def run_scenario(scenario_name, config_path, resolution):
+def run_scenario(scenario_name, config_path, resolution, step_info=""):
     """运行单个场景"""
+    start_time = time.time()
+    
     print(f"\n{'='*70}")
-    print(f"运行场景: {scenario_name}")
-    print(f"分辨率:   {resolution}m")
-    print(f"配置文件: {config_path}")
+    print(f"🚀 运行场景{step_info}: {scenario_name} - {resolution}m")
+    print(f"⏰ 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📎 分辨率: {resolution}m")
+    print(f"📄 配置文件: {config_path}")
     print(f"{'='*70}\n")
     
     # 加载基础配置和场景配置
+    print("📝 [1/3] 加载配置文件...")
     base_config = load_base_config()
     test_config = load_config_from_file(config_path)
     
     # 合并配置（场景配置覆盖基础配置）
     config = base_config.copy()
     config.update(test_config)
+    print("✓ 配置加载完成\n")
     
     # 加载并运行 main 模块
+    print("🛰️  [2/3] 运行仿真 (单星模式)...")
+    print(f"ℹ️  UE数量: {config.get('N_UE', 'N/A')}")
+    print(f"ℹ️  TTI数量: {config.get('T', 'N/A')}")
+    print(f"ℹ️  中心频率: {config.get('carrier_freq_GHz', 'N/A')} GHz")
+    print()
+    
     main_module = load_main_module()
+    sim_start_time = time.time()
     
     # 运行单星模式
     results = main_module.run_once(config)
     
+    sim_elapsed = time.time() - sim_start_time
+    print(f"\n✓ 仿真完成 (耗时: {sim_elapsed:.1f}秒)\n")
+    
     # 输出结果摘要
+    print("📊 [3/3] 生成结果报告...")
+    total_elapsed = time.time() - start_time
+    
     print(f"\n{'-'*70}")
-    print(f"场景 [{scenario_name} - {resolution}m] 结果:")
+    print(f"✅ 场景 [{scenario_name} - {resolution}m] 完成")
+    print(f"{'-'*70}")
+    print(f"📈 性能结果:")
     print(f"  基线平均SE:     {results['avg_se_baseline_default']:.4f} bits/s/Hz")
     print(f"  RadioMap平均SE: {results['avg_se_radiomap']:.4f} bits/s/Hz")
-    print(f"  提升百分比:     {results['improvement_vs_default_pct']:.2f}%")
+    print(f"  提升百分比:     {results['improvement_vs_default_pct']:+.2f}%")
+    print(f"\n⏱️  运行时间:")
+    print(f"  总耗时: {total_elapsed:.1f}秒 ({total_elapsed/60:.1f}分钟)")
+    print(f"  仿真时间: {sim_elapsed:.1f}秒")
+    print(f"  完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'-'*70}\n")
     
     return results
@@ -250,22 +275,38 @@ def main():
         return 1
     
     # 运行测试
-    all_comparison_results = []
+    print(f"\n{'#'*70}")
+    print(f"# 分辨率对比测试批次概览")
+    print(f"{'#'*70}")
+    print(f"📋 计划测试 {len(cities_to_test)} 个城市")
+    print(f"📊 每个城市将运行 2 个分辨率场景 (125m + 150m)")
+    print(f"📦 总计: {len(cities_to_test) * 2} 个场景")
+    print(f"⏰ 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'#'*70}\n")
     
-    for city in cities_to_test:
+    all_comparison_results = []
+    start_time_all = time.time()
+    total_scenarios = len(cities_to_test) * 2
+    completed_scenarios = 0
+    
+    for city_idx, city in enumerate(cities_to_test, 1):
         print(f"\n{'#'*70}")
-        print(f"# 开始测试: {city.upper()}")
+        print(f"# 城市 [{city_idx}/{len(cities_to_test)}]: {city.upper()}")
         print(f"{'#'*70}")
         
         scenarios = RESOLUTION_SCENARIOS[city]
+        city_start_time = time.time()
         
-        # 运行125m分辨率场景
+        # 运行125m分辨率圼景
         scenario_125 = scenarios['125m']
         try:
+            completed_scenarios += 1
+            step_info = f" [{completed_scenarios}/{total_scenarios}]"
             results_125m = run_scenario(
                 city,
                 scenario_125['config_path'],
-                scenario_125['resolution']
+                scenario_125['resolution'],
+                step_info
             )
         except Exception as e:
             print(f"❌ 错误: {city} 125m场景运行失败: {e}")
@@ -276,10 +317,13 @@ def main():
         # 运行150m分辨率场景
         scenario_150 = scenarios['150m']
         try:
+            completed_scenarios += 1
+            step_info = f" [{completed_scenarios}/{total_scenarios}]"
             results_150m = run_scenario(
                 city,
                 scenario_150['config_path'],
-                scenario_150['resolution']
+                scenario_150['resolution'],
+                step_info
             )
         except Exception as e:
             print(f"❌ 错误: {city} 150m场景运行失败: {e}")
@@ -288,10 +332,28 @@ def main():
             continue
         
         # 对比分析
+        print(f"\n🔍 开始对比分析...")
         comparison = compare_resolutions(city, results_125m, results_150m)
         all_comparison_results.append(comparison)
+        
+        # 城市完成统计
+        city_elapsed = time.time() - city_start_time
+        print(f"✅ {city.upper()} 测试完成 (耗时: {city_elapsed:.1f}秒)")
+        
+        # 显示整体进度
+        if city_idx < len(cities_to_test):
+            elapsed = time.time() - start_time_all
+            avg_time_per_city = elapsed / city_idx
+            remaining = (len(cities_to_test) - city_idx) * avg_time_per_city
+            eta = datetime.now() + timedelta(seconds=remaining)
+            
+            print(f"\n📊 整体进度: {city_idx}/{len(cities_to_test)} 城市 ({completed_scenarios}/{total_scenarios} 场景)")
+            print(f"⏱️  预计剩余时间: {remaining/60:.1f}分钟")
+            print(f"🎯 预计完成时间: {eta.strftime('%H:%M:%S')}")
     
     # 生成总结报告
+    total_elapsed_all = time.time() - start_time_all
+    
     if len(all_comparison_results) > 0:
         print(f"\n{'='*70}")
         print("📋 总体分析摘要")
@@ -306,10 +368,17 @@ def main():
         
         # 保存报告
         if args.save_report:
+            print("💾 保存对比报告...")
             save_comparison_report(all_comparison_results, args.output)
         
-        print(f"{'='*70}\n")
+        print(f"\n{'='*70}")
         print("✅ 所有测试完成!")
+        print(f"⏱️  总计耗时: {total_elapsed_all:.1f}秒 ({total_elapsed_all/60:.1f}分钟)")
+        print(f"✅ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"✅ 成功测试 {len(all_comparison_results)} 个城市 ({completed_scenarios} 个场景)")
+        print(f"{'='*70}\n")
+    else:
+        print("\n⚠️  没有成功完成的测试")
     
     return 0
 

@@ -15,6 +15,9 @@ CONFIG = {
     "radio_map_mat_var": "XdB_recon_tensor",
     "radio_map_units": "dBm",
 
+    # Shanghai frequency band: 1890-1910 MHz, center at 1900 MHz
+    "carrier_freq_GHz": 1.90,
+
     # Enable single-satellite dynamic orbit
     "enable_orbit_dynamics": True,
     # Pick one Satnet satellite (from tles/Satnet_DTC.txt)

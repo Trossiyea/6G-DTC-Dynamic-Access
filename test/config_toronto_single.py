@@ -12,6 +12,9 @@ CONFIG = {
     "radio_map_mat_var": "XdB_recon_tensor",
     "radio_map_units": "dBm",
 
+    # Toronto frequency band: 2180-2200 MHz, center at 2190 MHz
+    "carrier_freq_GHz": 2.19,
+
     # Enable single-satellite dynamic orbit
     "enable_orbit_dynamics": True,
     # Pick one Starlink satellite from tles/starlink_DTC_tle.txt
