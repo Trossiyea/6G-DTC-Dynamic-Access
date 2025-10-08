@@ -197,11 +197,11 @@ CONFIG.update({
     # Switched to filtered Satnet (590 km) catalog to match current experiment
     "tle_catalog_path": os.path.join(_BASE_DIR, "..", "tles", "Satnet_DTC.txt"),
     # Candidate filtering near the ground map reference (km)
-    "constellation_max_ground_radius_km": 2000.0,
+    "constellation_max_ground_radius_km": 1200.0,
     # Limit the number of satellites considered per TTI (after filtering)
-    "constellation_max_sats_per_tti": 16,
+    "constellation_max_sats_per_tti": 6,
     # Minimum UE elevation (deg) for visibility/association
-    "min_elev_deg": 10.0,
+    "min_elev_deg": 20.0,
     # Association metric: 'snr_wb' (linear), 'prx_dbm'
     "association_metric": "snr_wb",
     # Handover control (constellation mode)
