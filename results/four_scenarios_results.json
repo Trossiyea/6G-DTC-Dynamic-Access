@@ -1,0 +1,25 @@
+{
+  "timestamp": "2025-10-09T00:26:44.448925",
+  "results": {
+    "toronto_single": {
+      "baseline_se": 0.11374340353425325,
+      "radiomap_se": 0.15172258533042857,
+      "improvement_pct": 33.390228018575236
+    },
+    "toronto_constellation": {
+      "baseline_se": 0.29264633260711725,
+      "radiomap_se": 0.41352021302348113,
+      "improvement_pct": 41.30374002623814
+    },
+    "shanghai_single": {
+      "baseline_se": 0.0894466230936818,
+      "radiomap_se": 0.1196601307189541,
+      "improvement_pct": 33.778254091971945
+    },
+    "shanghai_constellation": {
+      "baseline_se": 0.02944613894940688,
+      "radiomap_se": 0.033401113531832456,
+      "improvement_pct": 13.431216191775933
+    }
+  }
+}
