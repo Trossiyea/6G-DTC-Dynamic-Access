@@ -30,10 +30,17 @@ if str(CODE_DIR) not in sys.path:
 
 # 场景配置映射
 SCENARIOS = {
+    # Original scenarios
     'toronto_single': 'test/config_toronto_single.py',
     'toronto_constellation': 'test/config_toronto_constellation.py',
     'shanghai_single': 'test/config_shanghai_single.py',
     'shanghai_constellation': 'test/config_shanghai_constellation.py',
+    
+    # Resolution comparison scenarios
+    'toronto_125m': 'test/config_toronto_single_125m.py',
+    'toronto_150m': 'test/config_toronto_single_150m.py',
+    'shanghai_125m': 'test/config_shanghai_single_125m.py',
+    'shanghai_150m': 'test/config_shanghai_single_150m.py',
 }
 
 
