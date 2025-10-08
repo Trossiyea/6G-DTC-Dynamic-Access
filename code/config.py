@@ -129,8 +129,8 @@ CONFIG.update({
     "harq_flush_tail": True,
     # Optional path to 3GPP MCS tables (JSON). If set, you can choose '3gpp_table_1/2/3'.
     "mcs_3gpp_table_path": os.path.join(_BASE_DIR, "..", "docs", "mcs_tables_38_214.json"),
-    # 256QAM (Table 2)
-    "csi_mcs_table": "nr_256qam",
+    # 64QAM (Table 1) - 改用3GPP标准JSON表
+    "csi_mcs_table": "3gpp_table_1",
 })
 
 # Multi-beam and external orbit models removed in minimal preset

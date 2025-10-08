@@ -57,8 +57,17 @@ _NR_CQI_TABLE: Dict[str, np.ndarray] = {
 
 def _resolve_table(table: str) -> np.ndarray:
     key = str(table or "nr_64qam").lower()
-    if key == "legacy":
+    
+    # Map 3GPP table names to CQI table equivalents
+    if key == "3gpp_table_1":
         key = "nr_64qam"
+    elif key == "3gpp_table_2":
+        key = "nr_256qam"
+    elif key == "3gpp_table_3":
+        key = "nr_64qam"  # Table 3 uses similar modulation as Table 1
+    elif key == "legacy":
+        key = "nr_64qam"
+    
     if key not in _NR_CQI_TABLE:
         raise ValueError(f"Unknown CQI table: {table}")
     return _NR_CQI_TABLE[key]
@@ -94,8 +103,17 @@ def sinr_to_se_mcs(sinr_db: np.ndarray, table: str = "legacy") -> np.ndarray:
     """Map SINR to spectral efficiency via CQI tables."""
     sinr_db = np.asarray(sinr_db, dtype=float)
     tbl_key = str(table or "nr_64qam").lower()
-    if tbl_key not in ("legacy", "nr_64qam", "nr_256qam"):
+    
+    # Map 3GPP table names to CQI table equivalents
+    if tbl_key == "3gpp_table_1":
+        tbl_key = "nr_64qam"
+    elif tbl_key == "3gpp_table_2":
+        tbl_key = "nr_256qam"
+    elif tbl_key == "3gpp_table_3":
+        tbl_key = "nr_64qam"  # Table 3 uses similar modulation as Table 1
+    elif tbl_key not in ("legacy", "nr_64qam", "nr_256qam"):
         raise ValueError(f"Unknown MCS table: {table}")
+    
     if tbl_key == "legacy":
         tbl_key = "nr_64qam"
     cqi = sinr_to_cqi(sinr_db, table=tbl_key)
