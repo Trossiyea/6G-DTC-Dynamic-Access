@@ -19,7 +19,7 @@ CONFIG = {
     "enable_constellation": True,
     "tle_catalog_path": "tles/Satnet_DTC.txt",
     # Start time (UTC) for the scenario
-    "orbit_start_datetime": "2025-09-13T19:01:17Z",
+    "orbit_start_datetime": "2025-10-08T02:19:16.314794+00:00",
     
     # Disable single-satellite TLE (use catalog instead)
     "tle_name": None,

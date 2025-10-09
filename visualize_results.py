@@ -120,7 +120,7 @@ def visualize_four_scenarios(run_tests=True, save_data=True):
         'toronto_constellation': {
             'name': 'Toronto\nConstellation',
             'config': 'test/config_toronto_constellation.py',
-            'color': '#2980b9',  # 深蓝
+            'color': '#9b59b6',  # 紫色
         },
         'shanghai_single': {
             'name': 'Shanghai\nSingle',
@@ -130,7 +130,7 @@ def visualize_four_scenarios(run_tests=True, save_data=True):
         'shanghai_constellation': {
             'name': 'Shanghai\nConstellation',
             'config': 'test/config_shanghai_constellation.py',
-            'color': '#c0392b',  # 深红
+            'color': '#f39c12',  # 橙色
         },
     }
     
@@ -204,7 +204,16 @@ def visualize_four_scenarios(run_tests=True, save_data=True):
                   fontsize=14, fontweight='bold', pad=20)
     ax1.set_xticks(x)
     ax1.set_xticklabels(scenario_names, fontsize=10)
-    ax1.legend(fontsize=11, loc='upper left')
+    
+    # 创建包含Baseline和各场景RadioMap的图例
+    legend_labels = [k.replace('_', ' ').title() for k in results_data.keys()]
+    legend_handles = [mpatches.Patch(color='#95a5a6', label='Baseline', alpha=0.8)]
+    legend_handles.extend([mpatches.Patch(color=scenarios[k]['color'], 
+                                          label=f"RadioMap - {legend_labels[i]}", alpha=0.8) 
+                          for i, k in enumerate(results_data.keys())])
+    ax1.legend(handles=legend_handles, fontsize=9, loc='upper left', 
+              framealpha=0.9, edgecolor='black', ncol=1)
+    
     ax1.grid(True, alpha=0.3, axis='y')
     
     # 添加数值标签
@@ -229,6 +238,13 @@ def visualize_four_scenarios(run_tests=True, save_data=True):
     ax2.set_xticklabels(scenario_names, fontsize=10)
     ax2.axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
     ax2.grid(True, alpha=0.3, axis='y')
+    
+    # 为每个场景创建图例
+    legend_labels = [k.replace('_', ' ').title() for k in results_data.keys()]
+    legend_patches = [mpatches.Patch(color=scenarios[k]['color'], label=legend_labels[i], alpha=0.8) 
+                     for i, k in enumerate(results_data.keys())]
+    ax2.legend(handles=legend_patches, fontsize=10, loc='upper left', 
+              framealpha=0.9, edgecolor='black')
     
     # 添加数值标签
     for bar in bars3:
@@ -308,109 +324,72 @@ def visualize_resolution_comparison(input_file=None, run_tests=False):
     gain_125 = [c['gain_125m'] for c in comparisons]
     gain_150 = [c['gain_150m'] for c in comparisons]
     
-    # 创建图表
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    # 创建图表 - 仅2个子图
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
     x = np.arange(len(cities))
-    width = 0.35
+    bar_width = 0.25
     
-    # ========== 子图1: Baseline SE对比 (125m vs 150m) ==========
-    ax1 = axes[0, 0]
-    bars1 = ax1.bar(x - width/2, baseline_125, width,
-                    label='125m', color='#3498db', alpha=0.8, edgecolor='black')
-    bars2 = ax1.bar(x + width/2, baseline_150, width,
-                    label='150m', color='#e74c3c', alpha=0.8, edgecolor='black')
+    # ========== 子图1: SE对比 (Baseline, RadioMap 125m, RadioMap 150m) ==========
+    # 添加 Baseline 的平均值作为参考
+    baseline_avg = [(baseline_125[i] + baseline_150[i]) / 2 for i in range(len(baseline_125))]
     
-    ax1.set_ylabel('Baseline SE (bits/s/Hz)', fontsize=11, fontweight='bold')
-    ax1.set_xlabel('City', fontsize=11, fontweight='bold')
-    ax1.set_title('Baseline Performance: 125m vs 150m Resolution',
-                  fontsize=13, fontweight='bold', pad=15)
+    bars1 = ax1.bar(x - bar_width, baseline_avg, bar_width,
+                    label='Baseline', color='#95a5a6', alpha=0.8, edgecolor='black')
+    bars2 = ax1.bar(x, radiomap_125, bar_width,
+                    label='RadioMap 125m', color='#3498db', alpha=0.8, edgecolor='black')
+    bars3 = ax1.bar(x + bar_width, radiomap_150, bar_width,
+                    label='RadioMap 150m', color='#e67e22', alpha=0.8, edgecolor='black')
+    
+    ax1.set_ylabel('Spectral Efficiency (bits/s/Hz)', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('City', fontsize=12, fontweight='bold')
+    ax1.set_title('Performance Comparison: Baseline vs RadioMap Resolutions',
+                  fontsize=14, fontweight='bold', pad=15)
     ax1.set_xticks(x)
-    ax1.set_xticklabels(cities, fontsize=10)
-    ax1.legend(fontsize=10)
+    ax1.set_xticklabels(cities, fontsize=11)
+    ax1.legend(fontsize=11, loc='upper left')
     ax1.grid(True, alpha=0.3, axis='y')
     
+    # 添加数值标签
     for bar in bars1:
         height = bar.get_height()
         ax1.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:.4f}', ha='center', va='bottom', fontsize=8)
+                f'{height:.4f}', ha='center', va='bottom', fontsize=9)
     for bar in bars2:
         height = bar.get_height()
         ax1.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:.4f}', ha='center', va='bottom', fontsize=8)
-    
-    # ========== 子图2: RadioMap SE对比 (125m vs 150m) ==========
-    ax2 = axes[0, 1]
-    bars3 = ax2.bar(x - width/2, radiomap_125, width,
-                    label='125m', color='#2ecc71', alpha=0.8, edgecolor='black')
-    bars4 = ax2.bar(x + width/2, radiomap_150, width,
-                    label='150m', color='#27ae60', alpha=0.8, edgecolor='black')
-    
-    ax2.set_ylabel('RadioMap SE (bits/s/Hz)', fontsize=11, fontweight='bold')
-    ax2.set_xlabel('City', fontsize=11, fontweight='bold')
-    ax2.set_title('RadioMap Performance: 125m vs 150m Resolution',
-                  fontsize=13, fontweight='bold', pad=15)
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(cities, fontsize=10)
-    ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3, axis='y')
-    
+                f'{height:.4f}', ha='center', va='bottom', fontsize=9)
     for bar in bars3:
         height = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:.4f}', ha='center', va='bottom', fontsize=8)
+        ax1.text(bar.get_x() + bar.get_width()/2., height,
+                f'{height:.4f}', ha='center', va='bottom', fontsize=9)
+    
+    # ========== 子图2: RadioMap增益对比 (125m vs 150m) ==========
+    width = 0.35
+    bars4 = ax2.bar(x - width/2, gain_125, width,
+                    label='RadioMap 125m', color='#3498db', alpha=0.8, edgecolor='black')
+    bars5 = ax2.bar(x + width/2, gain_150, width,
+                    label='RadioMap 150m', color='#e67e22', alpha=0.8, edgecolor='black')
+    
+    ax2.set_ylabel('RadioMap Gain over Baseline (%)', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('City', fontsize=12, fontweight='bold')
+    ax2.set_title('RadioMap Gain: 125m vs 150m Resolution',
+                  fontsize=14, fontweight='bold', pad=15)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(cities, fontsize=11)
+    ax2.legend(fontsize=11, loc='upper left')
+    ax2.axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    # 添加数值标签
     for bar in bars4:
         height = bar.get_height()
         ax2.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:.4f}', ha='center', va='bottom', fontsize=8)
-    
-    # ========== 子图3: RadioMap增益对比 (125m vs 150m) ==========
-    ax3 = axes[1, 0]
-    bars5 = ax3.bar(x - width/2, gain_125, width,
-                    label='125m', color='#9b59b6', alpha=0.8, edgecolor='black')
-    bars6 = ax3.bar(x + width/2, gain_150, width,
-                    label='150m', color='#8e44ad', alpha=0.8, edgecolor='black')
-    
-    ax3.set_ylabel('RadioMap Gain (%)', fontsize=11, fontweight='bold')
-    ax3.set_xlabel('City', fontsize=11, fontweight='bold')
-    ax3.set_title('RadioMap Gain over Baseline: 125m vs 150m',
-                  fontsize=13, fontweight='bold', pad=15)
-    ax3.set_xticks(x)
-    ax3.set_xticklabels(cities, fontsize=10)
-    ax3.legend(fontsize=10)
-    ax3.axhline(y=0, color='red', linestyle='--', linewidth=1, alpha=0.5)
-    ax3.grid(True, alpha=0.3, axis='y')
-    
+                f'{height:+.2f}%', ha='center', va='bottom', fontsize=10, fontweight='bold')
     for bar in bars5:
         height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:+.2f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
-    for bar in bars6:
-        height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:+.2f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
-    
-    # ========== 子图4: 增益差异 (150m - 125m) ==========
-    ax4 = axes[1, 1]
-    gain_delta = [c['gain_delta'] for c in comparisons]
-    colors_delta = ['#27ae60' if d > 0 else '#e74c3c' for d in gain_delta]
-    
-    bars7 = ax4.bar(x, gain_delta, color=colors_delta, alpha=0.8, edgecolor='black')
-    
-    ax4.set_ylabel('Gain Difference (% points)', fontsize=11, fontweight='bold')
-    ax4.set_xlabel('City', fontsize=11, fontweight='bold')
-    ax4.set_title('Resolution Impact: Gain(150m) - Gain(125m)',
-                  fontsize=13, fontweight='bold', pad=15)
-    ax4.set_xticks(x)
-    ax4.set_xticklabels(cities, fontsize=10)
-    ax4.axhline(y=0, color='black', linestyle='-', linewidth=1.5)
-    ax4.grid(True, alpha=0.3, axis='y')
-    
-    for bar in bars7:
-        height = bar.get_height()
-        ax4.text(bar.get_x() + bar.get_width()/2., height,
-                f'{height:+.2f}', ha='center', va='bottom' if height > 0 else 'top',
-                fontsize=10, fontweight='bold')
+        ax2.text(bar.get_x() + bar.get_width()/2., height,
+                f'{height:+.2f}%', ha='center', va='bottom', fontsize=10, fontweight='bold')
     
     plt.tight_layout()
     
