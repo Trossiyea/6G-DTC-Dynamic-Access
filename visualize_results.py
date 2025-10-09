@@ -364,16 +364,22 @@ def visualize_resolution_comparison(input_file=None, run_tests=False):
         ax1.text(bar.get_x() + bar.get_width()/2., height,
                 f'{height:.4f}', ha='center', va='bottom', fontsize=9)
     
-    # ========== 子图2: RadioMap增益对比 (125m vs 150m) ==========
+    # ========== 子图2: RadioMap增益对比 (125m vs 150m) - 使用统一Baseline ==========
+    # 重新计算增益：使用平均Baseline作为统一基准
+    gain_125_unified = [((radiomap_125[i] - baseline_avg[i]) / baseline_avg[i] * 100) 
+                        for i in range(len(cities))]
+    gain_150_unified = [((radiomap_150[i] - baseline_avg[i]) / baseline_avg[i] * 100) 
+                        for i in range(len(cities))]
+    
     width = 0.35
-    bars4 = ax2.bar(x - width/2, gain_125, width,
+    bars4 = ax2.bar(x - width/2, gain_125_unified, width,
                     label='RadioMap 125m', color='#3498db', alpha=0.8, edgecolor='black')
-    bars5 = ax2.bar(x + width/2, gain_150, width,
+    bars5 = ax2.bar(x + width/2, gain_150_unified, width,
                     label='RadioMap 150m', color='#e67e22', alpha=0.8, edgecolor='black')
     
-    ax2.set_ylabel('RadioMap Gain over Baseline (%)', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('RadioMap Gain over Unified Baseline (%)', fontsize=12, fontweight='bold')
     ax2.set_xlabel('City', fontsize=12, fontweight='bold')
-    ax2.set_title('RadioMap Gain: 125m vs 150m Resolution',
+    ax2.set_title('RadioMap Gain: 125m vs 150m Resolution\n(Relative to Averaged Baseline)',
                   fontsize=14, fontweight='bold', pad=15)
     ax2.set_xticks(x)
     ax2.set_xticklabels(cities, fontsize=11)
@@ -404,19 +410,29 @@ def visualize_resolution_comparison(input_file=None, run_tests=False):
     print("\n" + "="*70)
     print("📈 分辨率影响统计摘要")
     print("="*70)
-    for comp in comparisons:
-        print(f"\n{comp['city'].upper()}:")
-        print(f"  125m分辨率 - RadioMap增益: {comp['gain_125m']:+.2f}%")
-        print(f"  150m分辨率 - RadioMap增益: {comp['gain_150m']:+.2f}%")
-        print(f"  增益差异 (150m - 125m):   {comp['gain_delta']:+.2f} 百分点")
+    for i, comp in enumerate(comparisons):
+        baseline_avg_val = (comp['baseline_125m'] + comp['baseline_150m']) / 2
+        gain_125_unified_val = ((comp['radiomap_125m'] - baseline_avg_val) / baseline_avg_val * 100)
+        gain_150_unified_val = ((comp['radiomap_150m'] - baseline_avg_val) / baseline_avg_val * 100)
+        gain_delta_unified = gain_150_unified_val - gain_125_unified_val
         
-        if abs(comp['gain_delta']) < 1.0:
-            conclusion = "分辨率差异影响较小"
-        elif comp['gain_delta'] > 0:
-            conclusion = "更高分辨率(150m)带来更大提升"
+        print(f"\n{comp['city'].upper()}:")
+        print(f"  Baseline (平均): {baseline_avg_val:.4f} bits/s/Hz")
+        print(f"  RadioMap 125m:   {comp['radiomap_125m']:.4f} bits/s/Hz (增益: {gain_125_unified_val:+.2f}%)")
+        print(f"  RadioMap 150m:   {comp['radiomap_150m']:.4f} bits/s/Hz (增益: {gain_150_unified_val:+.2f}%)")
+        print(f"  增益差异 (150m - 125m): {gain_delta_unified:+.2f} 百分点")
+        
+        se_improvement = comp['radiomap_150m'] - comp['radiomap_125m']
+        if abs(gain_delta_unified) < 1.0:
+            conclusion = "分辨率差异对性能影响较小"
+        elif gain_delta_unified > 0:
+            conclusion = f"更高分辨率(150m)带来更大提升 (SE提高{se_improvement:+.4f})"
         else:
-            conclusion = "较低分辨率(125m)性能更优"
+            conclusion = f"较低分辨率(125m)性能更优 (SE降低{se_improvement:+.4f})"
         print(f"  结论: {conclusion}")
+    
+    print("\n" + "="*70)
+    print("💡 说明: 增益百分比基于统一的平均Baseline计算，保证了两个子图结论一致。")
     print("="*70 + "\n")
 
 
