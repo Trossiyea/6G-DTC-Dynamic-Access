@@ -1779,6 +1779,12 @@ def run_once(config: Dict) -> Dict:
         harq_stats_map = None
 
     # Optional JSON report with per-UE throughput/fairness and events
+    # Compute system bandwidth for throughput reporting
+    try:
+        sys_bw_hz = float(prb_bw_hz) * float(cap.shape[1])
+    except Exception:
+        sys_bw_hz = float(config.get("scs_khz", 30.0)) * 1e3 * 12.0 * float(cap.shape[1])
+
     report = {
         "avg_se_baseline_default": base_se_default,
         "avg_se_radiomap": map_se,
@@ -1789,6 +1795,11 @@ def run_once(config: Dict) -> Dict:
         "cap_wb": cap_wb,
         "snr_lin": snr_lin,
         "snr_lin_wb": snr_lin_wb,
+        # Bandwidth/throughput metrics
+        "prb_bw_hz": float(prb_bw_hz),
+        "system_bandwidth_hz": float(sys_bw_hz),
+        "total_throughput_baseline_bps": float(base_se_default * sys_bw_hz),
+        "total_throughput_radiomap_bps": float(map_se * sys_bw_hz),
         # Optional dynamics for downstream consumers
         "tau_time": None if time_series is None else time_series.get("tau_time"),
         "fd_time": None if time_series is None else time_series.get("fd_time"),
@@ -1838,6 +1849,35 @@ def run_once(config: Dict) -> Dict:
         se_ue_map = per_ue_avg_se(harq_stats_map)
         report["per_ue_avg_se_base"] = se_ue_base
         report["per_ue_avg_se_map"] = se_ue_map
+        # Map per-UE SE to throughput (bps) using system bandwidth
+        if se_ue_base is not None:
+            report["per_ue_throughput_baseline_bps"] = (np.asarray(se_ue_base, dtype=float) * sys_bw_hz).tolist()
+            report["avg_ue_throughput_baseline_bps"] = float(np.mean(report["per_ue_throughput_baseline_bps"]))
+        else:
+            # Fallback: equal-share approximation
+            N_UE_eff = max(1, int(config.get("N_UE", cap.shape[0])))
+            report["avg_ue_throughput_baseline_bps"] = float((base_se_default * sys_bw_hz) / N_UE_eff)
+            # Try recorded per-UE SE if available
+            try:
+                if 'per_ue_se_base_avg' in report:
+                    p = np.asarray(report['per_ue_se_base_avg'], dtype=float) * sys_bw_hz
+                    report["per_ue_throughput_baseline_bps"] = p.tolist()
+                    report["avg_ue_throughput_baseline_bps"] = float(np.mean(p))
+            except Exception:
+                pass
+        if se_ue_map is not None:
+            report["per_ue_throughput_radiomap_bps"] = (np.asarray(se_ue_map, dtype=float) * sys_bw_hz).tolist()
+            report["avg_ue_throughput_radiomap_bps"] = float(np.mean(report["per_ue_throughput_radiomap_bps"]))
+        else:
+            N_UE_eff = max(1, int(config.get("N_UE", cap.shape[0])))
+            report["avg_ue_throughput_radiomap_bps"] = float((map_se * sys_bw_hz) / N_UE_eff)
+            try:
+                if 'per_ue_se_rm_avg' in report:
+                    p = np.asarray(report['per_ue_se_rm_avg'], dtype=float) * sys_bw_hz
+                    report["per_ue_throughput_radiomap_bps"] = p.tolist()
+                    report["avg_ue_throughput_radiomap_bps"] = float(np.mean(p))
+            except Exception:
+                pass
         # Jain's fairness index
         def jain(x):
             if not x:
@@ -2308,6 +2348,13 @@ def run_constellation(config: Dict) -> Dict:
         "T": int(T),
         "Z": int(Z),
         "N_UE": int(N_UE),
+        # Bandwidth/throughput metrics
+        "prb_bw_hz": float(prb_bw_hz),
+        "system_bandwidth_hz": float(prb_bw_hz) * float(Z),
+        "total_throughput_baseline_bps": float(avg_se_base_def * prb_bw_hz * Z),
+        "total_throughput_radiomap_bps": float(avg_se_rm * prb_bw_hz * Z),
+        "avg_ue_throughput_baseline_bps": float((avg_se_base_def * prb_bw_hz * Z) / max(1, int(N_UE))),
+        "avg_ue_throughput_radiomap_bps": float((avg_se_rm * prb_bw_hz * Z) / max(1, int(N_UE))),
         "ho_events_per_ue": ho_events,
         "handover_count_per_ue": [int(sum(1 for e in ho_events[i] if e.get("type") == "handover")) for i in range(N_UE)],
         "outage_ttis_per_ue": outage_ttis.tolist(),
@@ -2380,6 +2427,19 @@ if __name__ == '__main__':
         print(f"  Baseline-Default avg SE (bits/s/Hz): {single['avg_se_baseline_default']:.3f}")
         print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
         print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
+        try:
+            bw_mhz = single.get('system_bandwidth_hz', 0.0) / 1e6
+            th_base = single.get('total_throughput_baseline_bps', None)
+            th_map = single.get('total_throughput_radiomap_bps', None)
+            if th_base is not None and th_map is not None:
+                print(f"  System Bandwidth: {bw_mhz:.3f} MHz")
+                print(f"  Baseline-Default total throughput: {th_base/1e6:.3f} Mbps")
+                print(f"  RadioMap        total throughput: {th_map/1e6:.3f} Mbps")
+                if 'avg_ue_throughput_baseline_bps' in single and 'avg_ue_throughput_radiomap_bps' in single:
+                    print(f"  Avg UE throughput (Baseline): {single['avg_ue_throughput_baseline_bps']/1e6:.3f} Mbps/UE")
+                    print(f"  Avg UE throughput (RadioMap): {single['avg_ue_throughput_radiomap_bps']/1e6:.3f} Mbps/UE")
+        except Exception:
+            pass
 
         # Optional concise HARQ summary
         if bool(CONFIG.get("print_harq_summary", True)):

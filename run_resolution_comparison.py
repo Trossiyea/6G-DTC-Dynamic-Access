@@ -126,7 +126,7 @@ def run_scenario(scenario_name, config_path, resolution, step_info=""):
     # 输出结果摘要
     print("📊 [3/3] 生成结果报告...")
     total_elapsed = time.time() - start_time
-    
+
     print(f"\n{'-'*70}")
     print(f"✅ 场景 [{scenario_name} - {resolution}m] 完成")
     print(f"{'-'*70}")
@@ -134,6 +134,23 @@ def run_scenario(scenario_name, config_path, resolution, step_info=""):
     print(f"  基线平均SE:     {results['avg_se_baseline_default']:.4f} bits/s/Hz")
     print(f"  RadioMap平均SE: {results['avg_se_radiomap']:.4f} bits/s/Hz")
     print(f"  提升百分比:     {results['improvement_vs_default_pct']:+.2f}%")
+    # 追加吞吐量指标
+    try:
+        bw_hz = float(results.get('system_bandwidth_hz', 0.0))
+        if bw_hz > 0:
+            print(f"  系统带宽:       {bw_hz/1e6:.3f} MHz")
+        tb = results.get('total_throughput_baseline_bps', None)
+        tm = results.get('total_throughput_radiomap_bps', None)
+        if tb is not None and tm is not None:
+            print(f"  基线总吞吐量:   {tb/1e6:.3f} Mbps")
+            print(f"  RadioMap总吞吐量: {tm/1e6:.3f} Mbps")
+        aub = results.get('avg_ue_throughput_baseline_bps', None)
+        aum = results.get('avg_ue_throughput_radiomap_bps', None)
+        if aub is not None and aum is not None:
+            print(f"  UE平均吞吐量(基线): {aub/1e6:.3f} Mbps/UE")
+            print(f"  UE平均吞吐量(RM):  {aum/1e6:.3f} Mbps/UE")
+    except Exception:
+        pass
     print(f"\n⏱️  运行时间:")
     print(f"  总耗时: {total_elapsed:.1f}秒 ({total_elapsed/60:.1f}分钟)")
     print(f"  仿真时间: {sim_elapsed:.1f}秒")
@@ -157,6 +174,11 @@ def compare_resolutions(city, results_125m, results_150m):
     baseline_150 = results_150m['avg_se_baseline_default']
     radiomap_150 = results_150m['avg_se_radiomap']
     gain_150 = results_150m['improvement_vs_default_pct']
+    # 吞吐量指标
+    tb_125 = results_125m.get('total_throughput_baseline_bps', 0.0)
+    tm_125 = results_125m.get('total_throughput_radiomap_bps', 0.0)
+    tb_150 = results_150m.get('total_throughput_baseline_bps', 0.0)
+    tm_150 = results_150m.get('total_throughput_radiomap_bps', 0.0)
     
     print("📊 性能对比:")
     print(f"\n  {'指标':<25} {'125m':<15} {'150m':<15} {'差异':<15}")
@@ -164,6 +186,9 @@ def compare_resolutions(city, results_125m, results_150m):
     print(f"  {'基线SE (bits/s/Hz)':<25} {baseline_125:<15.4f} {baseline_150:<15.4f} {baseline_150-baseline_125:+.4f}")
     print(f"  {'RadioMap SE (bits/s/Hz)':<25} {radiomap_125:<15.4f} {radiomap_150:<15.4f} {radiomap_150-radiomap_125:+.4f}")
     print(f"  {'提升百分比 (%)':<25} {gain_125:<15.2f} {gain_150:<15.2f} {gain_150-gain_125:+.2f}")
+    # 吞吐量对比
+    print(f"  {'基线吞吐量 (Mbps)':<25} {tb_125/1e6:<15.3f} {tb_150/1e6:<15.3f} {tb_150/1e6 - tb_125/1e6:+.3f}")
+    print(f"  {'RM吞吐量 (Mbps)':<25} {tm_125/1e6:<15.3f} {tm_150/1e6:<15.3f} {tm_150/1e6 - tm_125/1e6:+.3f}")
     
     # 计算分辨率带来的相对改善
     gain_improvement = ((gain_150 - gain_125) / max(gain_125, 1e-9)) * 100.0 if gain_125 > 0 else 0.0
@@ -206,6 +231,10 @@ def compare_resolutions(city, results_125m, results_150m):
         'gain_150m': gain_150,
         'gain_delta': gain_150 - gain_125,
         'relative_gain_improvement': gain_improvement,
+        'throughput_baseline_125m_bps': tb_125,
+        'throughput_baseline_150m_bps': tb_150,
+        'throughput_radiomap_125m_bps': tm_125,
+        'throughput_radiomap_150m_bps': tm_150,
     }
 
 

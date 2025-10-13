@@ -138,6 +138,23 @@ def run_scenario(scenario_name, config_path, current_idx=None, total_count=None)
     print(f"  基线平均SE:     {results['avg_se_baseline_default']:.4f} bits/s/Hz")
     print(f"  RadioMap平均SE: {results['avg_se_radiomap']:.4f} bits/s/Hz")
     print(f"  提升百分比:     {results['improvement_vs_default_pct']:+.2f}%")
+    # 追加吞吐量指标
+    try:
+        bw_hz = float(results.get('system_bandwidth_hz', 0.0))
+        if bw_hz > 0:
+            print(f"  系统带宽:       {bw_hz/1e6:.3f} MHz")
+        tb = results.get('total_throughput_baseline_bps', None)
+        tm = results.get('total_throughput_radiomap_bps', None)
+        if tb is not None and tm is not None:
+            print(f"  基线总吞吐量:   {tb/1e6:.3f} Mbps")
+            print(f"  RadioMap总吞吐量: {tm/1e6:.3f} Mbps")
+        aub = results.get('avg_ue_throughput_baseline_bps', None)
+        aum = results.get('avg_ue_throughput_radiomap_bps', None)
+        if aub is not None and aum is not None:
+            print(f"  UE平均吞吐量(基线): {aub/1e6:.3f} Mbps/UE")
+            print(f"  UE平均吞吐量(RM):  {aum/1e6:.3f} Mbps/UE")
+    except Exception:
+        pass
     print(f"\n⏱️  运行时间:")
     print(f"  总耗时: {total_elapsed:.1f}秒 ({total_elapsed/60:.1f}分钟)")
     print(f"  仿真时间: {sim_elapsed:.1f}秒")
@@ -245,6 +262,22 @@ def main():
             print(f"  基线SE:    {results['avg_se_baseline_default']:.4f} bits/s/Hz")
             print(f"  RadioMap:  {results['avg_se_radiomap']:.4f} bits/s/Hz")
             print(f"  提升:      {results['improvement_vs_default_pct']:+.2f}%")
+            try:
+                bw_hz = float(results.get('system_bandwidth_hz', 0.0))
+                if bw_hz > 0:
+                    print(f"  带宽:      {bw_hz/1e6:.3f} MHz")
+                tb = results.get('total_throughput_baseline_bps', None)
+                tm = results.get('total_throughput_radiomap_bps', None)
+                if tb is not None and tm is not None:
+                    print(f"  基线吞吐量: {tb/1e6:.3f} Mbps")
+                    print(f"  RM吞吐量:  {tm/1e6:.3f} Mbps")
+                aub = results.get('avg_ue_throughput_baseline_bps', None)
+                aum = results.get('avg_ue_throughput_radiomap_bps', None)
+                if aub is not None and aum is not None:
+                    print(f"  UE均吞吐(基线): {aub/1e6:.3f} Mbps/UE")
+                    print(f"  UE均吞吐(RM):  {aum/1e6:.3f} Mbps/UE")
+            except Exception:
+                pass
         print(f"\n{'='*70}")
         print(f"\n⏱️  总计耗时: {total_elapsed_all:.1f}秒 ({total_elapsed_all/60:.1f}分钟)")
         print(f"✅ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
