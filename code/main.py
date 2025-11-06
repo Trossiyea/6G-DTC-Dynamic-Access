@@ -18,6 +18,7 @@ import os
 import json
 from scipy.io import loadmat
 from tqdm import tqdm
+import time
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
 from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
@@ -26,6 +27,7 @@ from ntn_channel import sample_3gpp_ntn_fading
 from harq import HarqManager, HarqManagerFull
 from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file, register_bler_curves_from_file
 from constellation import ConstellationOrbit
+from ripple import ripple_schedule
 
 # -----------------------
 # Utility conversions
@@ -1470,6 +1472,7 @@ def pf_schedule_baseline_subband(
 # -----------------------
 def run_once(config: Dict) -> Dict:
     """Single experiment orchestration with lower cyclomatic complexity."""
+    t_total_start = time.perf_counter()
     rng = np.random.default_rng(config["seed"])
     N_UE, T = config["N_UE"], config["T"]
 
@@ -1645,6 +1648,7 @@ def run_once(config: Dict) -> Dict:
         _rec_base_thr = bool(config.get("record_ue_thr", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all"))
         assignments_base = [] if _rec_base else None
         ue_thr_base = [] if _rec_base_thr else None
+        _t0 = time.perf_counter()
         base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1672,6 +1676,7 @@ def run_once(config: Dict) -> Dict:
                 ue_thr_out=ue_thr_base,
                 config=config,
             )
+        time_sched_base_s = time.perf_counter() - _t0
         
 
         base_se_subband = None
@@ -1681,6 +1686,7 @@ def run_once(config: Dict) -> Dict:
             _rec_rm_thr = bool(config.get("record_ue_thr", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all"))
             assignments_rm = [] if _rec_rm else None
             ue_thr_rm = [] if _rec_rm_thr else None
+            _t1 = time.perf_counter()
             map_se = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1708,9 +1714,57 @@ def run_once(config: Dict) -> Dict:
                 ue_thr_out=ue_thr_rm,
                 config=config,
             )
+            time_sched_rm_s = time.perf_counter() - _t1
             sched_stats = None
         else:
             pass
+        # Optional RIPPLE
+        # Optional RIPPLE
+        ripple_se = None
+        harq_stats_ripple = None
+        if bool(config.get("enable_ripple", False)):
+            # Build HARQ manager for RIPPLE if enabled
+            harq_mgr_ripple = None
+            if bool(config.get("enable_harq_full", False)):
+                harq_mgr_ripple = HarqManagerFull(
+                    num_ue=N_UE,
+                    num_procs=int(config.get("harq_max_procs", 16)),
+                    ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                    config=config,
+                )
+            elif bool(config.get("enable_harq_deferral", False)):
+                harq_mgr_ripple = HarqManager(
+                    num_ue=N_UE,
+                    num_procs=int(config.get("harq_max_procs", 16)),
+                    ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                )
+            ripple_beta = float(config.get("ripple_eesm_beta_db", config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))))
+            _t2 = time.perf_counter()
+            ripple_se = ripple_schedule(
+                cap=cap,
+                T=T,
+                beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                mcs_params=mcs_params,
+                snr_lin_time=time_series["snr_time"],
+                I_total_dbm=I_total_dbm,
+                eesm_beta_db=ripple_beta,
+                rng=rng,
+                ue_mask_time=None,
+                harq_mgr=harq_mgr_ripple,
+                record_assignments=False,
+                assignments_out=None,
+                config=config,
+            )
+            time_sched_ripple_s = time.perf_counter() - _t2
+            if harq_mgr_ripple is not None and hasattr(harq_mgr_ripple, 'get_stats'):
+                try:
+                    harq_stats_ripple = harq_mgr_ripple.get_stats()
+                except Exception:
+                    harq_stats_ripple = None
+
         # Collect HARQ statistics if available
         if harq_mgr_base is not None and hasattr(harq_mgr_base, 'get_stats'):
             try:
@@ -1724,6 +1778,7 @@ def run_once(config: Dict) -> Dict:
                 harq_stats_map = None
     else:
         # Baseline: contiguous-block PF using per-PRB metric
+        _t0 = time.perf_counter()
         base_se_default = pf_schedule_radiomap_blocks(
             cap, T, beta=config["pf_beta"],
             snr_lin=snr_lin,
@@ -1745,11 +1800,13 @@ def run_once(config: Dict) -> Dict:
             p_max_dbm=config.get("baseline_p_max_dbm", None),
             config=config,
         )
+        time_sched_base_s = time.perf_counter() - _t0
         
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
         _rec_rm2 = bool(config.get("record_assignments", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all"))
         assignments_rm2 = [] if _rec_rm2 else None
+        _t1 = time.perf_counter()
         map_se = pf_schedule_radiomap_blocks(
             cap, T, beta=config["pf_beta"],
             snr_lin=snr_lin,
@@ -1774,9 +1831,55 @@ def run_once(config: Dict) -> Dict:
             assignments_out=assignments_rm2,
             config=config,
         )
+        time_sched_rm_s = time.perf_counter() - _t1
         sched_stats = None
         harq_stats_base = None
         harq_stats_map = None
+
+        # Optional RIPPLE in static case
+        ripple_se = None
+        harq_stats_ripple = None
+        if bool(config.get("enable_ripple", False)):
+            harq_mgr_ripple = None
+            if bool(config.get("enable_harq_full", False)):
+                harq_mgr_ripple = HarqManagerFull(
+                    num_ue=N_UE,
+                    num_procs=int(config.get("harq_max_procs", 16)),
+                    ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                    config=config,
+                )
+            elif bool(config.get("enable_harq_deferral", False)):
+                harq_mgr_ripple = HarqManager(
+                    num_ue=N_UE,
+                    num_procs=int(config.get("harq_max_procs", 16)),
+                    ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                )
+            ripple_beta = float(config.get("ripple_eesm_beta_db", config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))))
+            _t2 = time.perf_counter()
+            ripple_se = ripple_schedule(
+                cap=cap,
+                T=T,
+                beta=config["pf_beta"],
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                mcs_params=mcs_params,
+                snr_lin_time=None,
+                I_total_dbm=I_total_dbm,
+                eesm_beta_db=ripple_beta,
+                rng=rng,
+                ue_mask_time=None,
+                harq_mgr=harq_mgr_ripple,
+                record_assignments=False,
+                assignments_out=None,
+                config=config,
+            )
+            time_sched_ripple_s = time.perf_counter() - _t2
+            if harq_mgr_ripple is not None and hasattr(harq_mgr_ripple, 'get_stats'):
+                try:
+                    harq_stats_ripple = harq_mgr_ripple.get_stats()
+                except Exception:
+                    harq_stats_ripple = None
 
     # Optional JSON report with per-UE throughput/fairness and events
     # Compute system bandwidth for throughput reporting
@@ -1785,6 +1888,7 @@ def run_once(config: Dict) -> Dict:
     except Exception:
         sys_bw_hz = float(config.get("scs_khz", 30.0)) * 1e3 * 12.0 * float(cap.shape[1])
 
+    t_total_s = time.perf_counter() - t_total_start
     report = {
         "avg_se_baseline_default": base_se_default,
         "avg_se_radiomap": map_se,
@@ -1806,7 +1910,75 @@ def run_once(config: Dict) -> Dict:
         "sched_stats": None,
         "harq_stats_base": harq_stats_base,
         "harq_stats_map": harq_stats_map,
+        # Timing (if collected)
+        "time_total_s": float(t_total_s),
+        "time_sched_baseline_s": float(locals().get('time_sched_base_s', 0.0)),
+        "time_sched_radiomap_s": float(locals().get('time_sched_rm_s', 0.0)),
+        "time_sched_ripple_s": float(locals().get('time_sched_ripple_s', 0.0)) if 'ripple_se' in locals() else None,
     }
+
+    # Attach RIPPLE metrics if computed
+    try:
+        if 'ripple_se' in locals() and ripple_se is not None:
+            report["avg_se_ripple"] = float(ripple_se)
+            report["improvement_vs_default_pct_ripple"] = float((ripple_se - base_se_default) / max(1e-9, base_se_default) * 100.0)
+            try:
+                report["total_throughput_ripple_bps"] = float(ripple_se * sys_bw_hz)
+            except Exception:
+                pass
+            if 'harq_stats_ripple' in locals() and harq_stats_ripple is not None:
+                report["harq_stats_ripple"] = harq_stats_ripple
+            # Timing share
+            try:
+                ts = float(report.get('time_total_s', 0.0))
+                if ts > 0:
+                    for k in ("baseline", "radiomap", "ripple"):
+                        v = report.get(f"time_sched_{k}_s", None)
+                        if v is not None:
+                            report[f"time_sched_{k}_pct"] = float(100.0 * v / ts)
+            except Exception:
+                pass
+            # RIPPLE debug snapshot at t=0
+            try:
+                from ripple import segment_band_from_interference, _seg_from_metric_1d, build_eesm_prefix, seg_eesm_db, _se_from_eff_sinr_db
+                # Choose segmentation consistent with config
+                seg_src = str(config.get("ripple_seg_from", "interference")).lower()
+                max_len = int(config.get("ripple_max_seg_len", 0) or 0)
+                if seg_src.startswith('snr'):
+                    base = np.asarray(snr_lin, dtype=float)
+                    mdb = 10.0 * np.log10(np.maximum(np.median(base, axis=0), 1e-12))
+                    segments_dbg = _seg_from_metric_1d(mdb, float(config.get("ripple_seg_thresh_db", 3.0)), int(config.get("ripple_seg_max_K", cap.shape[1])), int(config.get("ripple_seg_min_len", 2)), max_len)
+                else:
+                    segments_dbg = segment_band_from_interference(I_total_dbm, float(config.get("ripple_seg_thresh_db", 3.0)), int(config.get("ripple_seg_max_K", cap.shape[1])), int(config.get("ripple_seg_min_len", 2)), method='median', max_len=max_len)
+                if not segments_dbg:
+                    segments_dbg = [(0, cap.shape[1]-1)]
+                sinr_db0 = 10.0 * np.log10(np.maximum(snr_lin, 1e-12))
+                pref = build_eesm_prefix(sinr_db0, float(config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))))
+                K = len(segments_dbg)
+                se_vals = []
+                for k in range(K):
+                    l, r = segments_dbg[k]
+                    eff = seg_eesm_db(pref, int(l), int(r), float(config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))))
+                    se_k = _se_from_eff_sinr_db(eff, config.get("use_mcs", False), {
+                        "olla_offset_db": config.get("csi_olla_offset_db", 0.0),
+                        "mcs_table": config.get("csi_mcs_table", "legacy"),
+                        "residual_freq_hz": config.get("residual_freq_hz", 0.0),
+                        "scs_khz": config.get("scs_khz", 30),
+                    })
+                    se_vals.append(np.asarray(se_k, dtype=float))
+                if se_vals:
+                    se_mat = np.stack(se_vals, axis=1)  # [UE,K]
+                    report["ripple_debug"] = {
+                        "K": int(K),
+                        "se_min": float(np.min(se_mat)),
+                        "se_mean": float(np.mean(se_mat)),
+                        "se_median": float(np.median(se_mat)),
+                        "se_max": float(np.max(se_mat)),
+                    }
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Attach PRB assignment timeline and per-UE throughput if recorded
     try:
@@ -1847,8 +2019,11 @@ def run_once(config: Dict) -> Dict:
             return (bits / float(max(1, re_per_prb) * T_total * Z_total)).tolist()
         se_ue_base = per_ue_avg_se(harq_stats_base)
         se_ue_map = per_ue_avg_se(harq_stats_map)
+        se_ue_ripple = per_ue_avg_se(harq_stats_ripple) if 'harq_stats_ripple' in locals() else None
         report["per_ue_avg_se_base"] = se_ue_base
         report["per_ue_avg_se_map"] = se_ue_map
+        if se_ue_ripple is not None:
+            report["per_ue_avg_se_ripple"] = se_ue_ripple
         # Map per-UE SE to throughput (bps) using system bandwidth
         if se_ue_base is not None:
             report["per_ue_throughput_baseline_bps"] = (np.asarray(se_ue_base, dtype=float) * sys_bw_hz).tolist()
@@ -1878,6 +2053,14 @@ def run_once(config: Dict) -> Dict:
                     report["avg_ue_throughput_radiomap_bps"] = float(np.mean(p))
             except Exception:
                 pass
+        # RIPPLE per-UE throughput (if available)
+        if se_ue_ripple is not None:
+            report["per_ue_throughput_ripple_bps"] = (np.asarray(se_ue_ripple, dtype=float) * sys_bw_hz).tolist()
+            report["avg_ue_throughput_ripple_bps"] = float(np.mean(report["per_ue_throughput_ripple_bps"]))
+        else:
+            if 'avg_se_ripple' in report:
+                N_UE_eff = max(1, int(config.get("N_UE", cap.shape[0])))
+                report["avg_ue_throughput_ripple_bps"] = float((report['avg_se_ripple'] * sys_bw_hz) / N_UE_eff)
         # Jain's fairness index
         def jain(x):
             if not x:
@@ -1889,6 +2072,7 @@ def run_once(config: Dict) -> Dict:
             return float((s * s) / max(1e-12, n * s2)) if s2 > 0 else 0.0
         report["fairness_jain_base"] = jain(se_ue_base) if se_ue_base is not None else None
         report["fairness_jain_map"] = jain(se_ue_map) if se_ue_map is not None else None
+        report["fairness_jain_ripple"] = jain(se_ue_ripple) if se_ue_ripple is not None else None
     except Exception:
         pass
 
@@ -1987,6 +2171,7 @@ def run_constellation(config: Dict) -> Dict:
 
     # KPI accumulators
     sum_rate_rm = 0.0
+    sum_rate_ripple = 0.0
     sum_rate_base_def = 0.0
     kpi_per_sat: Dict[int, Dict] = {}
     # Per-satellite HARQ managers (persist across TTIs)
@@ -2256,6 +2441,33 @@ def run_constellation(config: Dict) -> Dict:
             )
             sum_rate_base_def += base * Z
             sum_rate_rm += rm * Z
+            # RIPPLE per-satellite (optional)
+            if bool(config.get('enable_ripple', False)):
+                try:
+                    ripple_beta = float(config.get("ripple_eesm_beta_db", config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))))
+                except Exception:
+                    ripple_beta = float(config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0)))
+                _cfg_rp = dict(config)
+                _cfg_rp['harq_flush_tail'] = False
+                rp = ripple_schedule(
+                    cap=cap,
+                    T=1,
+                    beta=config["pf_beta"],
+                    snr_lin=snr_lin,
+                    overhead_eff=config.get("overhead_eff", 1.0),
+                    use_mcs=config.get("use_mcs", False),
+                    mcs_params=mcs_params,
+                    snr_lin_time=None,
+                    I_total_dbm=I_total_dbm,
+                    eesm_beta_db=ripple_beta,
+                    rng=rng,
+                    ue_mask_time=ue_mask,
+                    harq_mgr=None,
+                    record_assignments=False,
+                    assignments_out=None,
+                    config=_cfg_rp,
+                )
+                sum_rate_ripple += rp * Z
             # Update per-satellite KPI
             k = kpi_per_sat.get(si)
             if k is None:
@@ -2281,6 +2493,7 @@ def run_constellation(config: Dict) -> Dict:
     # Average across T and PRBs (per original convention): divide by T and Z
     avg_se_base_def = sum_rate_base_def / max(1, T) / max(1, Z)
     avg_se_rm = sum_rate_rm / max(1, T) / max(1, Z)
+    avg_se_ripple = sum_rate_ripple / max(1, T) / max(1, Z) if bool(config.get('enable_ripple', False)) else None
 
     # Summarize per-satellite KPI
     per_sat_summary = []
@@ -2343,6 +2556,8 @@ def run_constellation(config: Dict) -> Dict:
         "avg_se_baseline_default": avg_se_base_def,
         "avg_se_radiomap": avg_se_rm,
         "improvement_vs_default_pct": imp_pct,
+        "avg_se_ripple": None if avg_se_ripple is None else float(avg_se_ripple),
+        "improvement_vs_default_pct_ripple": None if avg_se_ripple is None else float((avg_se_ripple - avg_se_base_def) / max(1e-9, avg_se_base_def) * 100.0),
         "R_xyz_dbm": R_xyz_dbm,
         "ue_pos": ue_pos,
         "T": int(T),
@@ -2353,6 +2568,7 @@ def run_constellation(config: Dict) -> Dict:
         "system_bandwidth_hz": float(prb_bw_hz) * float(Z),
         "total_throughput_baseline_bps": float(avg_se_base_def * prb_bw_hz * Z),
         "total_throughput_radiomap_bps": float(avg_se_rm * prb_bw_hz * Z),
+        "total_throughput_ripple_bps": None if avg_se_ripple is None else float(avg_se_ripple * prb_bw_hz * Z),
         "avg_ue_throughput_baseline_bps": float((avg_se_base_def * prb_bw_hz * Z) / max(1, int(N_UE))),
         "avg_ue_throughput_radiomap_bps": float((avg_se_rm * prb_bw_hz * Z) / max(1, int(N_UE))),
         "ho_events_per_ue": ho_events,
@@ -2401,6 +2617,13 @@ if __name__ == '__main__':
             print(f"  Gain vs Default (%): {out['improvement_vs_default_pct']:.2f}")
         except Exception:
             pass
+        if out.get('avg_se_ripple') is not None:
+            try:
+                print(f"  RIPPLE          avg SE (bits/s/Hz): {out['avg_se_ripple']:.3f}")
+                if out.get('improvement_vs_default_pct_ripple') is not None:
+                    print(f"  Gain vs Default (RIPPLE) (%): {out['improvement_vs_default_pct_ripple']:.2f}")
+            except Exception:
+                pass
         # Optional concise HARQ summary (constellation aggregate)
         if bool(CONFIG.get("print_harq_summary", True)):
             def _print_harq_const(label: str, hs: dict) -> None:
@@ -2428,6 +2651,13 @@ if __name__ == '__main__':
         print(f"  RadioMap        avg SE (bits/s/Hz): {single['avg_se_radiomap']:.3f}")
         print(f"  Gain vs Default (%): {single['improvement_vs_default_pct']:.2f}")
         try:
+            if 'avg_se_ripple' in single:
+                print(f"  RIPPLE         avg SE (bits/s/Hz): {single['avg_se_ripple']:.3f}")
+                if 'improvement_vs_default_pct_ripple' in single:
+                    print(f"  Gain vs Default (RIPPLE) (%): {single['improvement_vs_default_pct_ripple']:.2f}")
+        except Exception:
+            pass
+        try:
             bw_mhz = single.get('system_bandwidth_hz', 0.0) / 1e6
             th_base = single.get('total_throughput_baseline_bps', None)
             th_map = single.get('total_throughput_radiomap_bps', None)
@@ -2435,6 +2665,11 @@ if __name__ == '__main__':
                 print(f"  System Bandwidth: {bw_mhz:.3f} MHz")
                 print(f"  Baseline-Default total throughput: {th_base/1e6:.3f} Mbps")
                 print(f"  RadioMap        total throughput: {th_map/1e6:.3f} Mbps")
+                try:
+                    if 'total_throughput_ripple_bps' in single:
+                        print(f"  RIPPLE         total throughput: {single['total_throughput_ripple_bps']/1e6:.3f} Mbps")
+                except Exception:
+                    pass
                 if 'avg_ue_throughput_baseline_bps' in single and 'avg_ue_throughput_radiomap_bps' in single:
                     print(f"  Avg UE throughput (Baseline): {single['avg_ue_throughput_baseline_bps']/1e6:.3f} Mbps/UE")
                     print(f"  Avg UE throughput (RadioMap): {single['avg_ue_throughput_radiomap_bps']/1e6:.3f} Mbps/UE")
@@ -2471,6 +2706,11 @@ if __name__ == '__main__':
 
             _print_harq("Baseline-Default", single.get("harq_stats_base"), "per_ue_avg_se_base")
             _print_harq("RadioMap", single.get("harq_stats_map"), "per_ue_avg_se_map")
+            try:
+                if 'harq_stats_ripple' in single:
+                    _print_harq("RIPPLE", single.get("harq_stats_ripple"), "per_ue_avg_se_ripple")
+            except Exception:
+                pass
 
         # -----------------------
         # Run multiple seeds to show robustness

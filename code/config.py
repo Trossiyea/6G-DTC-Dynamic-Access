@@ -82,6 +82,29 @@ CONFIG = {
     "enable_time_varying": True,
     "rm_flicker_db_std": 0.5,
     "rm_drift_px": (0, 0),
+    # --- RIPPLE (optional) ---
+    "enable_ripple": True,                  # add-on scheduler (does not affect baseline/RM unless enabled)
+    "ripple_seg_from": "snr",              # segmentation metric: 'interference' or 'snr'
+    "ripple_seg_thresh_db": 2.0,            # segmentation threshold in dB
+    "ripple_seg_max_K": 64,                 # max number of segments (<= Z)
+    "ripple_seg_min_len": 2,                # min PRBs per segment
+    "ripple_max_seg_len": 10,               # cap segment length to avoid over-averaging (0=disable)
+    "ripple_dual_iters": 5,                 # dual iterations for one-segment-per-UE projection
+    "ripple_dual_step": 0.5,                # dual step size
+    "ripple_fill_leftover": True,           # assign leftover segments even if it reuses a UE
+    "ripple_strict_one_segment": False,     # if True, at most one segment per UE (may leave PRBs idle)
+    "ripple_reseg_period_ttis": 200,        # slow re-segmentation period for time-varying maps
+    "ripple_use_mcs": True,                 # use MCS mapping (True) or Shannon (False)
+    # Candidate extension + DP (Milestone-3 light; default off)
+    "ripple_dp_enabled": False,             # enable interval DP selection (dualized one-UE constraint)
+    "ripple_candidate_merge": 2,            # max number of base-segments to merge into one candidate (0/1=disable)
+    # Segment-level power allocation (RIPPLE)
+    "ripple_dl_power_model": "equal",      # 'equal' or 'segment_wf'
+    "ripple_P_tot_dbm": 50.0,              # total DL power budget (dBm), required for 'segment_wf'
+    "ripple_p_min_dbm": 28.0,              # per-PRB lower bound (dBm) in a segment (optional)
+    "ripple_p_max_dbm": 36.0,              # per-PRB upper bound (dBm) in a segment (optional)
+    # default EESM beta for RIPPLE (fallbacks to rm_sched_eesm_beta_db if unset via main)
+    # "ripple_eesm_beta_db": 3.5,
 }
 
 # Scheduler
