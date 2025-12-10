@@ -10,22 +10,29 @@ This repository has been simplified to DL only:
 - Transmit power is interpreted as DL EIRP (per‑PRB) or a total DL power budget.
 """
 
-import numpy as np
+import logging
 import math
-import matplotlib.pyplot as plt
-from typing import Tuple, Dict, Optional, Union
 import os
 import json
+from typing import Tuple, Dict, Optional, Union
+
+import matplotlib.pyplot as plt
+import numpy as np
 from scipy.io import loadmat
 from tqdm import tqdm
+
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
-from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
-from ntn_csi import snr_to_se_sched
-from ntn_channel import sample_3gpp_ntn_fading
+from constellation import ConstellationOrbit
 from harq import HarqManager, HarqManagerFull
 from link_adapt import re_per_prb_from_config, register_mcs_tables_from_file, register_bler_curves_from_file
-from constellation import ConstellationOrbit
+from logging_utils import get_logger
+from ntn_channel import sample_3gpp_ntn_fading
+from ntn_csi import snr_to_se_sched
+from orbit import compute_geometry_and_beam, OrbitModel, simple_beam_gain_db
+from result_schema import SimulationResult, to_serializable_result
+
+logger = get_logger(__name__)
 
 # -----------------------
 # Utility conversions
@@ -1470,6 +1477,13 @@ def pf_schedule_baseline_subband(
 # -----------------------
 def run_once(config: Dict) -> Dict:
     """Single experiment orchestration with lower cyclomatic complexity."""
+    logger.debug(
+        "run_once start: N_UE=%s, T=%s, seed=%s, constellation=%s",
+        config.get("N_UE"),
+        config.get("T"),
+        config.get("seed"),
+        bool(config.get("enable_constellation", False)),
+    )
     rng = np.random.default_rng(config["seed"])
     N_UE, T = config["N_UE"], config["T"]
 
@@ -1909,6 +1923,12 @@ def run_once(config: Dict) -> Dict:
     except Exception as e:
         print(f"[WARN] Failed to write JSON report: {e}")
 
+    logger.debug(
+        "run_once complete: baseline=%.4f, radiomap=%.4f, improvement=%+.2f%%",
+        float(report.get("avg_se_baseline_default", float("nan"))),
+        float(report.get("avg_se_radiomap", float("nan"))),
+        float(report.get("improvement_vs_default_pct", float("nan"))),
+    )
     return report
 
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
@@ -1926,6 +1946,16 @@ def run_many(config: Dict, seeds: np.ndarray) -> Dict:
         "improvement_vs_default_pct": np.array(imp_def_list),
     }
 
+
+def as_simulation_result(result: Dict, dataclass: bool = False):
+    """
+    Convert a raw result dict into a typed SimulationResult for downstream
+    consumers (web API, serialization). If dataclass=False, returns a
+    JSON-friendly dict.
+    """
+    res = SimulationResult.from_dict(result)
+    return res if dataclass else to_serializable_result(result)
+
 # -----------------------
 # Constellation (multi-satellite) runner
 # -----------------------
@@ -1937,6 +1967,13 @@ def run_constellation(config: Dict) -> Dict:
       run per-satellite PF (RadioMap blocks + wideband baseline) on the served UE subset.
     - Inter-satellite interference: not modeled.
     """
+    logger.debug(
+        "run_constellation start: N_UE=%s, T=%s, seed=%s, sats=max? %s",
+        config.get("N_UE"),
+        config.get("T"),
+        config.get("seed"),
+        config.get("constellation_max_ground_radius_km"),
+    )
     rng = np.random.default_rng(config["seed"])
     N_UE, T = int(config["N_UE"]), int(config["T"]) 
 
@@ -2384,6 +2421,12 @@ def run_constellation(config: Dict) -> Dict:
     except Exception as e:
         print(f"[WARN] Constellation JSON report failed: {e}")
 
+    logger.debug(
+        "run_constellation complete: baseline=%.4f, radiomap=%.4f, improvement=%+.2f%%",
+        float(report.get("avg_se_baseline_default", float("nan"))),
+        float(report.get("avg_se_radiomap", float("nan"))),
+        float(report.get("improvement_vs_default_pct", float("nan"))),
+    )
     return report
 
 # CONFIG is provided by code/config.py
