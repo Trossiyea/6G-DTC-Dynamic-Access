@@ -1,0 +1,33 @@
+{
+  "data": {
+    "Toronto": {
+      "single": {
+        "baseline_se": 0.10981844589687711,
+        "radiomap_se": 0.1419583635923507
+      },
+      "constellation": {
+        "baseline_se": 0.11402856451222458,
+        "radiomap_se": 0.1412384410554346
+      }
+    },
+    "Shanghai": {
+      "single": {
+        "baseline_se": 0.09170418784797861,
+        "radiomap_se": 0.12029726458484621
+      },
+      "constellation": {
+        "baseline_se": 0.256503510045994,
+        "radiomap_se": 0.3867131445170654
+      }
+    }
+  },
+  "meta": {
+    "fast": false,
+    "seed": 101,
+    "scs_khz": 30.0,
+    "N_UE": 100,
+    "T": 2000,
+    "script": "visualize_city_se_20mhz_30khz.py",
+    "updated_at": "2025-11-11T12:23:15.804007Z"
+  }
+}
