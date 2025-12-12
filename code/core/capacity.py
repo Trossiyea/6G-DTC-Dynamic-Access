@@ -13,7 +13,7 @@ from typing import Dict, Optional, Union
 
 import numpy as np
 
-from csi import sinr_to_se_mcs, effective_sinr_eesm
+from link import sinr_to_se_mcs, effective_sinr_eesm
 
 
 @dataclass

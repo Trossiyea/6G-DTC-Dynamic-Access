@@ -16,8 +16,7 @@ from core.capacity import (
     se_from_cap_shannon_with_split,
     se_metric_strategy,
 )
-from harq import HarqManager
-from link_adapt import re_per_prb_from_config
+from link import HarqManager, re_per_prb_from_config
 
 
 def pf_schedule_baseline(

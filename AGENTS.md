@@ -24,7 +24,18 @@
     - `engine.py` - single-satellite engine (SimulationEngine) encapsulating run_once() logic
     - `constellation_engine.py` - multi-satellite engine (ConstellationEngine) with TTI loop and handover
     - `__init__.py` - exports public API (backward-compatible run_once/run_constellation wrappers)
-  - Main modules: `main.py` (lightweight orchestration, 274 lines), `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`.
+  - `link/`: unified link layer module (Phase 7 refactoring, 1492 lines)
+    - `mcs.py` - MCS table management (3GPP TS 38.214, 3 built-in tables + external registration)
+    - `cqi.py` - CQI tables and SINR→CQI→SE mapping (38.214-compliant thresholds)
+    - `bler.py` - BLER curve management (sigmoid model + external curve registration)
+    - `eesm.py` - EESM effective SINR calculation and HARQ soft combining
+    - `tbs.py` - TBS calculation and RE statistics (TS 38.214 §5.1.3.2)
+    - `olla.py` - OLLA adaptive SINR offset control (ACK/NACK feedback-driven)
+    - `adaptation.py` - unified link adaptation interface (MCS selection from SINR)
+    - `harq.py` - HARQ managers (simple and full modes, process management, RV cycling)
+    - `__init__.py` - exports 21 public APIs
+  - Main modules: `main.py` (lightweight orchestration, 274 lines), `orbit.py`, `constellation.py`, `ntn_channel.py`, `logging_utils.py`, `result_schema.py`.
+  - Backward-compatible wrappers: `link_adapt.py`, `harq.py`, `csi.py`, `ntn_csi.py` (re-export from `link/` for legacy imports).
   - `__init__.py` files expose public API; scenario overrides live in `test/`.
 - `test/`: city/constellation presets (`config_*.py`).
 - `docs/`: reference MCS tables and templates.
@@ -43,12 +54,17 @@
   - From sub-packages: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`
   - Configuration: `from code.config import CONFIG, load_scenario_config` (supports both dict-style `CONFIG["key"]` and typed `CONFIG.simulation.N_UE`)
   - Simulation engines: `from simulation import SimulationEngine, ConstellationEngine, SimulationState` (Phase 5 new API)
+  - Link layer (Phase 7): `from link import MCS, choose_mcs_from_sinr, HarqManager, HarqManagerFull, OLLA, eff_sinr_eesm_db, calc_tbs_bits` (21 APIs available)
+  - Backward-compatible: `from link_adapt import MCS, OLLA`, `from csi import sinr_to_cqi`, `from harq import HarqManager` (legacy imports still work)
   - Main entry: `from code.main import run_once, run_constellation` (legacy-compatible wrappers)
 - Add docstrings for public helpers and clarify tricky math with brief comments; avoid noisy prints except for CLI progress.
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 
 ## Testing Guidelines
+- Environment verification: run `python run_test.py --verify` to check Phase 1-7 module availability, dependencies, and imports (8 checks).
 - Scenario validation: run a city preset after behavioral changes (`python run_test.py --scenario toronto_single`); for orbit/scheduler edits, add a constellation case.
+- Unit tests: `./run_all_tests.sh --unit` runs Phase 7 link module tests (15 tests covering imports, MCS/CQI/EESM/HARQ functionality, and integration).
+- Quick validation: `./run_all_tests.sh --quick` runs unit tests + 2 representative scenarios.
 - Test script (`run_test.py`) uses the new `load_scenario_config()` API to automatically merge scenario overrides with default config.
 - When adding features, document required data under `test/` and include sample usage in config files.
 

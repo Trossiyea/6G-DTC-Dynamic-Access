@@ -11,8 +11,10 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
-- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`)，
+- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`, `link/`)，
   便于单元测试、Web 可视化集成和二次开发。
+- **Link layer modularization (Phase 7)**: 统一的链路层子包 (`link/`) 整合了 MCS/CQI/BLER 表管理、
+  EESM 计算、TBS 估算、OLLA 自适应、链路自适应和 HARQ 管理，消除代码重复，提升可维护性。
 - **SimulationEngine pattern**: 基于类的仿真引擎封装 `run_once()` 和 `run_constellation()` 逻辑，
   支持实时进度回调、状态序列化、阶段通知，适配 Web API 和异步执行场景。
 - **Type-safe configuration system**: 基于 dataclass 的配置系统支持字典风格和属性访问、
@@ -37,6 +39,12 @@ Prerequisites
 
 Quick Start
 -----------
+
+### 环境验证（推荐首次运行）
+```bash
+# 验证 Phase 1-7 模块化架构和依赖
+python run_test.py --verify
+```
 
 ### 方式1: 使用 Make 命令（推荐）
 ```bash
@@ -255,19 +263,29 @@ Repository Layout
     - `engine.py` - 单卫星仿真引擎 (SimulationEngine, 封装 run_once 逻辑)
     - `constellation_engine.py` - 多卫星星座仿真引擎 (ConstellationEngine, TTI 循环/切换)
     - `__init__.py` - 导出公共 API (向后兼容 run_once/run_constellation)
+  - `link/`: 链路层模块 (Phase 7 模块化重构, 1492 行)
+    - `mcs.py` - MCS 表管理 (3GPP TS 38.214, 内置/外部表支持)
+    - `cqi.py` - CQI 表和 SINR→CQI→SE 映射
+    - `bler.py` - BLER 曲线管理 (sigmoid 模型 + 外部曲线)
+    - `eesm.py` - EESM 有效 SINR 计算和 HARQ 软合并
+    - `tbs.py` - TBS 计算和 RE 统计 (TS 38.214 §5.1.3.2)
+    - `olla.py` - OLLA 自适应偏移控制 (ACK/NACK 反馈)
+    - `adaptation.py` - 统一链路自适应接口 (MCS 选择)
+    - `harq.py` - HARQ 管理器 (简单/完整两种模式, 进程管理, RV 循环)
+    - `__init__.py` - 导出 21 个公共 API
   - 主模块: `main.py` (轻量编排层, 274 行), `orbit.py`, `constellation.py`,
-    `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`,
-    `result_schema.py` 等。模块通过 `__init__.py` 暴露公共 API。
-- `docs/`: official 38.214 MCS tables (JSON format) and templates.
+    `ntn_channel.py`, `logging_utils.py`, `result_schema.py` 等。
+  - 兼容包装器: `link_adapt.py`, `csi.py`, `harq.py`, `ntn_csi.py` (保持向后兼容性)。
+- `docs/`: official 38.214 MCS tables (JSON format) and templates, Phase 7 report.
 - `radio_map/`: Radio Map 数据文件（Toronto 和 Shanghai，支持 MAT/HDF5 格式）。
 - `test/`: 测试场景配置文件（`config_toronto_single.py`, `config_shanghai_constellation.py` 等）。
 - `tles/`: TLE 轨道数据文件（Starlink 和 Satnet 星座）。
 - `tools/`: 辅助工具脚本（`find_best_satellite.py`, `diagnose_zero_se.py`, 可视化脚本等）；
   `tools/archive/` 存放归档的旧版脚本。
 - `output/`: 生成的报告和图表（按需创建）。
-- `run_test.py`: 多场景测试运行脚本。
+- `run_test.py`: 多场景测试运行脚本 (支持 `--verify` 环境验证)。
 - `run_resolution_comparison.py`: Radio Map 分辨率对比测试脚本。
-- `run_all_tests.sh`: 批量运行所有测试场景。
+- `run_all_tests.sh`: 批量运行所有测试场景 (支持 `--unit`, `--quick`, `--scenarios` 模式)。
 - `Makefile`: Make 命令快捷方式。
 
 

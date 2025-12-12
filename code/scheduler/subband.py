@@ -10,7 +10,7 @@ simple per-group PF allocation and marginal ΔSE allocation.
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 
-from csi import sinr_to_se_mcs, effective_sinr_eesm
+from link import sinr_to_se_mcs, effective_sinr_eesm
 from core.capacity import _block_se_from_snr_vec
 
 

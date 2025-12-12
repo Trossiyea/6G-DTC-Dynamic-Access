@@ -225,7 +225,7 @@ class SimulationEngine:
 
     def _register_mcs_tables(self) -> None:
         """Register 3GPP MCS tables from file if configured."""
-        from link_adapt import register_mcs_tables_from_file, register_bler_curves_from_file
+        from link import register_mcs_tables_from_file, register_bler_curves_from_file
 
         config = self.config
         try:
@@ -243,7 +243,7 @@ class SimulationEngine:
     def _run_schedulers(self) -> Dict[str, Any]:
         """Execute baseline and RadioMap schedulers."""
         from scheduler.radiomap import pf_schedule_radiomap_blocks
-        from harq import HarqManager, HarqManagerFull
+        from link import HarqManager, HarqManagerFull
         from ntn_csi import snr_to_se_sched
 
         config = self.config
@@ -358,7 +358,7 @@ class SimulationEngine:
     def _run_time_varying_schedulers(self, mcs_params: Dict) -> Dict[str, Any]:
         """Run schedulers in time-varying mode with HARQ."""
         from scheduler.radiomap import pf_schedule_radiomap_blocks
-        from harq import HarqManager, HarqManagerFull
+        from link import HarqManager, HarqManagerFull
         from ntn_csi import snr_to_se_sched
 
         config = self.config
@@ -532,7 +532,7 @@ class SimulationEngine:
 
     def _finalize(self, sched_result: Dict) -> Dict[str, Any]:
         """Finalize simulation and build result dict."""
-        from link_adapt import re_per_prb_from_config
+        from link import re_per_prb_from_config
 
         config = self.config
         state = self._state
@@ -619,7 +619,7 @@ class SimulationEngine:
 
     def _compute_per_ue_metrics(self, report: Dict, sched_result: Dict, sys_bw_hz: float) -> None:
         """Compute per-UE throughput and fairness metrics."""
-        from link_adapt import re_per_prb_from_config
+        from link import re_per_prb_from_config
 
         config = self.config
         state = self._state

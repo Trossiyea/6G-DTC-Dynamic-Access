@@ -148,7 +148,7 @@ class ConstellationEngine:
 
     def _register_mcs_tables(self) -> None:
         """Register MCS tables from files."""
-        from link_adapt import register_mcs_tables_from_file, register_bler_curves_from_file
+        from link import register_mcs_tables_from_file, register_bler_curves_from_file
 
         config = self.config
         try:
@@ -166,7 +166,7 @@ class ConstellationEngine:
     def _run_tti_loop(self) -> None:
         """Execute the main TTI loop."""
         from scheduler.radiomap import pf_schedule_radiomap_blocks
-        from harq import HarqManagerFull
+        from link import HarqManagerFull
         from ntn_csi import snr_to_se_sched
 
         config = self.config

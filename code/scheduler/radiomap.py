@@ -17,10 +17,8 @@ from typing import Dict, Optional
 import numpy as np
 from tqdm import tqdm
 
-from csi import sinr_to_se_mcs
+from link import sinr_to_se_mcs, HarqManager, re_per_prb_from_config
 from core.capacity import _block_se_from_snr_vec
-from harq import HarqManager
-from link_adapt import re_per_prb_from_config
 from .power_alloc import apply_dl_power_allocation, waterfill_groups
 
 
