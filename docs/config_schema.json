@@ -1,0 +1,798 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NTN-NR Downlink Simulation Configuration",
+  "type": "object",
+  "properties": {
+    "simulation": {
+      "type": "object",
+      "properties": {
+        "Z": {
+          "type": "integer",
+          "description": "Number of PRBs (must match Radio Map Z dimension)",
+          "default": 51,
+          "minimum": 1,
+          "maximum": 275
+        },
+        "N_UE": {
+          "type": "integer",
+          "description": "Number of active UEs per run",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "T": {
+          "type": "integer",
+          "description": "Number of TTIs (subframes) per run",
+          "default": 2000,
+          "minimum": 1
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Random number generator seed for reproducibility",
+          "default": 101
+        }
+      },
+      "required": []
+    },
+    "radio_map": {
+      "type": "object",
+      "properties": {
+        "radio_map_mat_path": {
+          "type": "string",
+          "description": "Path to Radio Map file (MAT or HDF5 format)",
+          "default": "radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat"
+        },
+        "radio_map_mat_var": {
+          "type": "string",
+          "description": "Variable name in MAT file containing the radio map",
+          "default": "XdB_recon_tensor"
+        },
+        "radio_map_units": {
+          "type": "string",
+          "description": "Units of Radio Map values",
+          "default": "dBm",
+          "enum": [
+            "dBm",
+            "mW",
+            "W"
+          ]
+        },
+        "radiomap_est_error_db": {
+          "type": "number",
+          "description": "Radio Map estimation error standard deviation",
+          "default": 1.5,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "radiomap_blur_sigma": {
+          "type": "number",
+          "description": "Gaussian blur sigma for Radio Map spatial smoothing",
+          "default": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "required": []
+    },
+    "numerology": {
+      "type": "object",
+      "properties": {
+        "scs_khz": {
+          "type": "integer",
+          "description": "Subcarrier spacing",
+          "default": 30,
+          "enum": [
+            15,
+            30,
+            60,
+            120
+          ],
+          "x-units": "kHz"
+        },
+        "cp_type": {
+          "type": "string",
+          "description": "Cyclic prefix type",
+          "default": "normal",
+          "enum": [
+            "normal",
+            "extended"
+          ]
+        },
+        "noise_temp_K": {
+          "type": "number",
+          "description": "Noise temperature for thermal noise calculation",
+          "default": 290.0,
+          "minimum": 0.0,
+          "x-units": "K"
+        }
+      },
+      "required": []
+    },
+    "channel": {
+      "type": "object",
+      "properties": {
+        "channel_model": {
+          "type": "string",
+          "description": "Channel model type",
+          "default": "3gpp_ntn",
+          "enum": [
+            "3gpp_ntn",
+            "lognormal",
+            "legacy"
+          ]
+        },
+        "ntn_channel_profile": {
+          "type": "string",
+          "description": "NTN channel profile name",
+          "default": "s_band_handheld_urban"
+        },
+        "channel_params": {
+          "type": "string",
+          "description": "Channel model parameter overrides",
+          "default": {
+            "additional_loss_db": {
+              "slos": 7.0,
+              "nlos": 16.0
+            },
+            "shadow_sigma_db": {
+              "slos": 4.0,
+              "nlos": 6.0
+            },
+            "k_factor_db": {
+              "los": 14.0,
+              "slos": 8.0
+            }
+          }
+        }
+      },
+      "required": []
+    },
+    "link_budget": {
+      "type": "object",
+      "properties": {
+        "P_tx_dbm": {
+          "type": "number",
+          "description": "DL per-PRB EIRP baseline (equal-power)",
+          "default": 30.0,
+          "x-units": "dBm"
+        },
+        "G_rx_db": {
+          "type": "number",
+          "description": "Beam boresight gain",
+          "default": 38.0,
+          "x-units": "dB"
+        },
+        "shadow_std_db": {
+          "type": "number",
+          "description": "Lognormal shadowing standard deviation",
+          "default": 7.0,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "rx_nf_db": {
+          "type": "number",
+          "description": "UE receiver noise figure",
+          "default": 7.0,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "impl_loss_db": {
+          "type": "number",
+          "description": "Implementation loss modeled as noise rise",
+          "default": 1.0,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "overhead_eff": {
+          "type": "number",
+          "description": "PHY/MAC overhead efficiency factor",
+          "default": 0.85,
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      },
+      "required": []
+    },
+    "geometry": {
+      "type": "object",
+      "properties": {
+        "sat_altitude_km": {
+          "type": "number",
+          "description": "Satellite altitude",
+          "default": 600.0,
+          "minimum": 100.0,
+          "x-units": "km"
+        },
+        "carrier_freq_GHz": {
+          "type": "number",
+          "description": "Carrier frequency",
+          "default": 2.0,
+          "minimum": 0.1,
+          "x-units": "GHz"
+        },
+        "beam_center_xy": {
+          "type": "number",
+          "description": "Beam center coordinates (None = map center)"
+        },
+        "beam_half_bw_deg": {
+          "type": "number",
+          "description": "Beam half-power beamwidth",
+          "default": 8.0,
+          "minimum": 0.1,
+          "x-units": "degrees"
+        },
+        "beam_edge_drop_db": {
+          "type": "number",
+          "description": "Beam edge gain drop",
+          "default": 3.0,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "cell_size_km": {
+          "type": "number",
+          "description": "Ground resolution per pixel",
+          "default": 0.125,
+          "minimum": 0.001,
+          "x-units": "km"
+        }
+      },
+      "required": []
+    },
+    "orbit": {
+      "type": "object",
+      "properties": {
+        "enable_orbit_dynamics": {
+          "type": "boolean",
+          "description": "Enable time-varying orbit geometry",
+          "default": true
+        },
+        "tti_ms": {
+          "type": "number",
+          "description": "TTI duration",
+          "default": 1.0,
+          "minimum": 0.1,
+          "x-units": "ms"
+        },
+        "sat_ground_speed_kms": {
+          "type": "number",
+          "description": "Satellite ground track speed",
+          "default": 7.5,
+          "x-units": "km/s"
+        },
+        "sat_heading_deg": {
+          "type": "number",
+          "description": "Satellite heading angle",
+          "default": 0.0,
+          "x-units": "degrees"
+        },
+        "tle_name": {
+          "type": "string",
+          "description": "TLE satellite name",
+          "default": "STARLINK-11090 [DTC]"
+        },
+        "tle_lines": {
+          "type": "string",
+          "description": "Two-line TLE elements",
+          "default": [
+            "1 59422C 24065B   25266.77548611  .00029064  00000+0  23954-3 0  2662",
+            "2 59422  53.1572 196.6800 0001379  82.5466  65.8632 15.69667376    15"
+          ]
+        },
+        "tle_path": {
+          "type": "string",
+          "description": "Path to TLE file (alternative to tle_lines)"
+        },
+        "orbit_start_datetime": {
+          "type": "string",
+          "description": "Orbit start time (ISO8601 format)",
+          "default": "2025-10-07T21:38:31.574982+00:00"
+        },
+        "auto_ref_from_tle": {
+          "type": "boolean",
+          "description": "Auto-derive reference location from TLE",
+          "default": false
+        },
+        "ref_lat_deg": {
+          "type": "number",
+          "description": "Reference latitude",
+          "default": 43.65108,
+          "minimum": -90.0,
+          "maximum": 90.0,
+          "x-units": "degrees"
+        },
+        "ref_lon_deg": {
+          "type": "number",
+          "description": "Reference longitude",
+          "default": -79.34702,
+          "minimum": -180.0,
+          "maximum": 180.0,
+          "x-units": "degrees"
+        },
+        "map_rotation_deg": {
+          "type": "number",
+          "description": "Map rotation angle",
+          "default": 0.0,
+          "x-units": "degrees"
+        }
+      },
+      "required": []
+    },
+    "time_varying": {
+      "type": "object",
+      "properties": {
+        "enable_time_varying": {
+          "type": "boolean",
+          "description": "Enable time-varying Radio Map dynamics",
+          "default": true
+        },
+        "rm_flicker_db_std": {
+          "type": "number",
+          "description": "Radio Map temporal flicker standard deviation",
+          "default": 0.5,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "rm_drift_px": {
+          "type": "integer",
+          "description": "Radio Map spatial drift per TTI (x, y pixels)",
+          "default": [
+            0,
+            0
+          ]
+        }
+      },
+      "required": []
+    },
+    "csi": {
+      "type": "object",
+      "properties": {
+        "csi_olla_offset_db": {
+          "type": "number",
+          "description": "OLLA offset for CSI",
+          "default": 0.0,
+          "x-units": "dB"
+        },
+        "baseline_csi_delay_ttis": {
+          "type": "integer",
+          "description": "Baseline CSI feedback delay",
+          "default": 12,
+          "minimum": 0,
+          "x-units": "TTIs"
+        },
+        "rm_csi_delay_ttis": {
+          "type": "integer",
+          "description": "RadioMap CSI feedback delay",
+          "default": 0,
+          "minimum": 0,
+          "x-units": "TTIs"
+        },
+        "enable_cqi_periodicity_base": {
+          "type": "boolean",
+          "description": "Enable CQI reporting periodicity for baseline",
+          "default": true
+        },
+        "enable_cqi_periodicity_rm": {
+          "type": "boolean",
+          "description": "Enable CQI reporting periodicity for RadioMap",
+          "default": false
+        },
+        "cqi_period_ttis": {
+          "type": "integer",
+          "description": "CQI reporting period",
+          "default": 5,
+          "minimum": 1,
+          "x-units": "TTIs"
+        },
+        "cqi_offset_ttis": {
+          "type": "integer",
+          "description": "CQI reporting offset",
+          "default": 0,
+          "minimum": 0,
+          "x-units": "TTIs"
+        }
+      },
+      "required": []
+    },
+    "scheduler": {
+      "type": "object",
+      "properties": {
+        "pf_beta": {
+          "type": "number",
+          "description": "Proportional fair averaging factor",
+          "default": 0.1,
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "use_mcs": {
+          "type": "boolean",
+          "description": "Map SNR to SE via MCS table",
+          "default": true
+        },
+        "power_split": {
+          "type": "boolean",
+          "description": "Enable per-UE power split penalty",
+          "default": false
+        },
+        "sched_require_contiguous": {
+          "type": "boolean",
+          "description": "Require contiguous PRB blocks per UE per TTI",
+          "default": true
+        },
+        "sched_eesm_beta_db": {
+          "type": "number",
+          "description": "Default EESM beta (fallback)",
+          "default": 2.5,
+          "x-units": "dB"
+        },
+        "baseline_sched_eesm_beta_db": {
+          "type": "number",
+          "description": "EESM beta for baseline scheduler",
+          "default": 2.7,
+          "x-units": "dB"
+        },
+        "rm_sched_eesm_beta_db": {
+          "type": "number",
+          "description": "EESM beta for RadioMap scheduler",
+          "default": 3.5,
+          "x-units": "dB"
+        }
+      },
+      "required": []
+    },
+    "power_allocation": {
+      "type": "object",
+      "properties": {
+        "baseline_dl_power_model": {
+          "type": "string",
+          "description": "Baseline DL power allocation model",
+          "default": "waterfill",
+          "enum": [
+            "equal_prb",
+            "waterfill"
+          ]
+        },
+        "baseline_P_tot_dbm": {
+          "type": "number",
+          "description": "Baseline total DL power budget",
+          "default": 50.0,
+          "x-units": "dBm"
+        },
+        "baseline_p_min_dbm": {
+          "type": "number",
+          "description": "Baseline minimum per-PRB power",
+          "default": 27.0,
+          "x-units": "dBm"
+        },
+        "baseline_p_max_dbm": {
+          "type": "number",
+          "description": "Baseline maximum per-PRB power",
+          "default": 33.0,
+          "x-units": "dBm"
+        },
+        "baseline_max_prbs_per_ue": {
+          "type": "integer",
+          "description": "Baseline max PRBs per UE per TTI",
+          "default": 20,
+          "minimum": 1
+        },
+        "rm_dl_power_model": {
+          "type": "string",
+          "description": "RadioMap DL power allocation model",
+          "default": "waterfill",
+          "enum": [
+            "equal_prb",
+            "waterfill"
+          ]
+        },
+        "rm_P_tot_dbm": {
+          "type": "number",
+          "description": "RadioMap total DL power budget",
+          "default": 50.0,
+          "x-units": "dBm"
+        },
+        "rm_p_min_dbm": {
+          "type": "number",
+          "description": "RadioMap minimum per-PRB power",
+          "default": 28.0,
+          "x-units": "dBm"
+        },
+        "rm_p_max_dbm": {
+          "type": "number",
+          "description": "RadioMap maximum per-PRB power",
+          "default": 36.0,
+          "x-units": "dBm"
+        },
+        "rm_max_prbs_per_ue": {
+          "type": "integer",
+          "description": "RadioMap max PRBs per UE per TTI",
+          "default": 20,
+          "minimum": 1
+        }
+      },
+      "required": []
+    },
+    "harq": {
+      "type": "object",
+      "properties": {
+        "enable_harq_full": {
+          "type": "boolean",
+          "description": "Enable full HARQ with soft combining",
+          "default": true
+        },
+        "enable_harq_deferral": {
+          "type": "boolean",
+          "description": "Enable HARQ deferral mode",
+          "default": false
+        },
+        "harq_max_procs": {
+          "type": "integer",
+          "description": "Maximum HARQ processes per UE",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 32
+        },
+        "harq_ack_delay_ttis": {
+          "type": "integer",
+          "description": "HARQ ACK feedback delay",
+          "default": 6,
+          "minimum": 1,
+          "x-units": "TTIs"
+        },
+        "harq_target_bler": {
+          "type": "number",
+          "description": "Target BLER for initial transmission",
+          "default": 0.1,
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "harq_max_retx": {
+          "type": "integer",
+          "description": "Maximum retransmissions per TB",
+          "default": 4,
+          "minimum": 0
+        },
+        "harq_retx_priority_bonus": {
+          "type": "number",
+          "description": "Retransmission scheduling priority boost",
+          "default": 0.5
+        },
+        "harq_flush_tail": {
+          "type": "boolean",
+          "description": "Flush pending HARQ at simulation end",
+          "default": true
+        },
+        "bler_slope_db": {
+          "type": "number",
+          "description": "BLER curve slope",
+          "default": 1.0,
+          "x-units": "dB"
+        },
+        "bler_margin_db": {
+          "type": "number",
+          "description": "BLER margin",
+          "default": 1.5,
+          "x-units": "dB"
+        },
+        "bler_curve_path": {
+          "type": "string",
+          "description": "Path to external BLER curves JSON"
+        },
+        "olla_step_up_db": {
+          "type": "number",
+          "description": "OLLA step up on ACK",
+          "default": 0.06,
+          "x-units": "dB"
+        },
+        "olla_step_down_db": {
+          "type": "number",
+          "description": "OLLA step down on NACK",
+          "default": 0.12,
+          "x-units": "dB"
+        },
+        "olla_init_offset_db": {
+          "type": "number",
+          "description": "OLLA initial offset",
+          "default": -1.5,
+          "x-units": "dB"
+        },
+        "olla_min_db": {
+          "type": "number",
+          "description": "OLLA minimum offset",
+          "default": -3.0,
+          "x-units": "dB"
+        },
+        "olla_max_db": {
+          "type": "number",
+          "description": "OLLA maximum offset",
+          "default": 6.0,
+          "x-units": "dB"
+        }
+      },
+      "required": []
+    },
+    "mcs": {
+      "type": "object",
+      "properties": {
+        "mcs_table_kind": {
+          "type": "string",
+          "description": "MCS table for data transmission",
+          "default": "3gpp_table_2",
+          "enum": [
+            "3gpp_table_1",
+            "3gpp_table_2",
+            "3gpp_table_3",
+            "legacy"
+          ]
+        },
+        "csi_mcs_table": {
+          "type": "string",
+          "description": "MCS table for CSI/CQI computation",
+          "default": "3gpp_table_1",
+          "enum": [
+            "3gpp_table_1",
+            "3gpp_table_2",
+            "3gpp_table_3",
+            "nr_256qam",
+            "legacy"
+          ]
+        },
+        "mcs_3gpp_table_path": {
+          "type": "string",
+          "description": "Path to 3GPP MCS tables JSON file"
+        },
+        "pdsch_dmrs_sym_per_slot": {
+          "type": "integer",
+          "description": "DMRS symbols per slot",
+          "default": 1
+        },
+        "dmrs_re_per_sym_per_prb": {
+          "type": "integer",
+          "description": "DMRS REs per symbol per PRB",
+          "default": 6
+        },
+        "oh_prb": {
+          "type": "integer",
+          "description": "Additional overhead per PRB",
+          "default": 0
+        }
+      },
+      "required": []
+    },
+    "constellation": {
+      "type": "object",
+      "properties": {
+        "enable_constellation": {
+          "type": "boolean",
+          "description": "Enable constellation (multi-satellite) mode",
+          "default": false
+        },
+        "tle_catalog_path": {
+          "type": "string",
+          "description": "Path to TLE catalog file for constellation"
+        },
+        "constellation_max_ground_radius_km": {
+          "type": "number",
+          "description": "Maximum ground radius for candidate satellites",
+          "default": 1200.0,
+          "x-units": "km"
+        },
+        "constellation_max_sats_per_tti": {
+          "type": "integer",
+          "description": "Maximum satellites to consider per TTI",
+          "default": 6,
+          "minimum": 1
+        },
+        "min_elev_deg": {
+          "type": "number",
+          "description": "Minimum UE elevation for visibility",
+          "default": 20.0,
+          "minimum": 0.0,
+          "maximum": 90.0,
+          "x-units": "degrees"
+        },
+        "association_metric": {
+          "type": "string",
+          "description": "UE-satellite association metric",
+          "default": "snr_wb",
+          "enum": [
+            "snr_wb",
+            "prx_dbm"
+          ]
+        },
+        "ho_enabled": {
+          "type": "boolean",
+          "description": "Enable handover between satellites",
+          "default": true
+        },
+        "ho_hyst_db": {
+          "type": "number",
+          "description": "Handover hysteresis",
+          "default": 2.0,
+          "minimum": 0.0,
+          "x-units": "dB"
+        },
+        "ho_ttt_ttis": {
+          "type": "integer",
+          "description": "Time-to-trigger for handover",
+          "default": 20,
+          "minimum": 0,
+          "x-units": "TTIs"
+        },
+        "constellation_prb_cap": {
+          "type": "integer",
+          "description": "Unified PRB cap per UE in constellation mode",
+          "default": 20,
+          "minimum": 1
+        }
+      },
+      "required": []
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "write_json_report": {
+          "type": "boolean",
+          "description": "Write JSON summary report",
+          "default": true
+        },
+        "report_basename": {
+          "type": "string",
+          "description": "Base name for output report files",
+          "default": "summary"
+        },
+        "plot_dir": {
+          "type": "string",
+          "description": "Directory for output plots and reports",
+          "default": "output"
+        },
+        "save_plots": {
+          "type": "boolean",
+          "description": "Save generated plots to files",
+          "default": true
+        },
+        "show_plots": {
+          "type": "boolean",
+          "description": "Display plots interactively",
+          "default": false
+        },
+        "print_harq_summary": {
+          "type": "boolean",
+          "description": "Print HARQ statistics summary",
+          "default": true
+        },
+        "show_progress": {
+          "type": "boolean",
+          "description": "Show progress bar during simulation",
+          "default": true
+        },
+        "include_serving_trace": {
+          "type": "boolean",
+          "description": "Include full serving timeline in constellation report",
+          "default": false
+        },
+        "record_assignments": {
+          "type": "boolean",
+          "description": "Record PRB assignment timeline",
+          "default": false
+        },
+        "record_assignments_target": {
+          "type": "string",
+          "description": "Which scheduler to record assignments for",
+          "default": "rm",
+          "enum": [
+            "base",
+            "rm",
+            "both",
+            "all"
+          ]
+        },
+        "record_ue_thr": {
+          "type": "boolean",
+          "description": "Record per-UE throughput timeline",
+          "default": false
+        }
+      },
+      "required": []
+    }
+  },
+  "definitions": {}
+}
