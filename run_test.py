@@ -13,7 +13,6 @@
 import argparse
 import sys
 import os
-import importlib.util
 from pathlib import Path
 import time
 from datetime import datetime, timedelta
@@ -29,6 +28,10 @@ if str(SCRIPT_DIR) not in sys.path:
 # 添加 code 目录到 sys.path，这样 main.py 中的导入就能正常工作
 if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
+
+# 导入重构后的配置系统
+from code.config import load_scenario_config
+from code import main as main_module
 
 # 场景配置映射
 SCENARIOS = {
@@ -46,31 +49,6 @@ SCENARIOS = {
 }
 
 
-def load_config_from_file(config_path):
-    """从文件路径加载配置"""
-    spec = importlib.util.spec_from_file_location("test_config", config_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.CONFIG
-
-
-def load_base_config():
-    """加载基础配置文件"""
-    config_path = SCRIPT_DIR / "code" / "config.py"
-    spec = importlib.util.spec_from_file_location("base_config", config_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.CONFIG
-
-
-def load_main_module():
-    """加载main模块"""
-    main_path = SCRIPT_DIR / "code" / "main.py"
-    spec = importlib.util.spec_from_file_location("main_module", main_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules['main_module'] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def run_scenario(scenario_name, config_path, current_idx=None, total_count=None):
@@ -88,26 +66,16 @@ def run_scenario(scenario_name, config_path, current_idx=None, total_count=None)
     print(f"📄 配置文件: {config_path}")
     print(f"{'='*70}\n")
     
-    # 加载基础配置和场景配置
-    print("📝 [1/4] 加载配置文件...")
-    base_config = load_base_config()
-    test_config = load_config_from_file(config_path)
-    
-    # 合并配置（场景配置覆盖基础配置）
-    config = base_config.copy()
-    config.update(test_config)
+    # 加载场景配置（自动合并默认配置）
+    print("📝 [1/3] 加载配置文件...")
+    config = load_scenario_config(config_path)
     print("✓ 配置加载完成\n")
-    
-    # 加载并运行 main 模块
-    print("📦 [2/4] 加载仿真模块...")
-    main_module = load_main_module()
-    print("✓ 模块加载完成\n")
     
     # 根据配置决定调用哪个函数
     sim_start_time = time.time()
     if bool(config.get("enable_constellation", False)):
         # 星座模式
-        print("🛰️  [3/4] 运行仿真 (星座模式)...")
+        print("🛰️  [2/3] 运行仿真 (星座模式)...")
         print(f"ℹ️  模式: ConstellationOrbit")
         print(f"ℹ️  UE数量: {config.get('N_UE', 'N/A')}")
         print(f"ℹ️  TTI数量: {config.get('T', 'N/A')}")
@@ -116,19 +84,19 @@ def run_scenario(scenario_name, config_path, current_idx=None, total_count=None)
         results = main_module.run_constellation(config)
     else:
         # 单星模式
-        print("🛰️  [3/4] 运行仿真 (单星模式)...")
+        print("🛰️  [2/3] 运行仿真 (单星模式)...")
         print(f"ℹ️  模式: OrbitModel")
         print(f"ℹ️  UE数量: {config.get('N_UE', 'N/A')}")
         print(f"ℹ️  TTI数量: {config.get('T', 'N/A')}")
         print(f"ℹ️  中心频率: {config.get('carrier_freq_GHz', 'N/A')} GHz")
         print()
         results = main_module.run_once(config)
-    
+
     sim_elapsed = time.time() - sim_start_time
     print(f"\n✓ 仿真完成 (耗时: {sim_elapsed:.1f}秒)\n")
-    
+
     # 输出结果摘要
-    print("📊 [4/4] 生成结果报告...")
+    print("📊 [3/3] 生成结果报告...")
     total_elapsed = time.time() - start_time
     
     print(f"\n{'-'*70}")

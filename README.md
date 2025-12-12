@@ -11,8 +11,10 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
-- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`)，
+- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`)，
   便于单元测试、Web 可视化集成和二次开发。
+- **Type-safe configuration system**: 基于 dataclass 的配置系统支持字典风格和属性访问、
+  IDE 自动补全、JSON Schema 生成，并向后兼容传统用法。
 - Radio-map aware proportional fair scheduling with contiguous PRB blocks,
   optional water-filling, and time-varying interference maps.
 - 3GPP-aligned link adaptation (TS 38.214). MCS tables load from
@@ -80,7 +82,7 @@ python code/main.py
 
 Configuration Highlights
 ------------------------
-全部配置在 `code/config.py`。核心分组如下：
+全部配置在 `code/config/` 子包。核心分组如下：
 
 - **Radio Map 与业务规模**：`X/Y/Z`, `N_UE`, `radio_map_mat_path`, `radio_map_mat_var`, `radio_map_units`, `seed`。
   - 说明：使用 MAT 或 HDF5 格式的 Radio Map；Z 维度必须与 PRB 数匹配。
@@ -114,9 +116,10 @@ Configuration Highlights
 Example: custom experiment
 --------------------------
 ```python
+# 方式1: 传统字典风格（向后兼容）
 from copy import deepcopy
-from config import CONFIG
-from main import run_once
+from code.config import CONFIG
+from code.main import run_once
 
 cfg = deepcopy(CONFIG)
 cfg.update({
@@ -138,6 +141,29 @@ result = run_once(cfg)
 print("Baseline default SE:", result["avg_se_baseline_default"])
 print("Radio-map SE:", result["avg_se_radiomap"])
 print("Gain vs default (%):", result["improvement_vs_default_pct"])
+```
+
+```python
+# 方式2: 从场景文件加载（推荐）
+from code.config import load_scenario_config
+from code.main import run_once
+
+cfg = load_scenario_config("test/config_toronto_single.py")
+result = run_once(cfg)
+print("Baseline default SE:", result["avg_se_baseline_default"])
+print("Radio-map SE:", result["avg_se_radiomap"])
+```
+
+```python
+# 方式3: 类型安全的属性访问（支持 IDE 自动补全）
+from code.config import CONFIG
+from code.main import run_once
+
+CONFIG.simulation.N_UE = 25
+CONFIG.simulation.T = 80
+CONFIG.harq.enable_harq_full = True
+CONFIG.harq.harq_target_bler = 0.1
+result = run_once(CONFIG)
 ```
 
 
@@ -192,7 +218,12 @@ Repository Layout
     - `radiomap.py` - RadioMap 感知连续块调度器 (EESM+MCS)
     - `subband.py` - 子带级基线调度器
     - `power_alloc.py` - DL 功率分配 (water-filling)
-  - 主模块: `main.py`, `config.py`, `orbit.py`, `constellation.py`,
+  - `config/`: 配置管理系统
+    - `schema.py` - 15 个 dataclass 配置组（simulation, radio_map, harq 等）
+    - `compat.py` - ConfigDict 向后兼容包装器，支持字典风格访问
+    - `loader.py` - JSON/YAML/Python 文件配置加载器
+    - `__init__.py` - 导出 CONFIG 实例和公共 API
+  - 主模块: `main.py`, `orbit.py`, `constellation.py`,
     `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`,
     `result_schema.py` 等。模块通过 `__init__.py` 暴露公共 API。
 - `docs/`: official 38.214 MCS tables (JSON format) and templates.

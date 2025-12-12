@@ -12,8 +12,13 @@
     - `radiomap.py` - RadioMap-aware contiguous block scheduler (greedy marginal ΔSE)
     - `subband.py` - subband-level baseline scheduler
     - `power_alloc.py` - DL power allocation (water-filling with box constraints)
-  - Main modules: `main.py` (orchestration), `config.py` (defaults), `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`.
-  - `__init__.py` files expose public API; `config.py` holds defaults; scenario overrides live in `test/`.
+  - `config/`: type-safe configuration system
+    - `schema.py` - 15 dataclass config groups (simulation, radio_map, harq, etc.) with metadata
+    - `compat.py` - ConfigDict wrapper for backward-compatible dict-style access
+    - `loader.py` - JSON/YAML/Python file config loader with merge logic
+    - `__init__.py` - exports CONFIG instance, load_scenario_config, and public API
+  - Main modules: `main.py` (orchestration), `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`.
+  - `__init__.py` files expose public API; scenario overrides live in `test/`.
 - `test/`: city/constellation presets (`config_*.py`).
 - `docs/`: reference MCS tables and templates.
 - `radio_map/`: packaged MAT/NPY radio maps and converters; `tles/` holds orbit inputs.
@@ -27,18 +32,23 @@
 
 ## Coding Style & Naming Conventions
 - Python, 4-space indent, type hints where possible; keep functions small and vectorized (NumPy-first). Stick to snake_case and reuse existing config key patterns (e.g., `rm_flicker_db_std`).
-- Import from sub-packages directly: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`.
+- Import patterns:
+  - From sub-packages: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`
+  - Configuration: `from code.config import CONFIG, load_scenario_config` (supports both dict-style `CONFIG["key"]` and typed `CONFIG.simulation.N_UE`)
+  - Main entry: `from code.main import run_once, run_constellation`
 - Add docstrings for public helpers and clarify tricky math with brief comments; avoid noisy prints except for CLI progress.
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 
 ## Testing Guidelines
 - Scenario validation: run a city preset after behavioral changes (`python run_test.py --scenario toronto_single`); for orbit/scheduler edits, add a constellation case.
+- Test script (`run_test.py`) uses the new `load_scenario_config()` API to automatically merge scenario overrides with default config.
 - When adding features, document required data under `test/` and include sample usage in config files.
 
 ## Commit & Pull Request Guidelines
-- Commit messages follow the short, action-first style seen in history (`add visual scripts（专利）`, `debug: edit visualize_results`); keep under ~72 chars, optionally scoped (`orbit: tune Doppler clamp`).
+- Commit messages follow the short, action-first style seen in history (e.g., `refactor: 模块化重构 Phase 4 - 配置管理系统重构`, `docs: 更新 README.md 和 AGENTS.md`); keep under ~72 chars, optionally scoped (`orbit: tune Doppler clamp`, `config: add new parameter`).
 - PRs should note what changed, why, and which commands were run (include sample output/metrics). Link relevant docs or scenarios and flag new data dependencies or expected outputs in `output/`/`results/`.
 
 ## Security & Configuration Tips
 - Radio map and TLE files are large; avoid duplicating them. Never commit local caches, plots, or temporary `__pycache__`/`.ipynb_checkpoints`.
+- Configuration files support three access patterns: dict-style (`CONFIG["key"]`), typed (`CONFIG.simulation.N_UE`), or file loading (`load_scenario_config("path")`).
 - Validate paths in configs before running (run `make verify` once if you add scenarios). Keep secrets out of configs; TLE catalogs here are public.
