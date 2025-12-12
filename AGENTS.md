@@ -17,7 +17,14 @@
     - `compat.py` - ConfigDict wrapper for backward-compatible dict-style access
     - `loader.py` - JSON/YAML/Python file config loader with merge logic
     - `__init__.py` - exports CONFIG instance, load_scenario_config, and public API
-  - Main modules: `main.py` (orchestration), `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`.
+  - `simulation/`: simulation engine framework (Phase 5 refactoring)
+    - `state.py` - serializable state containers (SimulationState, ConstellationState) for Web API
+    - `callbacks.py` - callback system (ProgressCallback, TTIMetrics, CallbackManager) for real-time updates
+    - `helpers.py` - helper functions (UE position generation, noise/power control, capacity computation)
+    - `engine.py` - single-satellite engine (SimulationEngine) encapsulating run_once() logic
+    - `constellation_engine.py` - multi-satellite engine (ConstellationEngine) with TTI loop and handover
+    - `__init__.py` - exports public API (backward-compatible run_once/run_constellation wrappers)
+  - Main modules: `main.py` (lightweight orchestration, 274 lines), `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`.
   - `__init__.py` files expose public API; scenario overrides live in `test/`.
 - `test/`: city/constellation presets (`config_*.py`).
 - `docs/`: reference MCS tables and templates.
@@ -35,7 +42,8 @@
 - Import patterns:
   - From sub-packages: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`
   - Configuration: `from code.config import CONFIG, load_scenario_config` (supports both dict-style `CONFIG["key"]` and typed `CONFIG.simulation.N_UE`)
-  - Main entry: `from code.main import run_once, run_constellation`
+  - Simulation engines: `from simulation import SimulationEngine, ConstellationEngine, SimulationState` (Phase 5 new API)
+  - Main entry: `from code.main import run_once, run_constellation` (legacy-compatible wrappers)
 - Add docstrings for public helpers and clarify tricky math with brief comments; avoid noisy prints except for CLI progress.
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 

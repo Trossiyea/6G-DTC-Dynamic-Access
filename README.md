@@ -11,8 +11,10 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
-- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`)，
+- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`)，
   便于单元测试、Web 可视化集成和二次开发。
+- **SimulationEngine pattern**: 基于类的仿真引擎封装 `run_once()` 和 `run_constellation()` 逻辑，
+  支持实时进度回调、状态序列化、阶段通知，适配 Web API 和异步执行场景。
 - **Type-safe configuration system**: 基于 dataclass 的配置系统支持字典风格和属性访问、
   IDE 自动补全、JSON Schema 生成，并向后兼容传统用法。
 - Radio-map aware proportional fair scheduling with contiguous PRB blocks,
@@ -166,6 +168,29 @@ CONFIG.harq.harq_target_bler = 0.1
 result = run_once(CONFIG)
 ```
 
+```python
+# 方式4: 使用 SimulationEngine (Web 集成推荐)
+from code.simulation import SimulationEngine
+from code.config import load_scenario_config
+
+# 加载配置
+cfg = load_scenario_config("test/config_toronto_single.py")
+
+# 创建引擎并注册进度回调
+engine = SimulationEngine(cfg)
+engine.on_progress(lambda tti, metrics:
+    print(f"TTI {tti}: {metrics['progress']*100:.1f}% complete"))
+
+# 执行仿真
+result = engine.run()
+
+# 访问状态对象
+state = engine.state
+print(f"Final phase: {state.phase}")
+print(f"Baseline SE: {result['avg_se_baseline_default']:.4f}")
+print(f"RadioMap SE: {result['avg_se_radiomap']:.4f}")
+```
+
 
 Outputs
 -------
@@ -223,7 +248,14 @@ Repository Layout
     - `compat.py` - ConfigDict 向后兼容包装器，支持字典风格访问
     - `loader.py` - JSON/YAML/Python 文件配置加载器
     - `__init__.py` - 导出 CONFIG 实例和公共 API
-  - 主模块: `main.py`, `orbit.py`, `constellation.py`,
+  - `simulation/`: 仿真引擎 (Phase 5 模块化重构)
+    - `state.py` - 可序列化状态容器 (SimulationState, ConstellationState, 支持 Web API)
+    - `callbacks.py` - 回调系统 (ProgressCallback, TTIMetrics, CallbackManager, 实时进度通知)
+    - `helpers.py` - 辅助函数 (UE 位置生成, 噪声/功率控制, 容量计算, 时变动态)
+    - `engine.py` - 单卫星仿真引擎 (SimulationEngine, 封装 run_once 逻辑)
+    - `constellation_engine.py` - 多卫星星座仿真引擎 (ConstellationEngine, TTI 循环/切换)
+    - `__init__.py` - 导出公共 API (向后兼容 run_once/run_constellation)
+  - 主模块: `main.py` (轻量编排层, 274 行), `orbit.py`, `constellation.py`,
     `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`,
     `result_schema.py` 等。模块通过 `__init__.py` 暴露公共 API。
 - `docs/`: official 38.214 MCS tables (JSON format) and templates.
