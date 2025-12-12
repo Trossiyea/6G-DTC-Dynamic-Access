@@ -1,7 +1,19 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `code/`: core simulator (`main.py`, `config.py`, `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`, helpers). `__init__.py` exposes public API; `config.py` holds defaults; scenario overrides live in `test/`.
+- `code/`: core simulator, organized into sub-packages:
+  - `core/`: foundational utilities
+    - `units.py` - unit conversions (dBm↔mW, thermal noise calculation)
+    - `capacity.py` - capacity/SE calculations, MCS mapping, EESM, Shannon formulas
+  - `data_io/`: data input/output
+    - `radiomap.py` - Radio Map loading (MAT/HDF5 formats, auto-detection)
+  - `scheduler/`: scheduling algorithms
+    - `baseline.py` - 3GPP-like wideband PF scheduler
+    - `radiomap.py` - RadioMap-aware contiguous block scheduler (greedy marginal ΔSE)
+    - `subband.py` - subband-level baseline scheduler
+    - `power_alloc.py` - DL power allocation (water-filling with box constraints)
+  - Main modules: `main.py` (orchestration), `config.py` (defaults), `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`.
+  - `__init__.py` files expose public API; `config.py` holds defaults; scenario overrides live in `test/`.
 - `test/`: city/constellation presets (`config_*.py`).
 - `docs/`: reference MCS tables and templates.
 - `radio_map/`: packaged MAT/NPY radio maps and converters; `tles/` holds orbit inputs.
@@ -15,6 +27,7 @@
 
 ## Coding Style & Naming Conventions
 - Python, 4-space indent, type hints where possible; keep functions small and vectorized (NumPy-first). Stick to snake_case and reuse existing config key patterns (e.g., `rm_flicker_db_std`).
+- Import from sub-packages directly: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`.
 - Add docstrings for public helpers and clarify tricky math with brief comments; avoid noisy prints except for CLI progress.
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 

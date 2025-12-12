@@ -11,6 +11,8 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
+- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`)，
+  便于单元测试、Web 可视化集成和二次开发。
 - Radio-map aware proportional fair scheduling with contiguous PRB blocks,
   optional water-filling, and time-varying interference maps.
 - 3GPP-aligned link adaptation (TS 38.214). MCS tables load from
@@ -179,9 +181,20 @@ Troubleshooting
 
 Repository Layout
 -----------------
-- `code/`: simulation modules (`main.py`, `config.py`, `orbit.py`, `constellation.py`,
-  `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`,
-  `result_schema.py`, etc.). 模块通过 `__init__.py` 暴露公共 API。
+- `code/`: simulation modules, organized into sub-packages:
+  - `core/`: 核心工具模块
+    - `units.py` - 单位转换 (dBm↔mW, thermal noise)
+    - `capacity.py` - 容量/SE计算, MCS映射, EESM
+  - `data_io/`: 数据输入输出
+    - `radiomap.py` - Radio Map 加载 (MAT/HDF5 格式)
+  - `scheduler/`: 调度算法
+    - `baseline.py` - 3GPP-like 宽带基线 PF 调度器
+    - `radiomap.py` - RadioMap 感知连续块调度器 (EESM+MCS)
+    - `subband.py` - 子带级基线调度器
+    - `power_alloc.py` - DL 功率分配 (water-filling)
+  - 主模块: `main.py`, `config.py`, `orbit.py`, `constellation.py`,
+    `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`,
+    `result_schema.py` 等。模块通过 `__init__.py` 暴露公共 API。
 - `docs/`: official 38.214 MCS tables (JSON format) and templates.
 - `radio_map/`: Radio Map 数据文件（Toronto 和 Shanghai，支持 MAT/HDF5 格式）。
 - `test/`: 测试场景配置文件（`config_toronto_single.py`, `config_shanghai_constellation.py` 等）。
