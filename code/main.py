@@ -18,8 +18,20 @@ from typing import Tuple, Dict, Optional, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.io import loadmat
 from tqdm import tqdm
+
+# Core utilities (refactored)
+from core.units import dbm_to_mw, mw_to_dbm, thermal_noise_dbm, blur1d
+from core.capacity import (
+    SEMapper,
+    se_from_snr,
+    se_from_snr_with_split,
+    se_from_cap_shannon_with_split,
+    block_se_from_snr_vec as _block_se_from_snr_vec,
+    se_metric_strategy,
+    _apply_ici_penalty_lin,
+)
+from data_io.radiomap import load_radio_map_from_mat, select_radio_map
 
 from csi import sinr_to_se_mcs, effective_sinr_eesm
 from config import CONFIG
@@ -35,227 +47,8 @@ from result_schema import SimulationResult, to_serializable_result
 logger = get_logger(__name__)
 
 # -----------------------
-# Utility conversions
-# -----------------------
-def dbm_to_mw(dbm: np.ndarray) -> np.ndarray:
-    return 10.0 ** (dbm / 10.0)
-
-def mw_to_dbm(mw: np.ndarray) -> np.ndarray:
-    return 10.0 * np.log10(mw)
-
-def thermal_noise_dbm(bw_hz: float, temp_K: float = 290.0) -> float:
-    """
-    Thermal noise (dBm) in bandwidth bw_hz at temperature temp_K.
-    Uses kTB with -174 dBm/Hz reference at 290 K.
-    """
-    # If temp deviates from 290 K, adjust: -174 dBm/Hz + 10*log10(T/290)
-    per_hz_dbm = -174.0 + 10.0 * np.log10(max(temp_K, 1e-9) / 290.0)
-    return per_hz_dbm + 10.0 * np.log10(max(bw_hz, 1.0))
-
-# -----------------------
-# Common smoothing util
-# -----------------------
-def blur1d(a: np.ndarray, k: int, axis: int = 0) -> np.ndarray:
-    """
-    Separable box blur of radius k (window size 2k) along a specified axis.
-    Edge handling via 'edge' pad; returns array with same shape as input.
-    """
-    if k <= 0:
-        return a
-    a = np.asarray(a)
-    if axis < 0:
-        axis = a.ndim + axis
-    pad_width = [(0, 0)] * a.ndim
-    pad_width[axis] = (k, k)
-    padded = np.pad(a, pad_width, mode='edge').cumsum(axis=axis)
-    slicer_hi = [slice(None)] * a.ndim
-    slicer_lo = [slice(None)] * a.ndim
-    slicer_hi[axis] = slice(2 * k, None)
-    slicer_lo[axis] = slice(None, -2 * k)
-    window_sum = padded[tuple(slicer_hi)] - padded[tuple(slicer_lo)]
-    return window_sum / float(2 * k)
-
-# -----------------------
-# Radio Map I/O
-# -----------------------
-
-def load_radio_map_from_mat(path: str,
-                            var_name: str = "X_true",
-                            units: str = "mW") -> np.ndarray:
-    """
-    Load a Radio Map from a MATLAB .mat file and return dBm tensor R[x,y,z].
-    Supports both traditional MAT files and HDF5-based MAT files (v7.3).
-    - units: one of {"mW", "W", "dBm"}
-    - var_name: variable name inside MAT file
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Radio Map file not found: {path}")
-    
-    # Check if file is HDF5 format (MATLAB v7.3)
-    try:
-        import h5py
-        with h5py.File(path, 'r') as f:
-            # HDF5 format - MATLAB v7.3
-            if var_name in f:
-                X = np.array(f[var_name], dtype=float)
-            else:
-                # Find first dataset if var_name not found
-                keys = list(f.keys())
-                if not keys:
-                    raise KeyError(f"No data variables found in {path}")
-                pick_key = keys[0]
-                print(f"[load_radio_map_from_mat] '{var_name}' not found. Using '{pick_key}' instead.")
-                X = np.array(f[pick_key], dtype=float)
-    except (OSError, ImportError):
-        # Traditional MAT format - try scipy.io.loadmat
-        try:
-            data = loadmat(path)
-            # MATLAB loader brings meta keys like __header__/__version__/__globals__
-            keys = [k for k in data.keys() if not k.startswith("__")]
-            pick_key = var_name if var_name in data else (keys[0] if keys else None)
-            if pick_key is None:
-                raise KeyError(f"No data variables found in {path}. Raw keys: {list(data.keys())}")
-            if var_name not in data:
-                print(f"[load_radio_map_from_mat] '{var_name}' not found. Using '{pick_key}' instead.")
-            X = np.array(data[pick_key], dtype=float)
-        except Exception as e:
-            raise ValueError(f"Failed to load MAT file {path}: {e}")
-    
-    # Convert units to dBm
-    if units.lower() == "dbm":
-        R_dbm = X
-    elif units.lower() == "mw":
-        R_dbm = 10.0 * np.log10(np.maximum(X, 1e-30))
-    elif units.lower() == "w":
-        R_dbm = 10.0 * np.log10(np.maximum(X * 1e3, 1e-30))
-    else:
-        raise ValueError(f"Unsupported units: {units} (use 'mW', 'W', or 'dBm')")
-    return R_dbm
- 
-
- 
-
-# -----------------------
 # Helper blocks (refactor run_once)
 # -----------------------
-def se_from_snr(snr_lin: np.ndarray, use_mcs: bool, mcs_params: Optional[Dict] = None) -> np.ndarray:
-    """
-    Strategy function: map SNR (linear) to SE (bits/s/Hz).
-    - If use_mcs: use an MCS mapping (approximate table for now).
-    - Else: Shannon log2(1+SNR).
-    mcs_params reserved for future (BLER targets, code rates, etc.).
-    """
-    # Apply optional frequency-offset induced ICI penalty (first-order approximation)
-    if mcs_params is not None:
-        eps_f = float(mcs_params.get("residual_freq_hz", 0.0) or 0.0)
-        if eps_f > 0.0:
-            scs_khz = float(mcs_params.get("scs_khz", 30.0) or 30.0)
-            T_sym = 1.0 / (scs_khz * 1e3)
-            ici_factor = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
-            snr_lin = np.asarray(snr_lin) / ici_factor
-    if use_mcs:
-        sinr_db = 10.0 * np.log10(np.maximum(snr_lin, 1e-12))
-        if mcs_params is not None:
-            sinr_db = sinr_db + float(mcs_params.get("olla_offset_db", 0.0))
-            table = mcs_params.get("mcs_table", "legacy")
-        else:
-            table = "legacy"
-        return sinr_to_se_mcs(sinr_db, table=table)
-    return np.log2(1.0 + np.maximum(snr_lin, 0.0))
-
-def se_from_snr_with_split(snr_base: Union[float, np.ndarray], k_prb: int, use_mcs: bool,
-                           mcs_params: Optional[Dict] = None) -> np.ndarray:
-    """Apply power-split (if k_prb>1) and map via strategy."""
-    k = max(1, int(k_prb))
-    return se_from_snr(np.asarray(snr_base) / float(k), use_mcs, mcs_params)
-
-def se_from_cap_shannon_with_split(cap_se: Union[float, np.ndarray], k_prb: int) -> np.ndarray:
-    """
-    Fallback when only Shannon SE is available (no SNR): adjust for power split.
-    gamma = (2^SE - 1)/k; SE' = log2(1+gamma)
-    """
-    k = max(1, int(k_prb))
-    gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap_se)) - 1.0) / float(k)
-    return np.log2(1.0 + gamma)
-
-def _apply_ici_penalty_lin(snr_lin: np.ndarray, mcs_params: Optional[Dict]) -> np.ndarray:
-    """Apply residual CFO/ICI penalty on linear SNR if configured in mcs_params."""
-    if mcs_params is None:
-        return np.asarray(snr_lin)
-    eps_f = float(mcs_params.get("residual_freq_hz", 0.0) or 0.0)
-    if eps_f <= 0.0:
-        return np.asarray(snr_lin)
-    scs_khz = float(mcs_params.get("scs_khz", 30.0) or 30.0)
-    T_sym = 1.0 / (scs_khz * 1e3)
-    ici_factor = 1.0 + (2.0 * np.pi * eps_f * T_sym) ** 2
-    return np.asarray(snr_lin) / ici_factor
-
-def _block_se_from_snr_vec(
-    snr_lin_vec: np.ndarray,
-    k_prb: int,
-    use_mcs: bool,
-    mcs_params: Optional[Dict],
-    eesm_beta_db: float,
-) -> float:
-    """
-    Compute per-PRB SE for a contiguous RB block using power split over k_prb PRBs.
-    - If use_mcs: apply ICI penalty, divide SNR by k, map vector to effective SINR via EESM, then to SE via MCS.
-    - Else (Shannon): average log2(1+SNR/k) across the block.
-    Returns per-PRB SE (not the block sum).
-    """
-    k = max(1, int(k_prb))
-    s = np.asarray(snr_lin_vec, dtype=float)
-    s = _apply_ici_penalty_lin(s, mcs_params)
-    if use_mcs:
-        sinr_db_vec = 10.0 * np.log10(np.maximum(s / float(k), 1e-12))
-        sinr_eff_db = effective_sinr_eesm(sinr_db_vec, beta_db=float(eesm_beta_db), axis=-1)
-        # Apply OLLA offset if present
-        if mcs_params is not None:
-            sinr_eff_db = sinr_eff_db + float(mcs_params.get("olla_offset_db", 0.0))
-        se = float(np.asarray(sinr_to_se_mcs(sinr_eff_db, table=mcs_params.get("mcs_table", "legacy") if mcs_params else "legacy")))
-        return se
-    else:
-        se_vec = np.log2(1.0 + np.maximum(s / float(k), 0.0))
-        return float(np.mean(se_vec))
-
-def se_metric_strategy(use_mcs: bool,
-              snr_lin: Optional[np.ndarray] = None,
-              cap_shannon: Optional[np.ndarray] = None,
-              mcs_params: Optional[Dict] = None) -> np.ndarray:
-    """
-    Strategy for scheduling metric SE:
-    - prefer mapping from snr_lin if provided;
-    - otherwise, if not using MCS and Shannon SE is provided, return it.
-    """
-    if snr_lin is not None:
-        return se_from_snr(snr_lin, use_mcs, mcs_params)
-    if (not use_mcs) and (cap_shannon is not None):
-        return cap_shannon
-    raise ValueError("se_metric_strategy requires snr_lin or (cap_shannon with use_mcs=False)")
-
-def select_radio_map(config: Dict) -> Tuple[np.ndarray, int, int, int]:
-    """
-    Load Radio Map from a MATLAB .mat file. The map's Z dimension must match the PRB count.
-    Returns (R_xyz_dbm, X, Y, Z).
-    """
-    expected_Z = int(config["Z"]) if ("Z" in config and config["Z"] is not None) else None
-    path = config.get("radio_map_mat_path")
-    if not path:
-        raise ValueError("radio_map_mat_path must be provided (MAT file with 3D Radio Map)")
-    R_xyz_dbm = load_radio_map_from_mat(
-        path,
-        var_name=config.get("radio_map_mat_var", "X_true"),
-        units=config.get("radio_map_units", "mW")
-    )
-    if R_xyz_dbm.ndim != 3:
-        raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
-    X, Y, Z = R_xyz_dbm.shape
-    # Verify Z matches expected PRB count
-    if expected_Z is not None and Z != expected_Z:
-        raise ValueError(f"Radio Map Z dimension ({Z}) does not match configured PRB count ({expected_Z}). "
-                         f"Please provide a map with Z={expected_Z} or update config['Z'] to {Z}.")
-    return R_xyz_dbm, X, Y, Z
-
 def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -> np.ndarray:
     """Uniform random UE grid indices of shape [N_UE, 2]."""
     return np.stack([rng.integers(0, X, size=N_UE), rng.integers(0, Y, size=N_UE)], axis=1)

@@ -73,7 +73,7 @@ python run_resolution_comparison.py --all --save-report
 python code/main.py
 ```
 
-详细使用说明请参考 [QUICKSTART.md](QUICKSTART.md) 和 [TEST_SCENARIOS.md](TEST_SCENARIOS.md)。
+详细场景配置请参考 `test/` 目录下的配置文件。
 
 
 Configuration Highlights
@@ -165,7 +165,7 @@ python run_resolution_comparison.py --city shanghai
 python run_resolution_comparison.py --all --save-report
 ```
 
-详见 [TEST_SCENARIOS.md](TEST_SCENARIOS.md) 和 [QUICKSTART.md](QUICKSTART.md)。
+详见 `test/` 目录下各场景配置文件。
 
 
 Troubleshooting
@@ -174,26 +174,25 @@ Troubleshooting
 - **Matplotlib 缓存**：在受限环境下可 `export MPLCONFIGDIR=$(mktemp -d)`。
 - **TLE/轨道**：星座模式需要有效 TLE catalog；单星启用 `enable_orbit_dynamics` 时推荐提供 `tle_lines/tle_path`。
 - **Radio Map 格式**：支持传统 MAT 和 HDF5 (v7.3) 格式；Z 维度必须与配置的 PRB 数匹配。
-- **导入错误**：如遇 `ModuleNotFoundError`，请确保从项目根目录运行命令，详见 [VERIFICATION.md](VERIFICATION.md)。
+- **导入错误**：如遇 `ModuleNotFoundError`，请确保从项目根目录运行命令。
 
 
 Repository Layout
 -----------------
 - `code/`: simulation modules (`main.py`, `config.py`, `orbit.py`, `constellation.py`,
-  `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, etc.).
+  `link_adapt.py`, `harq.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`,
+  `result_schema.py`, etc.). 模块通过 `__init__.py` 暴露公共 API。
 - `docs/`: official 38.214 MCS tables (JSON format) and templates.
 - `radio_map/`: Radio Map 数据文件（Toronto 和 Shanghai，支持 MAT/HDF5 格式）。
 - `test/`: 测试场景配置文件（`config_toronto_single.py`, `config_shanghai_constellation.py` 等）。
 - `tles/`: TLE 轨道数据文件（Starlink 和 Satnet 星座）。
-- `tools/`: 辅助工具脚本（`find_best_satellite.py`, `diagnose_zero_se.py` 等）。
+- `tools/`: 辅助工具脚本（`find_best_satellite.py`, `diagnose_zero_se.py`, 可视化脚本等）；
+  `tools/archive/` 存放归档的旧版脚本。
 - `output/`: 生成的报告和图表（按需创建）。
 - `run_test.py`: 多场景测试运行脚本。
 - `run_resolution_comparison.py`: Radio Map 分辨率对比测试脚本。
 - `run_all_tests.sh`: 批量运行所有测试场景。
 - `Makefile`: Make 命令快捷方式。
-- `QUICKSTART.md`: 快速开始指南。
-- `TEST_SCENARIOS.md`: 测试场景详细说明。
-- `VERIFICATION.md`: 验证和故障排查指南。
 
 
 Roadmap (indicative)

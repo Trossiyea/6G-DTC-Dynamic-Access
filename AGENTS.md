@@ -1,11 +1,11 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `code/`: core simulator (`main.py`, `config.py`, `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, helpers). `config.py` holds defaults; scenario overrides live in `test/`.
-- `test/`: city/constellation presets (`config_*.py`) plus `code/test_features.py` for unit-style checks.
-- `docs/`: reference MCS tables and templates; quick refs and visualization guides sit alongside.
+- `code/`: core simulator (`main.py`, `config.py`, `orbit.py`, `constellation.py`, `harq.py`, `link_adapt.py`, `ntn_channel.py`, `csi.py`, `logging_utils.py`, `result_schema.py`, helpers). `__init__.py` exposes public API; `config.py` holds defaults; scenario overrides live in `test/`.
+- `test/`: city/constellation presets (`config_*.py`).
+- `docs/`: reference MCS tables and templates.
 - `radio_map/`: packaged MAT/NPY radio maps and converters; `tles/` holds orbit inputs.
-- `tools/` and `visualize_*.py`: plotting/KPI helpers; keep outputs in `output/` or `results/` instead of committing them.
+- `tools/`: plotting/KPI helpers (e.g., `find_best_satellite.py`, `diagnose_zero_se.py`, visualization scripts); `tools/archive/` contains legacy scripts for reference. Keep outputs in `output/` or `results/` instead of committing them.
 
 ## Build, Test, and Development Commands
 - Environment: `conda create --name ntn-dl --file environment.yml`; set `export MPLCONFIGDIR=$(mktemp -d)` if permissions warn.
@@ -19,9 +19,8 @@
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 
 ## Testing Guidelines
-- Fast checks: `pytest code/test_features.py` or `python code/test_features.py` for CSI delay/OLLA/Doppler/HARQ assertions.
 - Scenario validation: run a city preset after behavioral changes (`python run_test.py --scenario toronto_single`); for orbit/scheduler edits, add a constellation case.
-- When adding features, extend `code/test_features.py` with deterministic seeds and small TTI counts; document required data under `test/`.
+- When adding features, document required data under `test/` and include sample usage in config files.
 
 ## Commit & Pull Request Guidelines
 - Commit messages follow the short, action-first style seen in history (`add visual scripts（专利）`, `debug: edit visualize_results`); keep under ~72 chars, optionally scoped (`orbit: tune Doppler clamp`).
