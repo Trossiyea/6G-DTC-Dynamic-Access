@@ -26,7 +26,7 @@ from .helpers import (
 )
 
 from data_io.radiomap import select_radio_map
-from constellation import ConstellationOrbit
+from ntn import ConstellationOrbit
 from logging_utils import get_logger
 
 logger = get_logger(__name__)

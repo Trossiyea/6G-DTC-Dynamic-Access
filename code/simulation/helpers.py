@@ -17,7 +17,7 @@ import numpy as np
 # Core utilities
 from core.units import dbm_to_mw, mw_to_dbm, thermal_noise_dbm, blur1d
 from core.capacity import se_from_snr
-from ntn_channel import sample_3gpp_ntn_fading
+from ntn import sample_3gpp_ntn_fading
 
 
 def generate_ue_positions(N_UE: int, X: int, Y: int, rng: np.random.Generator) -> np.ndarray:
@@ -294,7 +294,7 @@ def build_time_variation_if_enabled(
         return None
 
     # Lazy import to avoid circular dependency
-    from orbit import OrbitModel
+    from ntn import OrbitModel
 
     T = config["T"]
     N_UE = int(ue_pos.shape[0])

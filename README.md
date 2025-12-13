@@ -11,8 +11,10 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
-- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`, `link/`)，
+- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`, `ntn/`, `link/`)，
   便于单元测试、Web 可视化集成和二次开发。
+- **NTN module (Phase 6)**: 统一的 NTN/卫星子包 (`ntn/`) 整合了轨道模型、星座管理、3GPP TR 38.811 信道模型、
+  波束管理和几何计算工具，消除 6+ 处坐标转换和 3 处波束增益计算的代码重复。
 - **Link layer modularization (Phase 7)**: 统一的链路层子包 (`link/`) 整合了 MCS/CQI/BLER 表管理、
   EESM 计算、TBS 估算、OLLA 自适应、链路自适应和 HARQ 管理，消除代码重复，提升可维护性。
 - **SimulationEngine pattern**: 基于类的仿真引擎封装 `run_once()` 和 `run_constellation()` 逻辑，
@@ -42,7 +44,7 @@ Quick Start
 
 ### 环境验证（推荐首次运行）
 ```bash
-# 验证 Phase 1-7 模块化架构和依赖
+# 验证 Phase 1-7 模块化架构和依赖（含 Phase 6 NTN 模块）
 python run_test.py --verify
 ```
 
@@ -263,6 +265,13 @@ Repository Layout
     - `engine.py` - 单卫星仿真引擎 (SimulationEngine, 封装 run_once 逻辑)
     - `constellation_engine.py` - 多卫星星座仿真引擎 (ConstellationEngine, TTI 循环/切换)
     - `__init__.py` - 导出公共 API (向后兼容 run_once/run_constellation)
+  - `ntn/`: NTN/卫星模块 (Phase 6 模块化重构, 消除 150+ 行重复代码)
+    - `geometry.py` - 统一几何工具 (FSPL, 波束增益, 坐标转换, Haversine)
+    - `orbit.py` - 单卫星 TLE 轨道模型 (OrbitModel, Skyfield 集成)
+    - `constellation.py` - 多卫星星座管理 (ConstellationOrbit, TLE catalog)
+    - `channel.py` - 3GPP TR 38.811/38.821 NTN 信道模型 (LoS/SLoS/NLoS 状态)
+    - `beams.py` - 波束管理 (BeamManager, Cos^m 模式)
+    - `__init__.py` - 导出 22 个公共 API
   - `link/`: 链路层模块 (Phase 7 模块化重构, 1492 行)
     - `mcs.py` - MCS 表管理 (3GPP TS 38.214, 内置/外部表支持)
     - `cqi.py` - CQI 表和 SINR→CQI→SE 映射
@@ -273,9 +282,9 @@ Repository Layout
     - `adaptation.py` - 统一链路自适应接口 (MCS 选择)
     - `harq.py` - HARQ 管理器 (简单/完整两种模式, 进程管理, RV 循环)
     - `__init__.py` - 导出 21 个公共 API
-  - 主模块: `main.py` (轻量编排层, 274 行), `orbit.py`, `constellation.py`,
-    `ntn_channel.py`, `logging_utils.py`, `result_schema.py` 等。
-  - 兼容包装器: `link_adapt.py`, `csi.py`, `harq.py`, `ntn_csi.py` (保持向后兼容性)。
+  - 主模块: `main.py` (轻量编排层, 274 行), `logging_utils.py`, `result_schema.py`, `progress_utils.py` 等。
+  - 兼容包装器: `orbit.py`, `constellation.py`, `ntn_channel.py`, `beams.py` (Phase 6);
+    `link_adapt.py`, `csi.py`, `harq.py`, `ntn_csi.py` (Phase 7) - 保持向后兼容性。
 - `docs/`: official 38.214 MCS tables (JSON format) and templates, Phase 7 report.
 - `radio_map/`: Radio Map 数据文件（Toronto 和 Shanghai，支持 MAT/HDF5 格式）。
 - `test/`: 测试场景配置文件（`config_toronto_single.py`, `config_shanghai_constellation.py` 等）。

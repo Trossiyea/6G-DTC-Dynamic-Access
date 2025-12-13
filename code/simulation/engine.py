@@ -30,7 +30,7 @@ from .helpers import (
 
 # Lazy imports to avoid circular dependencies
 from data_io.radiomap import select_radio_map
-from orbit import compute_geometry_and_beam, OrbitModel
+from ntn import compute_geometry_and_beam, OrbitModel
 from logging_utils import get_logger
 
 logger = get_logger(__name__)

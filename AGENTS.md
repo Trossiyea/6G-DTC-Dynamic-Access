@@ -24,6 +24,13 @@
     - `engine.py` - single-satellite engine (SimulationEngine) encapsulating run_once() logic
     - `constellation_engine.py` - multi-satellite engine (ConstellationEngine) with TTI loop and handover
     - `__init__.py` - exports public API (backward-compatible run_once/run_constellation wrappers)
+  - `ntn/`: unified NTN/satellite module (Phase 6 refactoring, eliminates 150+ lines duplication)
+    - `geometry.py` - unified geometry utilities (FSPL, beam gain, coordinate conversion, Haversine)
+    - `orbit.py` - single-satellite TLE orbit model (OrbitModel, Skyfield integration)
+    - `constellation.py` - multi-satellite constellation management (ConstellationOrbit, TLE catalog)
+    - `channel.py` - 3GPP TR 38.811/38.821 NTN channel models (LoS/SLoS/NLoS states)
+    - `beams.py` - beam management (BeamManager, Cos^m pattern)
+    - `__init__.py` - exports 22 public APIs
   - `link/`: unified link layer module (Phase 7 refactoring, 1492 lines)
     - `mcs.py` - MCS table management (3GPP TS 38.214, 3 built-in tables + external registration)
     - `cqi.py` - CQI tables and SINR→CQI→SE mapping (38.214-compliant thresholds)
@@ -34,8 +41,9 @@
     - `adaptation.py` - unified link adaptation interface (MCS selection from SINR)
     - `harq.py` - HARQ managers (simple and full modes, process management, RV cycling)
     - `__init__.py` - exports 21 public APIs
-  - Main modules: `main.py` (lightweight orchestration, 274 lines), `orbit.py`, `constellation.py`, `ntn_channel.py`, `logging_utils.py`, `result_schema.py`.
-  - Backward-compatible wrappers: `link_adapt.py`, `harq.py`, `csi.py`, `ntn_csi.py` (re-export from `link/` for legacy imports).
+  - Main modules: `main.py` (lightweight orchestration, 274 lines), `logging_utils.py`, `result_schema.py`, `progress_utils.py`.
+  - Backward-compatible wrappers: `orbit.py`, `constellation.py`, `ntn_channel.py`, `beams.py` (Phase 6);
+    `link_adapt.py`, `harq.py`, `csi.py`, `ntn_csi.py` (Phase 7) - re-export from subpackages for legacy imports.
   - `__init__.py` files expose public API; scenario overrides live in `test/`.
 - `test/`: city/constellation presets (`config_*.py`).
 - `docs/`: reference MCS tables and templates.
@@ -54,16 +62,18 @@
   - From sub-packages: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`
   - Configuration: `from code.config import CONFIG, load_scenario_config` (supports both dict-style `CONFIG["key"]` and typed `CONFIG.simulation.N_UE`)
   - Simulation engines: `from simulation import SimulationEngine, ConstellationEngine, SimulationState` (Phase 5 new API)
+  - NTN module (Phase 6): `from ntn import OrbitModel, ConstellationOrbit, sample_3gpp_ntn_fading, beam_gain_db, fspl_db, map_xy_to_latlon` (22 APIs available)
   - Link layer (Phase 7): `from link import MCS, choose_mcs_from_sinr, HarqManager, HarqManagerFull, OLLA, eff_sinr_eesm_db, calc_tbs_bits` (21 APIs available)
-  - Backward-compatible: `from link_adapt import MCS, OLLA`, `from csi import sinr_to_cqi`, `from harq import HarqManager` (legacy imports still work)
+  - Backward-compatible: `from orbit import OrbitModel`, `from constellation import ConstellationOrbit`, `from ntn_channel import sample_3gpp_ntn_fading` (Phase 6 legacy);
+    `from link_adapt import MCS, OLLA`, `from csi import sinr_to_cqi`, `from harq import HarqManager` (Phase 7 legacy)
   - Main entry: `from code.main import run_once, run_constellation` (legacy-compatible wrappers)
 - Add docstrings for public helpers and clarify tricky math with brief comments; avoid noisy prints except for CLI progress.
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 
 ## Testing Guidelines
-- Environment verification: run `python run_test.py --verify` to check Phase 1-7 module availability, dependencies, and imports (8 checks).
+- Environment verification: run `python run_test.py --verify` to check Phase 1-7 module availability (including Phase 6 NTN), dependencies, and imports (9 checks).
 - Scenario validation: run a city preset after behavioral changes (`python run_test.py --scenario toronto_single`); for orbit/scheduler edits, add a constellation case.
-- Unit tests: `./run_all_tests.sh --unit` runs Phase 7 link module tests (15 tests covering imports, MCS/CQI/EESM/HARQ functionality, and integration).
+- Unit tests: `./run_all_tests.sh --unit` runs Phase 6-7 module tests (imports, NTN geometry, MCS/CQI/EESM/HARQ functionality, and integration).
 - Quick validation: `./run_all_tests.sh --quick` runs unit tests + 2 representative scenarios.
 - Test script (`run_test.py`) uses the new `load_scenario_config()` API to automatically merge scenario overrides with default config.
 - When adding features, document required data under `test/` and include sample usage in config files.

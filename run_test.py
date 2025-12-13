@@ -53,9 +53,9 @@ SCENARIOS = {
 
 
 def verify_environment():
-    """验证环境和关键模块是否可用（Phase 7 增强）"""
+    """验证环境和关键模块是否可用（Phase 6-7 增强）"""
     print("\n" + "="*70)
-    print("🔍 环境验证 (Phase 7 模块化架构)")
+    print("🔍 环境验证 (Phase 6-7 模块化架构)")
     print("="*70 + "\n")
 
     checks_passed = 0
@@ -63,7 +63,7 @@ def verify_environment():
 
     # Check 1: Python version
     checks_total += 1
-    print("  [1/8] Python 版本...", end=" ")
+    print("  [1/9] Python 版本...", end=" ")
     if sys.version_info >= (3, 9):
         print("✓ OK", f"({sys.version.split()[0]})")
         checks_passed += 1
@@ -72,7 +72,7 @@ def verify_environment():
 
     # Check 2: Core dependencies
     checks_total += 1
-    print("  [2/8] 核心依赖...", end=" ")
+    print("  [2/9] 核心依赖...", end=" ")
     try:
         import numpy as np
         import scipy
@@ -84,7 +84,7 @@ def verify_environment():
 
     # Check 3: Configuration system (Phase 4)
     checks_total += 1
-    print("  [3/8] 配置系统 (Phase 4)...", end=" ")
+    print("  [3/9] 配置系统 (Phase 4)...", end=" ")
     try:
         from code.config import load_scenario_config, CONFIG
         print("✓ OK")
@@ -92,35 +92,51 @@ def verify_environment():
     except ImportError as e:
         print(f"✗ FAIL ({e})")
 
-    # Check 4: Link module (Phase 7)
+    # Check 4: NTN module (Phase 6)
     checks_total += 1
-    print("  [4/8] 链路层模块 (Phase 7)...", end=" ")
+    print("  [4/9] NTN 模块 (Phase 6)...", end=" ")
+    try:
+        from code.ntn import (
+            OrbitModel, ConstellationOrbit, sample_3gpp_ntn_fading,
+            beam_gain_db, fspl_db, map_xy_to_latlon, BeamManager
+        )
+        print("✓ OK (5 个子模块)")
+        checks_passed += 1
+    except ImportError as e:
+        print(f"✗ FAIL ({e})")
+
+    # Check 5: Link module (Phase 7)
+    checks_total += 1
+    print("  [5/9] 链路层模块 (Phase 7)...", end=" ")
     try:
         from code.link import (
             MCS, HarqManager, HarqManagerFull,
             choose_mcs_from_sinr, calc_tbs_bits,
             eff_sinr_eesm_db, OLLA
         )
-        print("✓ OK (7 个子模块)")
+        print("✓ OK (8 个子模块)")
         checks_passed += 1
     except ImportError as e:
         print(f"✗ FAIL ({e})")
 
-    # Check 5: Backward compatibility
+    # Check 6: Backward compatibility
     checks_total += 1
-    print("  [5/8] 向后兼容性...", end=" ")
+    print("  [6/9] 向后兼容性...", end=" ")
     try:
         from code.link_adapt import MCS, choose_mcs_from_sinr
         from code.csi import get_nr_cqi_table
         from code.harq import HarqManager
+        from code.orbit import OrbitModel
+        from code.constellation import ConstellationOrbit
+        from code.ntn_channel import sample_3gpp_ntn_fading
         print("✓ OK")
         checks_passed += 1
     except ImportError as e:
         print(f"✗ FAIL ({e})")
 
-    # Check 6: Scheduler modules (Phase 3)
+    # Check 7: Scheduler modules (Phase 3)
     checks_total += 1
-    print("  [6/8] 调度器模块 (Phase 3)...", end=" ")
+    print("  [7/9] 调度器模块 (Phase 3)...", end=" ")
     try:
         from code.scheduler.baseline import pf_schedule_baseline
         from code.scheduler.radiomap import pf_schedule_radiomap_blocks
@@ -129,9 +145,9 @@ def verify_environment():
     except ImportError as e:
         print(f"✗ FAIL ({e})")
 
-    # Check 7: Simulation engines (Phase 5)
+    # Check 8: Simulation engines (Phase 5)
     checks_total += 1
-    print("  [7/8] 仿真引擎 (Phase 5)...", end=" ")
+    print("  [8/9] 仿真引擎 (Phase 5)...", end=" ")
     try:
         from code.simulation.engine import SimulationEngine
         from code.simulation.constellation_engine import ConstellationEngine
@@ -140,9 +156,9 @@ def verify_environment():
     except ImportError as e:
         print(f"✗ FAIL ({e})")
 
-    # Check 8: Main API
+    # Check 9: Main API
     checks_total += 1
-    print("  [8/8] 主接口 API...", end=" ")
+    print("  [9/9] 主接口 API...", end=" ")
     try:
         from code import main as main_module
         assert hasattr(main_module, 'run_once'), "run_once() 不存在"
