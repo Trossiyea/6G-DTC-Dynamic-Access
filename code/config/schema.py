@@ -579,6 +579,169 @@ class OutputConfig(ConfigGroup):
     })
 
 
+@dataclass
+class TrafficConfig(ConfigGroup):
+    """Traffic model configuration."""
+
+    traffic_model: str = field(default="full_buffer", metadata={
+        "description": "Traffic arrival model",
+        "options": ["full_buffer", "poisson", "ftp3", "video", "voip", "mixed"]
+    })
+
+    # Poisson parameters
+    poisson_arrival_rate_hz: float = field(default=100.0, metadata={
+        "description": "Poisson arrival rate per UE",
+        "units": "packets/s", "min": 0.0
+    })
+    poisson_packet_size_bytes: int = field(default=1500, metadata={
+        "description": "Mean packet size for Poisson traffic",
+        "units": "bytes", "min": 1
+    })
+    poisson_packet_size_std_bytes: int = field(default=0, metadata={
+        "description": "Packet size std dev (0 = fixed size)",
+        "units": "bytes", "min": 0
+    })
+    poisson_qci: int = field(default=9, metadata={
+        "description": "QCI for Poisson traffic",
+        "min": 1, "max": 85
+    })
+
+    # FTP Model 3 parameters
+    ftp3_file_size_bytes: int = field(default=524288, metadata={
+        "description": "FTP Model 3 file size (default 512 KB)",
+        "units": "bytes", "min": 1
+    })
+    ftp3_reading_time_ms: float = field(default=180.0, metadata={
+        "description": "Mean reading time between files",
+        "units": "ms", "min": 0.0
+    })
+    ftp3_qci: int = field(default=9, metadata={
+        "description": "QCI for FTP traffic",
+        "min": 1, "max": 85
+    })
+
+    # Video streaming parameters
+    video_frame_rate_fps: float = field(default=30.0, metadata={
+        "description": "Video frame rate",
+        "units": "fps", "min": 1.0
+    })
+    video_i_frame_size_bytes: int = field(default=50000, metadata={
+        "description": "I-frame (keyframe) size",
+        "units": "bytes", "min": 1
+    })
+    video_p_frame_size_bytes: int = field(default=10000, metadata={
+        "description": "P-frame (predicted) size",
+        "units": "bytes", "min": 1
+    })
+    video_gop_size: int = field(default=15, metadata={
+        "description": "GOP length (frames per I-frame)",
+        "min": 1
+    })
+    video_qci: int = field(default=4, metadata={
+        "description": "QCI for video traffic",
+        "min": 1, "max": 85
+    })
+
+    # VoIP parameters
+    voip_codec: str = field(default="AMR-WB", metadata={
+        "description": "VoIP codec",
+        "options": ["AMR-WB", "G.711", "EVS"]
+    })
+    voip_activity_factor: float = field(default=0.5, metadata={
+        "description": "Voice activity factor",
+        "min": 0.0, "max": 1.0
+    })
+    voip_packet_interval_ms: float = field(default=20.0, metadata={
+        "description": "Packet interval during talk spurts",
+        "units": "ms", "min": 1.0
+    })
+    voip_qci: int = field(default=1, metadata={
+        "description": "QCI for VoIP traffic",
+        "min": 1, "max": 85
+    })
+
+    # Mixed traffic composition (percentages must sum to 100)
+    mixed_embb_pct: float = field(default=70.0, metadata={
+        "description": "Percentage of UEs with eMBB traffic",
+        "min": 0.0, "max": 100.0
+    })
+    mixed_urllc_pct: float = field(default=20.0, metadata={
+        "description": "Percentage of UEs with URLLC traffic",
+        "min": 0.0, "max": 100.0
+    })
+    mixed_voip_pct: float = field(default=10.0, metadata={
+        "description": "Percentage of UEs with VoIP traffic",
+        "min": 0.0, "max": 100.0
+    })
+
+
+@dataclass
+class QoSConfig(ConfigGroup):
+    """QoS and scheduling configuration."""
+
+    enable_qos: bool = field(default=False, metadata={
+        "description": "Enable multi-QoS differentiation"
+    })
+
+    scheduler_algorithm: str = field(default="pf", metadata={
+        "description": "Scheduling algorithm",
+        "options": ["pf", "m-lwdf", "exp-pf", "round_robin", "max_rate"]
+    })
+
+    # M-LWDF parameters
+    mlwdf_alpha: float = field(default=0.01, metadata={
+        "description": "M-LWDF delay weight factor (unused, computed from delta)",
+        "min": 0.0
+    })
+    mlwdf_delta: float = field(default=0.01, metadata={
+        "description": "M-LWDF target delay violation probability",
+        "min": 0.0, "max": 1.0
+    })
+
+    # EXP-PF parameters
+    exppf_beta: float = field(default=1.0, metadata={
+        "description": "EXP-PF exponential weight",
+        "min": 0.0
+    })
+
+    # URLLC prioritization
+    urllc_preemption: bool = field(default=True, metadata={
+        "description": "Allow URLLC to preempt eMBB transmissions"
+    })
+    urllc_mini_slot: bool = field(default=False, metadata={
+        "description": "Enable mini-slot scheduling for URLLC"
+    })
+
+    # NTN-specific delay compensation
+    ntn_pdb_extension_factor: float = field(default=1.0, metadata={
+        "description": "Factor to extend PDB for NTN propagation delay",
+        "min": 1.0
+    })
+    compensate_rtt_in_pdb: bool = field(default=True, metadata={
+        "description": "Subtract estimated RTT from PDB budget"
+    })
+
+
+@dataclass
+class LatencyKPIConfig(ConfigGroup):
+    """Latency and packet loss KPI configuration."""
+
+    record_packet_latency: bool = field(default=True, metadata={
+        "description": "Record per-packet latency for CDF computation"
+    })
+    latency_percentiles: List[float] = field(
+        default_factory=lambda: [50.0, 90.0, 95.0, 99.0, 99.9],
+        metadata={"description": "Percentiles to compute for latency CDF"}
+    )
+    record_per_qos_stats: bool = field(default=True, metadata={
+        "description": "Track latency/loss separately per QoS class"
+    })
+    max_stored_packets: int = field(default=1_000_000, metadata={
+        "description": "Maximum packets to store for statistics",
+        "min": 1000
+    })
+
+
 # =============================================================================
 # Main Configuration Class
 # =============================================================================
@@ -607,6 +770,9 @@ class NTNSimConfig(ConfigGroup):
     mcs: MCSConfig = field(default_factory=MCSConfig)
     constellation: ConstellationConfig = field(default_factory=ConstellationConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    traffic: TrafficConfig = field(default_factory=TrafficConfig)
+    qos: QoSConfig = field(default_factory=QoSConfig)
+    latency_kpi: LatencyKPIConfig = field(default_factory=LatencyKPIConfig)
 
     def to_flat_dict(self) -> Dict[str, Any]:
         """
@@ -784,6 +950,51 @@ class NTNSimConfig(ConfigGroup):
             "record_assignments": self.output.record_assignments,
             "record_assignments_target": self.output.record_assignments_target,
             "record_ue_thr": self.output.record_ue_thr,
+        })
+
+        # Traffic
+        result.update({
+            "traffic_model": self.traffic.traffic_model,
+            "poisson_arrival_rate_hz": self.traffic.poisson_arrival_rate_hz,
+            "poisson_packet_size_bytes": self.traffic.poisson_packet_size_bytes,
+            "poisson_packet_size_std_bytes": self.traffic.poisson_packet_size_std_bytes,
+            "poisson_qci": self.traffic.poisson_qci,
+            "ftp3_file_size_bytes": self.traffic.ftp3_file_size_bytes,
+            "ftp3_reading_time_ms": self.traffic.ftp3_reading_time_ms,
+            "ftp3_qci": self.traffic.ftp3_qci,
+            "video_frame_rate_fps": self.traffic.video_frame_rate_fps,
+            "video_i_frame_size_bytes": self.traffic.video_i_frame_size_bytes,
+            "video_p_frame_size_bytes": self.traffic.video_p_frame_size_bytes,
+            "video_gop_size": self.traffic.video_gop_size,
+            "video_qci": self.traffic.video_qci,
+            "voip_codec": self.traffic.voip_codec,
+            "voip_activity_factor": self.traffic.voip_activity_factor,
+            "voip_packet_interval_ms": self.traffic.voip_packet_interval_ms,
+            "voip_qci": self.traffic.voip_qci,
+            "mixed_embb_pct": self.traffic.mixed_embb_pct,
+            "mixed_urllc_pct": self.traffic.mixed_urllc_pct,
+            "mixed_voip_pct": self.traffic.mixed_voip_pct,
+        })
+
+        # QoS
+        result.update({
+            "enable_qos": self.qos.enable_qos,
+            "scheduler_algorithm": self.qos.scheduler_algorithm,
+            "mlwdf_alpha": self.qos.mlwdf_alpha,
+            "mlwdf_delta": self.qos.mlwdf_delta,
+            "exppf_beta": self.qos.exppf_beta,
+            "urllc_preemption": self.qos.urllc_preemption,
+            "urllc_mini_slot": self.qos.urllc_mini_slot,
+            "ntn_pdb_extension_factor": self.qos.ntn_pdb_extension_factor,
+            "compensate_rtt_in_pdb": self.qos.compensate_rtt_in_pdb,
+        })
+
+        # Latency KPI
+        result.update({
+            "record_packet_latency": self.latency_kpi.record_packet_latency,
+            "latency_percentiles": self.latency_kpi.latency_percentiles,
+            "record_per_qos_stats": self.latency_kpi.record_per_qos_stats,
+            "max_stored_packets": self.latency_kpi.max_stored_packets,
         })
 
         return result
@@ -1046,6 +1257,78 @@ class NTNSimConfig(ConfigGroup):
         if "record_ue_thr" in data:
             config.output.record_ue_thr = data["record_ue_thr"]
 
+        # Traffic
+        if "traffic_model" in data:
+            config.traffic.traffic_model = data["traffic_model"]
+        if "poisson_arrival_rate_hz" in data:
+            config.traffic.poisson_arrival_rate_hz = data["poisson_arrival_rate_hz"]
+        if "poisson_packet_size_bytes" in data:
+            config.traffic.poisson_packet_size_bytes = data["poisson_packet_size_bytes"]
+        if "poisson_packet_size_std_bytes" in data:
+            config.traffic.poisson_packet_size_std_bytes = data["poisson_packet_size_std_bytes"]
+        if "poisson_qci" in data:
+            config.traffic.poisson_qci = data["poisson_qci"]
+        if "ftp3_file_size_bytes" in data:
+            config.traffic.ftp3_file_size_bytes = data["ftp3_file_size_bytes"]
+        if "ftp3_reading_time_ms" in data:
+            config.traffic.ftp3_reading_time_ms = data["ftp3_reading_time_ms"]
+        if "ftp3_qci" in data:
+            config.traffic.ftp3_qci = data["ftp3_qci"]
+        if "video_frame_rate_fps" in data:
+            config.traffic.video_frame_rate_fps = data["video_frame_rate_fps"]
+        if "video_i_frame_size_bytes" in data:
+            config.traffic.video_i_frame_size_bytes = data["video_i_frame_size_bytes"]
+        if "video_p_frame_size_bytes" in data:
+            config.traffic.video_p_frame_size_bytes = data["video_p_frame_size_bytes"]
+        if "video_gop_size" in data:
+            config.traffic.video_gop_size = data["video_gop_size"]
+        if "video_qci" in data:
+            config.traffic.video_qci = data["video_qci"]
+        if "voip_codec" in data:
+            config.traffic.voip_codec = data["voip_codec"]
+        if "voip_activity_factor" in data:
+            config.traffic.voip_activity_factor = data["voip_activity_factor"]
+        if "voip_packet_interval_ms" in data:
+            config.traffic.voip_packet_interval_ms = data["voip_packet_interval_ms"]
+        if "voip_qci" in data:
+            config.traffic.voip_qci = data["voip_qci"]
+        if "mixed_embb_pct" in data:
+            config.traffic.mixed_embb_pct = data["mixed_embb_pct"]
+        if "mixed_urllc_pct" in data:
+            config.traffic.mixed_urllc_pct = data["mixed_urllc_pct"]
+        if "mixed_voip_pct" in data:
+            config.traffic.mixed_voip_pct = data["mixed_voip_pct"]
+
+        # QoS
+        if "enable_qos" in data:
+            config.qos.enable_qos = data["enable_qos"]
+        if "scheduler_algorithm" in data:
+            config.qos.scheduler_algorithm = data["scheduler_algorithm"]
+        if "mlwdf_alpha" in data:
+            config.qos.mlwdf_alpha = data["mlwdf_alpha"]
+        if "mlwdf_delta" in data:
+            config.qos.mlwdf_delta = data["mlwdf_delta"]
+        if "exppf_beta" in data:
+            config.qos.exppf_beta = data["exppf_beta"]
+        if "urllc_preemption" in data:
+            config.qos.urllc_preemption = data["urllc_preemption"]
+        if "urllc_mini_slot" in data:
+            config.qos.urllc_mini_slot = data["urllc_mini_slot"]
+        if "ntn_pdb_extension_factor" in data:
+            config.qos.ntn_pdb_extension_factor = data["ntn_pdb_extension_factor"]
+        if "compensate_rtt_in_pdb" in data:
+            config.qos.compensate_rtt_in_pdb = data["compensate_rtt_in_pdb"]
+
+        # Latency KPI
+        if "record_packet_latency" in data:
+            config.latency_kpi.record_packet_latency = data["record_packet_latency"]
+        if "latency_percentiles" in data:
+            config.latency_kpi.latency_percentiles = data["latency_percentiles"]
+        if "record_per_qos_stats" in data:
+            config.latency_kpi.record_per_qos_stats = data["record_per_qos_stats"]
+        if "max_stored_packets" in data:
+            config.latency_kpi.max_stored_packets = data["max_stored_packets"]
+
         return config
 
     def to_json_schema(self) -> Dict[str, Any]:
@@ -1079,6 +1362,9 @@ class NTNSimConfig(ConfigGroup):
             "mcs": (self.mcs, MCSConfig),
             "constellation": (self.constellation, ConstellationConfig),
             "output": (self.output, OutputConfig),
+            "traffic": (self.traffic, TrafficConfig),
+            "qos": (self.qos, QoSConfig),
+            "latency_kpi": (self.latency_kpi, LatencyKPIConfig),
         }
 
         for group_name, (_, group_cls) in group_map.items():

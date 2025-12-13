@@ -205,6 +205,13 @@ class SimulationEngine:
         if self._state is None or not self._state.is_initialized():
             self.initialize()
 
+        # Auto-enable per-UE throughput recording for traffic simulation
+        traffic_model = self.config.get("traffic_model", "full_buffer")
+        if traffic_model != "full_buffer":
+            if not self.config.get("record_ue_thr", False):
+                logger.debug("Auto-enabling record_ue_thr for traffic simulation")
+                self.config["record_ue_thr"] = True
+
         self._notify_phase(SimulationPhase.RUNNING, "Starting scheduler execution")
 
         # Register MCS tables
@@ -576,6 +583,9 @@ class SimulationEngine:
         # Per-UE metrics
         self._compute_per_ue_metrics(report, sched_result, sys_bw_hz)
 
+        # Traffic layer simulation (post-processing)
+        self._apply_traffic_simulation(report)
+
         # Write JSON report if configured
         self._write_json_report(report)
 
@@ -699,6 +709,55 @@ class SimulationEngine:
                     json.dump(report, f, default=serialize)
         except Exception as e:
             logger.warning(f"Failed to write JSON report: {e}")
+
+    def _apply_traffic_simulation(self, report: Dict) -> None:
+        """Apply traffic layer simulation if traffic_model != full_buffer.
+
+        This uses post-processing approach: scheduler runs with full-buffer
+        assumption, then we simulate traffic dynamics on top of the output.
+        """
+        config = self.config
+        traffic_model = config.get("traffic_model", "full_buffer")
+
+        # Skip for full buffer mode (backward compatible)
+        if traffic_model == "full_buffer":
+            return
+
+        try:
+            from .traffic_simulator import TrafficSimulator
+
+            # Get propagation delay if available
+            tau_s_per_ue = None
+            if self._state and self._state.geometry:
+                tau_s_per_ue = getattr(self._state.geometry, "tau_s", None)
+
+            # Run traffic simulation
+            simulator = TrafficSimulator(config)
+            traffic_result = simulator.simulate(report, tau_s_per_ue)
+
+            # Merge traffic KPIs into report
+            if "traffic_kpi" in traffic_result:
+                report["traffic_kpi"] = traffic_result["traffic_kpi"]
+
+                # Log summary
+                kpi = traffic_result["traffic_kpi"]
+                if "error" not in kpi:
+                    logger.info(
+                        "Traffic simulation: model=%s, delivered=%d/%d (%.1f%%), "
+                        "latency_p95=%.2fms",
+                        traffic_model,
+                        kpi.get("packets_delivered", 0),
+                        kpi.get("packets_arrived", 0),
+                        kpi.get("packet_delivery_rate", 0) * 100,
+                        kpi.get("latency_cdf", {}).get("percentiles", {}).get("p95.0", 0),
+                    )
+                else:
+                    logger.warning("Traffic simulation failed: %s", kpi.get("error"))
+
+        except ImportError as e:
+            logger.warning(f"Traffic simulation unavailable: {e}")
+        except Exception as e:
+            logger.warning(f"Traffic simulation failed: {e}")
 
     def _notify_phase(self, phase: SimulationPhase, message: str = "") -> None:
         """Notify callbacks of phase change."""

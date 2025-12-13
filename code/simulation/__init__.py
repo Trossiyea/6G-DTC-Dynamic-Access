@@ -7,6 +7,7 @@ This package provides a modular simulation engine with:
 - SimulationEngine: Single-satellite simulation orchestrator
 - ConstellationEngine: Multi-satellite constellation simulation
 - Callbacks: Progress reporting and Web integration hooks
+- TrafficSimulator: Post-processing traffic layer simulation
 
 Usage:
 ------
@@ -26,6 +27,12 @@ Usage:
     >>> engine.initialize()
     >>> state = engine.state  # Access SimulationState
     >>> result = engine.run()
+
+4. With traffic simulation (latency/goodput KPIs):
+    >>> from simulation import SimulationEngine, simulate_traffic_layer
+    >>> engine = SimulationEngine(config)
+    >>> result = engine.run()
+    >>> result_with_traffic = simulate_traffic_layer(config, result)
 """
 
 from .state import (
@@ -49,6 +56,7 @@ from .helpers import (
 )
 from .engine import SimulationEngine
 from .constellation_engine import ConstellationEngine
+from .traffic_simulator import TrafficSimulator, simulate_traffic_layer
 
 __all__ = [
     # State classes
@@ -70,4 +78,7 @@ __all__ = [
     # Engine classes
     "SimulationEngine",
     "ConstellationEngine",
+    # Traffic simulation
+    "TrafficSimulator",
+    "simulate_traffic_layer",
 ]
