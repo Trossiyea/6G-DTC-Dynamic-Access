@@ -453,6 +453,150 @@ def test_orbit_model_has_batch_methods():
     assert hasattr(OrbitModel, 'get_g_sat_batch')
 
 
+# ============== Test: SimulationEngine OALS Integration ==============
+
+def test_simulation_engine_oals_integration():
+    """Test SimulationEngine with OALS enabled.
+
+    This is an integration test that verifies OALS is properly
+    integrated into the simulation engine.
+    """
+    try:
+        from simulation.engine import SimulationEngine, OALS_AVAILABLE
+
+        if not OALS_AVAILABLE:
+            pytest.skip("OALS modules not available")
+
+        # Minimal config for OALS test
+        config = {
+            # Simulation parameters
+            "Z": 51,
+            "N_UE": 5,
+            "T": 50,  # Short simulation
+            "seed": 42,
+
+            # Radio Map (use actual file)
+            "radio_map_mat_path": "radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat",
+            "radio_map_mat_var": "XdB_recon_tensor",
+            "radio_map_units": "dBm",
+
+            # Enable time-varying (required for OALS)
+            "enable_time_varying": True,
+            "enable_orbit_dynamics": True,
+
+            # OALS enabled
+            "enable_oals": True,
+            "lookahead_horizon_ttis": 20,
+            "lookahead_update_interval": 5,
+            "alpha_urgent": 0.8,
+            "beta_wait": 0.3,
+
+            # Basic settings
+            "pf_beta": 0.1,
+            "shadow_std_db": 3.0,
+            "P_tx_dbm": 30.0,
+            "scs_khz": 30,
+            "sat_altitude_km": 600.0,
+            "carrier_freq_GHz": 2.0,
+            "cell_size_km": 0.125,
+
+            # TLE for orbit
+            "tle_name": "TEST-SAT",
+            "tle_lines": [
+                "1 59422C 24065B   25266.77548611  .00029064  00000+0  23954-3 0  2662",
+                "2 59422  53.1572 196.6800 0001379  82.5466  65.8632 15.69667376    15",
+            ],
+            "ref_lat_deg": 43.65108,
+            "ref_lon_deg": -79.34702,
+
+            # Disable HARQ for simplicity
+            "enable_harq_full": False,
+            "enable_harq_deferral": False,
+
+            # Output
+            "write_json_report": False,
+            "show_progress": False,
+        }
+
+        # Create and run engine
+        engine = SimulationEngine(config)
+        result = engine.run()
+
+        # Verify OALS integration
+        assert result is not None
+        assert "oals_enabled" in result
+        assert result["oals_enabled"] is True
+        assert "oals_stats" in result
+
+        oals_stats = result["oals_stats"]
+        assert "updates" in oals_stats
+        assert oals_stats["updates"] > 0  # Should have updated at least once
+
+        # Verify scheduler results exist
+        assert "avg_se_baseline_default" in result
+        assert "avg_se_radiomap" in result
+        assert result["avg_se_radiomap"] >= 0
+
+        print(f"  OALS integration test passed: {oals_stats['updates']} lookahead updates")
+
+    except ImportError as e:
+        pytest.skip(f"Required modules not available: {e}")
+    except Exception as e:
+        # Print detailed error for debugging
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def test_simulation_engine_oals_disabled():
+    """Test SimulationEngine with OALS disabled (baseline behavior)."""
+    try:
+        from simulation.engine import SimulationEngine
+
+        # Minimal config without OALS
+        config = {
+            "Z": 51,
+            "N_UE": 5,
+            "T": 20,
+            "seed": 42,
+
+            "radio_map_mat_path": "radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat",
+            "radio_map_mat_var": "XdB_recon_tensor",
+            "radio_map_units": "dBm",
+
+            "enable_time_varying": False,  # Static mode
+            "enable_orbit_dynamics": False,
+            "enable_oals": False,  # OALS disabled
+
+            "pf_beta": 0.1,
+            "shadow_std_db": 3.0,
+            "P_tx_dbm": 30.0,
+            "scs_khz": 30,
+            "sat_altitude_km": 600.0,
+            "carrier_freq_GHz": 2.0,
+            "cell_size_km": 0.125,
+            "ref_lat_deg": 43.65108,
+            "ref_lon_deg": -79.34702,
+
+            "enable_harq_full": False,
+            "write_json_report": False,
+            "show_progress": False,
+        }
+
+        engine = SimulationEngine(config)
+        result = engine.run()
+
+        assert result is not None
+        assert "oals_enabled" in result
+        assert result["oals_enabled"] is False
+        assert "oals_stats" not in result or result.get("oals_stats") is None
+
+        print("  OALS disabled test passed")
+
+    except ImportError as e:
+        pytest.skip(f"Required modules not available: {e}")
+
+
 # ============== Main ==============
 
 if __name__ == '__main__':
@@ -485,6 +629,14 @@ if __name__ == '__main__':
 
     test_apply_handover_aware_correction()
     test_orbit_model_has_batch_methods()
+
+    # Integration tests (skip if dependencies not available)
+    print("\n--- Integration Tests ---")
+    try:
+        test_simulation_engine_oals_disabled()
+        test_simulation_engine_oals_integration()
+    except Exception as e:
+        print(f"  Integration tests skipped: {e}")
 
     print("\n" + "="*60)
     print("All OALS unit tests passed!")

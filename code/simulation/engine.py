@@ -39,6 +39,17 @@ try:
 except ImportError:
     QOS_AVAILABLE = False
 
+# Optional OALS integration (Phase 11 - Patent)
+try:
+    from scheduler.lookahead import (
+        OALSConfig,
+        OALSScheduler,
+        create_oals_scheduler,
+    )
+    OALS_AVAILABLE = True
+except ImportError:
+    OALS_AVAILABLE = False
+
 # Lazy imports to avoid circular dependencies
 from data_io.radiomap import select_radio_map
 from ntn import compute_geometry_and_beam, OrbitModel
@@ -154,6 +165,16 @@ class SimulationEngine:
         if config.get("enable_orbit_dynamics", False):
             orbit_model = OrbitModel(config, X, Y)
 
+        # Optional OALS scheduler (Phase 11 - Patent)
+        oals_scheduler = None
+        if OALS_AVAILABLE and config.get("enable_oals", False) and orbit_model is not None:
+            oals_scheduler = create_oals_scheduler(
+                n_ue=N_UE,
+                orbit_model=orbit_model,
+                config=config,
+            )
+            logger.info("OALS scheduler initialized (Phase 11 - Patent)")
+
         # Create state object
         self._state = SimulationState(
             config=config,
@@ -177,6 +198,7 @@ class SimulationEngine:
             prb_bw_hz=prb_bw_hz,
             P_tx_per_ue_dbm=P_tx_per_ue_dbm,
             orbit_model=orbit_model,
+            oals_scheduler=oals_scheduler,
             phase="initialized",
         )
 
@@ -449,6 +471,38 @@ class SimulationEngine:
                 # Reset delay for scheduled UEs (simplified: reset all)
                 hol_delay_ms = hol_delay_ms * 0.5
 
+        # OALS metric correction (Phase 11 - Patent)
+        if OALS_AVAILABLE and state.oals_scheduler is not None:
+            oals = state.oals_scheduler
+            update_interval = int(config.get("lookahead_update_interval", 10))
+
+            # Initialize urgency (simplified: use time fraction as proxy)
+            # In production, urgency would come from buffer/QoS manager
+            urgency = np.zeros(N_UE)
+
+            for tt in range(T):
+                # Update lookahead predictions periodically
+                if tt % update_interval == 0:
+                    oals.update_lookahead(state.ue_pos, tt)
+
+                # Compute and apply OALS correction to RadioMap metrics
+                # Get QoS weight (use ones if QoS not enabled)
+                qos_weight = np.ones(N_UE)
+
+                # Apply OALS correction to per-PRB metrics
+                oals.set_urgency(urgency)
+                se_time_rm[tt] = oals.compute_oals_metric(
+                    se_time_rm[tt], qos_weight
+                )
+
+                # Update urgency (simplified model: linear growth with occasional reset)
+                urgency = np.clip(urgency + 0.01, 0.0, 1.0)
+                # Randomly reset some UEs (simulating packet delivery)
+                reset_mask = self._rng.random(N_UE) < 0.1
+                urgency[reset_mask] = 0.0
+
+            logger.debug("OALS metric correction applied for %d TTIs", T)
+
         # HARQ managers
         harq_mgr_base = None
         harq_mgr_map = None
@@ -633,6 +687,15 @@ class SimulationEngine:
 
         # Traffic layer simulation (post-processing)
         self._apply_traffic_simulation(report)
+
+        # OALS statistics (Phase 11 - Patent)
+        if OALS_AVAILABLE and state.oals_scheduler is not None:
+            oals_stats = state.oals_scheduler.get_statistics()
+            report["oals_stats"] = oals_stats
+            report["oals_enabled"] = True
+            logger.debug("OALS stats: %s", oals_stats)
+        else:
+            report["oals_enabled"] = False
 
         # Write JSON report if configured
         self._write_json_report(report)

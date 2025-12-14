@@ -188,6 +188,9 @@ class SimulationState:
     # Orbit model reference (not serializable)
     orbit_model: Optional[Any] = field(default=None, repr=False)
 
+    # OALS scheduler reference (not serializable, Phase 11 - Patent)
+    oals_scheduler: Optional[Any] = field(default=None, repr=False)
+
     # Execution state
     current_tti: int = 0
     phase: str = "uninitialized"
