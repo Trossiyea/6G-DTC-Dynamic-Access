@@ -28,6 +28,17 @@ from .helpers import (
     compute_jain_fairness,
 )
 
+# Optional QoS integration
+try:
+    from scheduler.integration import (
+        compute_mlwdf_metric,
+        compute_exppf_metric,
+        QoSSchedulerType,
+    )
+    QOS_AVAILABLE = True
+except ImportError:
+    QOS_AVAILABLE = False
+
 # Lazy imports to avoid circular dependencies
 from data_io.radiomap import select_radio_map
 from ntn import compute_geometry_and_beam, OrbitModel
@@ -400,6 +411,43 @@ class SimulationEngine:
                 se_time_base = hold_series(se_time_base, period, offset)
             if bool(config.get("enable_cqi_periodicity_rm", False)):
                 se_time_rm = hold_series(se_time_rm, period, offset)
+
+        # QoS metric weighting (optional)
+        qos_algorithm = config.get("qos_algorithm", "pf").lower()
+        if QOS_AVAILABLE and qos_algorithm in ("m-lwdf", "mlwdf", "exp-pf", "exppf"):
+            # Initialize QoS state
+            hol_delay_ms = np.zeros(N_UE)
+            qos_params = np.column_stack([
+                np.full(N_UE, config.get("qos_delta", 0.01)),
+                np.full(N_UE, config.get("qos_tau_ms", 100.0)),
+            ])
+            avg_thr = np.full(N_UE, 1e-3)
+
+            # Apply QoS weighting to SE metrics per TTI
+            for tt in range(T):
+                # Simulate HoL delay growth (simplified model)
+                hol_delay_ms = hol_delay_ms + config.get("tti_ms", 1.0)
+
+                if qos_algorithm in ("m-lwdf", "mlwdf"):
+                    # Wideband metric for baseline
+                    se_time_base[tt] = compute_mlwdf_metric(
+                        se_time_base[tt], avg_thr, hol_delay_ms, qos_params
+                    )
+                    se_time_rm[tt] = compute_mlwdf_metric(
+                        se_time_rm[tt], avg_thr, hol_delay_ms, qos_params
+                    )
+                elif qos_algorithm in ("exp-pf", "exppf"):
+                    se_time_base[tt] = compute_exppf_metric(
+                        se_time_base[tt], avg_thr, hol_delay_ms, qos_params
+                    )
+                    se_time_rm[tt] = compute_exppf_metric(
+                        se_time_rm[tt], avg_thr, hol_delay_ms, qos_params
+                    )
+
+                # Update average throughput (simplified)
+                avg_thr = 0.9 * avg_thr + 0.1 * np.mean(se_time_base[tt], axis=-1)
+                # Reset delay for scheduled UEs (simplified: reset all)
+                hol_delay_ms = hol_delay_ms * 0.5
 
         # HARQ managers
         harq_mgr_base = None
