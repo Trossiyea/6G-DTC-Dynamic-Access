@@ -809,6 +809,115 @@ class MACConfig(ConfigGroup):
     })
 
 
+@dataclass
+class OALSConfig(ConfigGroup):
+    """OALS (Orbit-Aware Lookahead Scheduling) configuration (Phase 11 - Patent).
+
+    This configuration group contains parameters for the OALS algorithm,
+    which leverages satellite orbit predictability for scheduling optimization.
+
+    Core innovations:
+    1. Lookahead factor (Φ) computation from predicted satellite geometry
+    2. Metric correction function f(Φ, urgency) for scheduling time optimization
+    3. Predictive handover scheduling strategy
+    4. HARQ lookahead MCS selection
+    """
+
+    # Enable OALS
+    enable_oals: bool = field(default=False, metadata={
+        "description": "Enable Orbit-Aware Lookahead Scheduling"
+    })
+
+    # Lookahead window parameters
+    lookahead_horizon_ttis: int = field(default=200, metadata={
+        "description": "Lookahead prediction window length",
+        "units": "TTIs", "min": 10, "max": 2000
+    })
+    lookahead_sample_interval: int = field(default=5, metadata={
+        "description": "Sparse sampling interval for lookahead computation",
+        "units": "TTIs", "min": 1, "max": 50
+    })
+    lookahead_update_interval: int = field(default=10, metadata={
+        "description": "Interval between lookahead cache updates",
+        "units": "TTIs", "min": 1, "max": 100
+    })
+
+    # Metric correction parameters
+    alpha_urgent: float = field(default=0.8, metadata={
+        "description": "Urgency threshold for immediate scheduling (紧急阈值)",
+        "min": 0.5, "max": 1.0
+    })
+    beta_wait: float = field(default=0.3, metadata={
+        "description": "Urgency threshold below which waiting is allowed (可等待阈值)",
+        "min": 0.0, "max": 0.5
+    })
+    theta_lookahead: float = field(default=0.7, metadata={
+        "description": "Lookahead factor threshold to trigger waiting (前瞻触发阈值)",
+        "min": 0.5, "max": 1.0
+    })
+    gamma_decay: float = field(default=2.0, metadata={
+        "description": "Decay exponent for wait penalty (衰减指数)",
+        "min": 1.0, "max": 5.0
+    })
+    boost_factor: float = field(default=2.0, metadata={
+        "description": "Priority boost factor for urgent traffic (紧急提升因子)",
+        "min": 1.0, "max": 5.0
+    })
+
+    # Trend correction
+    enable_trend_correction: bool = field(default=True, metadata={
+        "description": "Enable channel trend-based correction"
+    })
+    trend_threshold_db: float = field(default=0.5, metadata={
+        "description": "Threshold for trend detection",
+        "units": "dB/TTI", "min": 0.1, "max": 2.0
+    })
+    trend_epsilon: float = field(default=0.1, metadata={
+        "description": "Trend correction amplitude",
+        "min": 0.01, "max": 0.3
+    })
+
+    # Predictive handover
+    enable_predictive_ho: bool = field(default=True, metadata={
+        "description": "Enable predictive handover optimization"
+    })
+    handover_prep_ttis: int = field(default=100, metadata={
+        "description": "Handover preparation window length",
+        "units": "TTIs", "min": 10, "max": 500
+    })
+    handover_recovery_ttis: int = field(default=50, metadata={
+        "description": "Handover recovery window length",
+        "units": "TTIs", "min": 5, "max": 200
+    })
+
+    # HARQ lookahead MCS
+    enable_harq_lookahead: bool = field(default=True, metadata={
+        "description": "Enable HARQ lookahead MCS selection"
+    })
+    harq_sinr_aggressive_db: float = field(default=1.5, metadata={
+        "description": "SINR boost for aggressive MCS when future channel is better",
+        "units": "dB", "min": 0.0, "max": 5.0
+    })
+    harq_sinr_conservative_db: float = field(default=1.5, metadata={
+        "description": "SINR margin for conservative MCS when future channel is worse",
+        "units": "dB", "min": 0.0, "max": 5.0
+    })
+    harq_delta_threshold_db: float = field(default=3.0, metadata={
+        "description": "SINR change threshold for MCS strategy selection",
+        "units": "dB", "min": 1.0, "max": 10.0
+    })
+
+    # Early retransmission
+    early_retx_trend_threshold: float = field(default=-1.0, metadata={
+        "description": "Trend threshold for triggering early retransmission",
+        "units": "dB/TTI", "max": 0.0
+    })
+    early_retx_max_rv: int = field(default=2, metadata={
+        "description": "Maximum RV index for early retransmission",
+        "min": 0, "max": 3
+    })
+
+
 # =============================================================================
 # Main Configuration Class
 # =============================================================================
@@ -841,6 +950,7 @@ class NTNSimConfig(ConfigGroup):
     qos: QoSConfig = field(default_factory=QoSConfig)
     latency_kpi: LatencyKPIConfig = field(default_factory=LatencyKPIConfig)
     mac: MACConfig = field(default_factory=MACConfig)
+    oals: OALSConfig = field(default_factory=OALSConfig)
 
     def to_flat_dict(self) -> Dict[str, Any]:
         """
@@ -1081,6 +1191,31 @@ class NTNSimConfig(ConfigGroup):
             "k1_slots_base": self.mac.k1_slots_base,
             "k1_ntn_extension_factor": self.mac.k1_ntn_extension_factor,
             "harq_rtt_scaling": self.mac.harq_rtt_scaling,
+        })
+
+        # OALS (Phase 11 - Patent)
+        result.update({
+            "enable_oals": self.oals.enable_oals,
+            "lookahead_horizon_ttis": self.oals.lookahead_horizon_ttis,
+            "lookahead_sample_interval": self.oals.lookahead_sample_interval,
+            "lookahead_update_interval": self.oals.lookahead_update_interval,
+            "alpha_urgent": self.oals.alpha_urgent,
+            "beta_wait": self.oals.beta_wait,
+            "theta_lookahead": self.oals.theta_lookahead,
+            "gamma_decay": self.oals.gamma_decay,
+            "boost_factor": self.oals.boost_factor,
+            "enable_trend_correction": self.oals.enable_trend_correction,
+            "trend_threshold_db": self.oals.trend_threshold_db,
+            "trend_epsilon": self.oals.trend_epsilon,
+            "enable_predictive_ho": self.oals.enable_predictive_ho,
+            "handover_prep_ttis": self.oals.handover_prep_ttis,
+            "handover_recovery_ttis": self.oals.handover_recovery_ttis,
+            "enable_harq_lookahead": self.oals.enable_harq_lookahead,
+            "harq_sinr_aggressive_db": self.oals.harq_sinr_aggressive_db,
+            "harq_sinr_conservative_db": self.oals.harq_sinr_conservative_db,
+            "harq_delta_threshold_db": self.oals.harq_delta_threshold_db,
+            "early_retx_trend_threshold": self.oals.early_retx_trend_threshold,
+            "early_retx_max_rv": self.oals.early_retx_max_rv,
         })
 
         return result
@@ -1445,6 +1580,50 @@ class NTNSimConfig(ConfigGroup):
         if "harq_rtt_scaling" in data:
             config.mac.harq_rtt_scaling = data["harq_rtt_scaling"]
 
+        # OALS (Phase 11 - Patent)
+        if "enable_oals" in data:
+            config.oals.enable_oals = data["enable_oals"]
+        if "lookahead_horizon_ttis" in data:
+            config.oals.lookahead_horizon_ttis = data["lookahead_horizon_ttis"]
+        if "lookahead_sample_interval" in data:
+            config.oals.lookahead_sample_interval = data["lookahead_sample_interval"]
+        if "lookahead_update_interval" in data:
+            config.oals.lookahead_update_interval = data["lookahead_update_interval"]
+        if "alpha_urgent" in data:
+            config.oals.alpha_urgent = data["alpha_urgent"]
+        if "beta_wait" in data:
+            config.oals.beta_wait = data["beta_wait"]
+        if "theta_lookahead" in data:
+            config.oals.theta_lookahead = data["theta_lookahead"]
+        if "gamma_decay" in data:
+            config.oals.gamma_decay = data["gamma_decay"]
+        if "boost_factor" in data:
+            config.oals.boost_factor = data["boost_factor"]
+        if "enable_trend_correction" in data:
+            config.oals.enable_trend_correction = data["enable_trend_correction"]
+        if "trend_threshold_db" in data:
+            config.oals.trend_threshold_db = data["trend_threshold_db"]
+        if "trend_epsilon" in data:
+            config.oals.trend_epsilon = data["trend_epsilon"]
+        if "enable_predictive_ho" in data:
+            config.oals.enable_predictive_ho = data["enable_predictive_ho"]
+        if "handover_prep_ttis" in data:
+            config.oals.handover_prep_ttis = data["handover_prep_ttis"]
+        if "handover_recovery_ttis" in data:
+            config.oals.handover_recovery_ttis = data["handover_recovery_ttis"]
+        if "enable_harq_lookahead" in data:
+            config.oals.enable_harq_lookahead = data["enable_harq_lookahead"]
+        if "harq_sinr_aggressive_db" in data:
+            config.oals.harq_sinr_aggressive_db = data["harq_sinr_aggressive_db"]
+        if "harq_sinr_conservative_db" in data:
+            config.oals.harq_sinr_conservative_db = data["harq_sinr_conservative_db"]
+        if "harq_delta_threshold_db" in data:
+            config.oals.harq_delta_threshold_db = data["harq_delta_threshold_db"]
+        if "early_retx_trend_threshold" in data:
+            config.oals.early_retx_trend_threshold = data["early_retx_trend_threshold"]
+        if "early_retx_max_rv" in data:
+            config.oals.early_retx_max_rv = data["early_retx_max_rv"]
+
         return config
 
     def to_json_schema(self) -> Dict[str, Any]:
@@ -1482,6 +1661,7 @@ class NTNSimConfig(ConfigGroup):
             "qos": (self.qos, QoSConfig),
             "latency_kpi": (self.latency_kpi, LatencyKPIConfig),
             "mac": (self.mac, MACConfig),
+            "oals": (self.oals, OALSConfig),
         }
 
         for group_name, (_, group_cls) in group_map.items():

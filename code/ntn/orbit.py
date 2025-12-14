@@ -230,6 +230,80 @@ class OrbitModel:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize TLE orbit: {e}")
 
+    def get_geometry_batch(
+        self,
+        ue_pos: np.ndarray,
+        t_start: int,
+        t_end: int,
+        interval: int = 1,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Compute geometry for all UEs across a range of TTIs (batch prediction).
+
+        This method is optimized for OALS (Orbit-Aware Lookahead Scheduling)
+        by computing geometry for multiple future TTIs efficiently.
+
+        Args:
+            ue_pos: UE positions as (N, 2) array of (x, y) grid coordinates.
+            t_start: Start TTI index (inclusive).
+            t_end: End TTI index (exclusive).
+            interval: Sampling interval (default 1, use larger for sparse sampling).
+
+        Returns:
+            Tuple of 5 arrays, each with shape [N_UE, n_samples]:
+            - L_fs: Free space path loss (dB)
+            - G_rx: Beam gain (dB)
+            - tau_s: Propagation delay (s)
+            - f_d_hz: Doppler shift (Hz)
+            - elev_deg: Elevation angle (degrees)
+        """
+        sample_ttis = list(range(t_start, t_end, interval))
+        n_samples = len(sample_ttis)
+        n_ue = ue_pos.shape[0]
+
+        # Pre-allocate output arrays
+        L_fs_batch = np.zeros((n_ue, n_samples), dtype=float)
+        G_rx_batch = np.zeros((n_ue, n_samples), dtype=float)
+        tau_s_batch = np.zeros((n_ue, n_samples), dtype=float)
+        f_d_hz_batch = np.zeros((n_ue, n_samples), dtype=float)
+        elev_deg_batch = np.zeros((n_ue, n_samples), dtype=float)
+
+        # Compute geometry for each sample TTI
+        for i, t in enumerate(sample_ttis):
+            L_fs, G_rx, tau_s, f_d_hz, elev_deg = self.get_geometry(ue_pos, t)
+            L_fs_batch[:, i] = L_fs
+            G_rx_batch[:, i] = G_rx
+            tau_s_batch[:, i] = tau_s
+            f_d_hz_batch[:, i] = f_d_hz
+            elev_deg_batch[:, i] = elev_deg
+
+        return L_fs_batch, G_rx_batch, tau_s_batch, f_d_hz_batch, elev_deg_batch
+
+    def get_g_sat_batch(
+        self,
+        ue_pos: np.ndarray,
+        t_start: int,
+        t_end: int,
+        interval: int = 1,
+    ) -> np.ndarray:
+        """Compute satellite link gain (G_sat = G_rx - L_fs) for lookahead scheduling.
+
+        This is a convenience method for OALS that returns only G_sat,
+        which is the primary metric for lookahead factor calculation.
+
+        Args:
+            ue_pos: UE positions as (N, 2) array of (x, y) grid coordinates.
+            t_start: Start TTI index (inclusive).
+            t_end: End TTI index (exclusive).
+            interval: Sampling interval.
+
+        Returns:
+            G_sat array with shape [N_UE, n_samples] in dB.
+        """
+        L_fs_batch, G_rx_batch, _, _, _ = self.get_geometry_batch(
+            ue_pos, t_start, t_end, interval
+        )
+        return G_rx_batch - L_fs_batch
+
     def get_geometry(
         self,
         ue_pos: np.ndarray,
