@@ -13,7 +13,7 @@
     - `subband.py` - subband-level baseline scheduler
     - `power_alloc.py` - DL power allocation (water-filling with box constraints)
   - `config/`: type-safe configuration system
-    - `schema.py` - 15 dataclass config groups (simulation, radio_map, harq, etc.) with metadata
+    - `schema.py` - 19 dataclass config groups (simulation, radio_map, harq, traffic, qos, latency_kpi, mac, etc.) with metadata
     - `compat.py` - ConfigDict wrapper for backward-compatible dict-style access
     - `loader.py` - JSON/YAML/Python file config loader with merge logic
     - `__init__.py` - exports CONFIG instance, load_scenario_config, and public API
@@ -23,6 +23,7 @@
     - `helpers.py` - helper functions (UE position generation, noise/power control, capacity computation)
     - `engine.py` - single-satellite engine (SimulationEngine) encapsulating run_once() logic
     - `constellation_engine.py` - multi-satellite engine (ConstellationEngine) with TTI loop and handover
+    - `traffic_simulator.py` - traffic layer post-processing (TrafficSimulator) for latency/goodput KPIs
     - `__init__.py` - exports public API (backward-compatible run_once/run_constellation wrappers)
   - `ntn/`: unified NTN/satellite module (Phase 6 refactoring, eliminates 150+ lines duplication)
     - `geometry.py` - unified geometry utilities (FSPL, beam gain, coordinate conversion, Haversine)
@@ -41,6 +42,18 @@
     - `adaptation.py` - unified link adaptation interface (MCS selection from SINR)
     - `harq.py` - HARQ managers (simple and full modes, process management, RV cycling)
     - `__init__.py` - exports 21 public APIs
+  - `traffic/`: traffic layer module (Phase 8 refactoring, 1510 lines)
+    - `packets.py` - Packet data structure (QCI/priority/deadline)
+    - `buffer.py` - UEBuffer and BufferManager (multi-bearer queuing)
+    - `qos.py` - QoSManager and NTNQoSManager (5QI standard + NTN delay compensation)
+    - `models.py` - 5 traffic generators (FullBuffer/Poisson/FTP3/Video/VoIP)
+    - `statistics.py` - TrafficStatisticsTracker (latency CDF and KPI computation)
+    - `__init__.py` - exports 15 public APIs
+  - `mac/`: MAC layer module (Phase 9 refactoring, 2300 lines)
+    - `bsr.py` - BSR management (3GPP TS 38.321, 5-bit/8-bit tables, LCG mapping)
+    - `drx.py` - DRX state machine (Active/OnDuration/Inactivity/ShortCycle/LongCycle)
+    - `timing.py` - NTN timing control (K0/K1/K2, Timing Advance, HARQ adaptation)
+    - `__init__.py` - exports 35 public APIs
   - Main modules: `main.py` (lightweight orchestration, 274 lines), `logging_utils.py`, `result_schema.py`, `progress_utils.py`.
   - Backward-compatible wrappers: `orbit.py`, `constellation.py`, `ntn_channel.py`, `beams.py` (Phase 6);
     `link_adapt.py`, `harq.py`, `csi.py`, `ntn_csi.py` (Phase 7) - re-export from subpackages for legacy imports.
@@ -61,9 +74,11 @@
 - Import patterns:
   - From sub-packages: `from core.units import dbm_to_mw`, `from scheduler.radiomap import pf_schedule_radiomap_blocks`, `from data_io.radiomap import load_radio_map_from_mat`
   - Configuration: `from code.config import CONFIG, load_scenario_config` (supports both dict-style `CONFIG["key"]` and typed `CONFIG.simulation.N_UE`)
-  - Simulation engines: `from simulation import SimulationEngine, ConstellationEngine, SimulationState` (Phase 5 new API)
+  - Simulation engines: `from simulation import SimulationEngine, ConstellationEngine, SimulationState, TrafficSimulator` (Phase 5/8 API)
   - NTN module (Phase 6): `from ntn import OrbitModel, ConstellationOrbit, sample_3gpp_ntn_fading, beam_gain_db, fspl_db, map_xy_to_latlon` (22 APIs available)
   - Link layer (Phase 7): `from link import MCS, choose_mcs_from_sinr, HarqManager, HarqManagerFull, OLLA, eff_sinr_eesm_db, calc_tbs_bits` (21 APIs available)
+  - Traffic layer (Phase 8): `from traffic import BufferManager, create_traffic_generator, QoSManager, NTNQoSManager, Packet, TrafficStatisticsTracker` (15 APIs available)
+  - MAC layer (Phase 9): `from mac import BSRManager, DRXController, NTNDRXController, SchedulingTimingManager, TimingAdvanceController, NTNScenario` (35 APIs available)
   - Backward-compatible: `from orbit import OrbitModel`, `from constellation import ConstellationOrbit`, `from ntn_channel import sample_3gpp_ntn_fading` (Phase 6 legacy);
     `from link_adapt import MCS, OLLA`, `from csi import sinr_to_cqi`, `from harq import HarqManager` (Phase 7 legacy)
   - Main entry: `from code.main import run_once, run_constellation` (legacy-compatible wrappers)
@@ -71,9 +86,9 @@
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 
 ## Testing Guidelines
-- Environment verification: run `python run_test.py --verify` to check Phase 1-7 module availability (including Phase 6 NTN), dependencies, and imports (9 checks).
+- Environment verification: run `python run_test.py --verify` to check Phase 1-9 module availability (including Phase 9 MAC), dependencies, and imports.
 - Scenario validation: run a city preset after behavioral changes (`python run_test.py --scenario toronto_single`); for orbit/scheduler edits, add a constellation case.
-- Unit tests: `./run_all_tests.sh --unit` runs Phase 6-7 module tests (imports, NTN geometry, MCS/CQI/EESM/HARQ functionality, and integration).
+- Unit tests: `./run_all_tests.sh --unit` runs Phase 6-9 module tests (imports, NTN geometry, MCS/CQI/EESM/HARQ functionality, Traffic/QoS/Statistics, MAC BSR/DRX/Timing, and integration).
 - Quick validation: `./run_all_tests.sh --quick` runs unit tests + 2 representative scenarios.
 - Test script (`run_test.py`) uses the new `load_scenario_config()` API to automatically merge scenario overrides with default config.
 - When adding features, document required data under `test/` and include sample usage in config files.

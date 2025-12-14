@@ -742,6 +742,73 @@ class LatencyKPIConfig(ConfigGroup):
     })
 
 
+@dataclass
+class MACConfig(ConfigGroup):
+    """MAC layer configuration (Phase 9).
+
+    Includes BSR (Buffer Status Report), DRX (Discontinuous Reception),
+    and NTN-specific timing parameters.
+    """
+
+    # BSR Configuration
+    enable_bsr: bool = field(default=True, metadata={
+        "description": "Enable Buffer Status Report mechanism"
+    })
+    bsr_table_bits: int = field(default=8, metadata={
+        "description": "BSR table size (5 or 8 bits)",
+        "options": [5, 8]
+    })
+    bsr_periodic_timer_ms: float = field(default=20.0, metadata={
+        "description": "Periodic BSR timer period",
+        "units": "ms", "min": 1.0
+    })
+    bsr_retx_timer_ms: float = field(default=10.0, metadata={
+        "description": "BSR retransmission timer period",
+        "units": "ms", "min": 1.0
+    })
+
+    # DRX Configuration (Phase 9.2 - placeholder)
+    enable_drx: bool = field(default=False, metadata={
+        "description": "Enable Discontinuous Reception"
+    })
+    drx_on_duration_ms: float = field(default=10.0, metadata={
+        "description": "DRX On Duration timer",
+        "units": "ms", "min": 1.0
+    })
+    drx_inactivity_timer_ms: float = field(default=100.0, metadata={
+        "description": "DRX Inactivity timer",
+        "units": "ms", "min": 1.0
+    })
+    drx_short_cycle_ms: float = field(default=20.0, metadata={
+        "description": "DRX short cycle duration",
+        "units": "ms", "min": 2.0
+    })
+    drx_long_cycle_ms: float = field(default=320.0, metadata={
+        "description": "DRX long cycle duration",
+        "units": "ms", "min": 10.0
+    })
+    drx_short_cycle_timer: int = field(default=2, metadata={
+        "description": "Number of short cycles before long cycle",
+        "min": 1
+    })
+
+    # NTN Timing Configuration (Phase 9.3 - placeholder)
+    ntn_timing_adaptation: bool = field(default=True, metadata={
+        "description": "Enable NTN-specific timing adaptation"
+    })
+    k1_slots_base: int = field(default=4, metadata={
+        "description": "Base K1 value (PDSCH-to-HARQ-ACK slots)",
+        "min": 0, "max": 15
+    })
+    k1_ntn_extension_factor: float = field(default=1.0, metadata={
+        "description": "K1 extension factor for NTN propagation delay",
+        "min": 1.0, "max": 10.0
+    })
+    harq_rtt_scaling: bool = field(default=True, metadata={
+        "description": "Scale HARQ RTT based on propagation delay"
+    })
+
+
 # =============================================================================
 # Main Configuration Class
 # =============================================================================
@@ -773,6 +840,7 @@ class NTNSimConfig(ConfigGroup):
     traffic: TrafficConfig = field(default_factory=TrafficConfig)
     qos: QoSConfig = field(default_factory=QoSConfig)
     latency_kpi: LatencyKPIConfig = field(default_factory=LatencyKPIConfig)
+    mac: MACConfig = field(default_factory=MACConfig)
 
     def to_flat_dict(self) -> Dict[str, Any]:
         """
@@ -995,6 +1063,24 @@ class NTNSimConfig(ConfigGroup):
             "latency_percentiles": self.latency_kpi.latency_percentiles,
             "record_per_qos_stats": self.latency_kpi.record_per_qos_stats,
             "max_stored_packets": self.latency_kpi.max_stored_packets,
+        })
+
+        # MAC (Phase 9)
+        result.update({
+            "enable_bsr": self.mac.enable_bsr,
+            "bsr_table_bits": self.mac.bsr_table_bits,
+            "bsr_periodic_timer_ms": self.mac.bsr_periodic_timer_ms,
+            "bsr_retx_timer_ms": self.mac.bsr_retx_timer_ms,
+            "enable_drx": self.mac.enable_drx,
+            "drx_on_duration_ms": self.mac.drx_on_duration_ms,
+            "drx_inactivity_timer_ms": self.mac.drx_inactivity_timer_ms,
+            "drx_short_cycle_ms": self.mac.drx_short_cycle_ms,
+            "drx_long_cycle_ms": self.mac.drx_long_cycle_ms,
+            "drx_short_cycle_timer": self.mac.drx_short_cycle_timer,
+            "ntn_timing_adaptation": self.mac.ntn_timing_adaptation,
+            "k1_slots_base": self.mac.k1_slots_base,
+            "k1_ntn_extension_factor": self.mac.k1_ntn_extension_factor,
+            "harq_rtt_scaling": self.mac.harq_rtt_scaling,
         })
 
         return result
@@ -1329,6 +1415,36 @@ class NTNSimConfig(ConfigGroup):
         if "max_stored_packets" in data:
             config.latency_kpi.max_stored_packets = data["max_stored_packets"]
 
+        # MAC (Phase 9)
+        if "enable_bsr" in data:
+            config.mac.enable_bsr = data["enable_bsr"]
+        if "bsr_table_bits" in data:
+            config.mac.bsr_table_bits = data["bsr_table_bits"]
+        if "bsr_periodic_timer_ms" in data:
+            config.mac.bsr_periodic_timer_ms = data["bsr_periodic_timer_ms"]
+        if "bsr_retx_timer_ms" in data:
+            config.mac.bsr_retx_timer_ms = data["bsr_retx_timer_ms"]
+        if "enable_drx" in data:
+            config.mac.enable_drx = data["enable_drx"]
+        if "drx_on_duration_ms" in data:
+            config.mac.drx_on_duration_ms = data["drx_on_duration_ms"]
+        if "drx_inactivity_timer_ms" in data:
+            config.mac.drx_inactivity_timer_ms = data["drx_inactivity_timer_ms"]
+        if "drx_short_cycle_ms" in data:
+            config.mac.drx_short_cycle_ms = data["drx_short_cycle_ms"]
+        if "drx_long_cycle_ms" in data:
+            config.mac.drx_long_cycle_ms = data["drx_long_cycle_ms"]
+        if "drx_short_cycle_timer" in data:
+            config.mac.drx_short_cycle_timer = data["drx_short_cycle_timer"]
+        if "ntn_timing_adaptation" in data:
+            config.mac.ntn_timing_adaptation = data["ntn_timing_adaptation"]
+        if "k1_slots_base" in data:
+            config.mac.k1_slots_base = data["k1_slots_base"]
+        if "k1_ntn_extension_factor" in data:
+            config.mac.k1_ntn_extension_factor = data["k1_ntn_extension_factor"]
+        if "harq_rtt_scaling" in data:
+            config.mac.harq_rtt_scaling = data["harq_rtt_scaling"]
+
         return config
 
     def to_json_schema(self) -> Dict[str, Any]:
@@ -1365,6 +1481,7 @@ class NTNSimConfig(ConfigGroup):
             "traffic": (self.traffic, TrafficConfig),
             "qos": (self.qos, QoSConfig),
             "latency_kpi": (self.latency_kpi, LatencyKPIConfig),
+            "mac": (self.mac, MACConfig),
         }
 
         for group_name, (_, group_cls) in group_map.items():

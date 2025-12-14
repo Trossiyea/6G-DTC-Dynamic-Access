@@ -11,8 +11,14 @@ as a reference implementation for radio-map-driven NTN research.
 
 Key Capabilities
 ----------------
-- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`, `ntn/`, `link/`)，
+- **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`, `ntn/`, `link/`, `traffic/`, `mac/`)，
   便于单元测试、Web 可视化集成和二次开发。
+- **MAC layer (Phase 9)**: 统一的 MAC 层子包 (`mac/`) 提供 3GPP-aligned 的 MAC 协议功能，
+  包括 BSR（Buffer Status Report）管理、DRX（Discontinuous Reception）状态机和 NTN 时序控制（K0/K1/K2, Timing Advance）。
+  支持 NTN 场景下的 RTT 补偿和 HARQ 时序自适应。
+- **Traffic layer (Phase 8)**: 统一的流量层子包 (`traffic/`) 提供包级流量仿真和 QoS 管理，
+  支持 5 种 3GPP 流量模型（Full Buffer/Poisson/FTP3/Video/VoIP）、多 bearer 排队、延迟 CDF 统计，
+  以及 NTN 专用 QoS 延迟补偿。通过后处理方式零侵入式集成调度器。
 - **NTN module (Phase 6)**: 统一的 NTN/卫星子包 (`ntn/`) 整合了轨道模型、星座管理、3GPP TR 38.811 信道模型、
   波束管理和几何计算工具，消除 6+ 处坐标转换和 3 处波束增益计算的代码重复。
 - **Link layer modularization (Phase 7)**: 统一的链路层子包 (`link/`) 整合了 MCS/CQI/BLER 表管理、
@@ -44,7 +50,7 @@ Quick Start
 
 ### 环境验证（推荐首次运行）
 ```bash
-# 验证 Phase 1-7 模块化架构和依赖（含 Phase 6 NTN 模块）
+# 验证 Phase 1-9 模块化架构和依赖（含 Phase 9 MAC 模块）
 python run_test.py --verify
 ```
 
@@ -118,6 +124,26 @@ Configuration Highlights
 - **星座模式**：`enable_constellation`（默认 False）、`tle_catalog_path`、
   `constellation_max_ground_radius_km`、`min_elev_deg`、`association_metric`、
   `ho_enabled`、`ho_hyst_db`、`ho_ttt_ttis`。
+- **流量模型（Phase 8）**：`traffic_model`（full_buffer/poisson/ftp3/video/voip/mixed）、
+  Poisson 参数（`poisson_arrival_rate_hz`、`poisson_packet_size_bytes`、`poisson_qci`）、
+  FTP3 参数（`ftp3_file_size_bytes`、`ftp3_reading_time_ms`）、
+  Video 参数（`video_frame_rate_fps`、`video_i_frame_size_bytes`、`video_gop_size`）、
+  VoIP 参数（`voip_codec`、`voip_activity_factor`、`voip_packet_interval_ms`）、
+  混合流量配比（`mixed_embb_pct`、`mixed_urllc_pct`、`mixed_voip_pct`）。
+- **QoS 配置（Phase 8）**：`enable_qos`、`scheduler_algorithm`（pf/m-lwdf/exp-pf）、
+  M-LWDF 参数（`mlwdf_delta`）、EXP-PF 参数（`exppf_beta`）、
+  URLLC 优先（`urllc_preemption`、`urllc_mini_slot`）、
+  NTN 延迟补偿（`ntn_pdb_extension_factor`、`compensate_rtt_in_pdb`）。
+- **延迟 KPI（Phase 8）**：`record_packet_latency`、`latency_percentiles`（默认 [50, 90, 95, 99, 99.9]）、
+  `record_per_qos_stats`、`max_stored_packets`。
+- **MAC BSR（Phase 9）**：`enable_bsr`、`bsr_table_type`（5bit/8bit）、`bsr_periodic_timer_ms`、
+  `bsr_retx_timer_ms`、`bsr_padding_enabled`。
+- **MAC DRX（Phase 9）**：`enable_drx`、`drx_on_duration_ms`、`drx_inactivity_timer_ms`、
+  `drx_short_cycle_ms`、`drx_long_cycle_ms`、`drx_harq_rtt_timer_slots`、
+  NTN 扩展（`ntn_harq_rtt_extension_ms`、`ntn_inactivity_extension_ms`）。
+- **MAC NTN Timing（Phase 9）**：`ntn_scenario`（terrestrial/leo_600km/leo_1200km/meo/geo）、
+  `k0_slots`、`k1_slots_base`、`k1_ntn_extension_slots`、`k2_slots`、
+  `enable_ta_control`、`ta_common_ms`、`ta_granularity_us`、`harq_rtt_scaling`。
 
 已移除/不再支持的键：`K_interferers`、`prb_bw_hz`、`noise_dbm`（噪声改用 SCS→kTB）、
 `enable_geometry`/`L_fs_db`（始终计算几何）、`csi_delay_ttis`（使用 per-path 延迟）、
@@ -201,6 +227,61 @@ print(f"Baseline SE: {result['avg_se_baseline_default']:.4f}")
 print(f"RadioMap SE: {result['avg_se_radiomap']:.4f}")
 ```
 
+```python
+# 方式5: 带流量模型仿真 (Phase 8)
+from code.simulation import SimulationEngine
+from code.config import load_scenario_config
+
+# 加载配置并启用 Poisson 流量模型
+cfg = load_scenario_config("test/config_toronto_single.py")
+cfg["traffic_model"] = "poisson"  # 或 ftp3, video, voip, mixed
+cfg["poisson_arrival_rate_hz"] = 200.0
+cfg["poisson_packet_size_bytes"] = 1500
+
+# 运行仿真（自动启用流量后处理）
+engine = SimulationEngine(cfg)
+result = engine.run()
+
+# 访问流量 KPI
+if "traffic_kpi" in result:
+    kpi = result["traffic_kpi"]
+    print(f"Packets delivered: {kpi['packets_delivered']}/{kpi['packets_arrived']}")
+    print(f"Delivery rate: {kpi['packet_delivery_rate']*100:.1f}%")
+    print(f"Latency P95: {kpi['latency_cdf']['percentiles']['p95.0']:.2f} ms")
+```
+
+```python
+# 方式6: 使用 MAC 层模块 (Phase 9)
+from mac import BSRManager, DRXController, SchedulingTimingManager, NTNScenario
+import numpy as np
+
+# BSR 管理器
+bsr_mgr = BSRManager(n_ue=100, config={"enable_bsr": True, "bsr_table_type": "5bit"})
+bsr_mgr.update_buffer_state(ue_id=0, lcg_id=1, buffer_bytes=5000)
+report = bsr_mgr.generate_bsr(ue_id=0, tti=10)
+print(f"BSR: LCG {report.lcg_id}, Index {report.bsr_index}, Bytes {report.buffer_size_bytes}")
+
+# DRX 状态机
+drx_ctrl = DRXController(n_ue=100, config={
+    "enable_drx": True,
+    "drx_on_duration_ms": 10.0,
+    "drx_inactivity_timer_ms": 100.0,
+})
+active_ues = drx_ctrl.get_active_ues()  # 获取可调度 UE 列表
+
+# NTN Timing 管理器
+timing_mgr = SchedulingTimingManager(n_ue=100, config={
+    "ntn_scenario": "leo_600km",
+    "k1_slots_base": 4,
+})
+# 从卫星几何更新 timing
+tau_s = np.array([0.010] * 100)  # 10ms 传播延迟
+timing_mgr.update_from_geometry(tau_s)
+k1 = timing_mgr.get_k1(ue_id=0)  # 获取 K1 (PDSCH→ACK)
+ta_ms = timing_mgr.ta_controller.get_ta_for_ue_ms(ue_id=0)  # 获取 TA
+print(f"K1={k1} slots, TA={ta_ms:.1f} ms")
+```
+
 
 Outputs
 -------
@@ -254,7 +335,7 @@ Repository Layout
     - `subband.py` - 子带级基线调度器
     - `power_alloc.py` - DL 功率分配 (water-filling)
   - `config/`: 配置管理系统
-    - `schema.py` - 15 个 dataclass 配置组（simulation, radio_map, harq 等）
+    - `schema.py` - 19 个 dataclass 配置组（simulation, radio_map, harq, traffic, qos, latency_kpi, mac 等）
     - `compat.py` - ConfigDict 向后兼容包装器，支持字典风格访问
     - `loader.py` - JSON/YAML/Python 文件配置加载器
     - `__init__.py` - 导出 CONFIG 实例和公共 API
@@ -264,6 +345,7 @@ Repository Layout
     - `helpers.py` - 辅助函数 (UE 位置生成, 噪声/功率控制, 容量计算, 时变动态)
     - `engine.py` - 单卫星仿真引擎 (SimulationEngine, 封装 run_once 逻辑)
     - `constellation_engine.py` - 多卫星星座仿真引擎 (ConstellationEngine, TTI 循环/切换)
+    - `traffic_simulator.py` - 流量层后处理仿真 (TrafficSimulator, 延迟/吞吐 KPI)
     - `__init__.py` - 导出公共 API (向后兼容 run_once/run_constellation)
   - `ntn/`: NTN/卫星模块 (Phase 6 模块化重构, 消除 150+ 行重复代码)
     - `geometry.py` - 统一几何工具 (FSPL, 波束增益, 坐标转换, Haversine)
@@ -282,6 +364,18 @@ Repository Layout
     - `adaptation.py` - 统一链路自适应接口 (MCS 选择)
     - `harq.py` - HARQ 管理器 (简单/完整两种模式, 进程管理, RV 循环)
     - `__init__.py` - 导出 21 个公共 API
+  - `traffic/`: 流量层模块 (Phase 8 模块化重构, 1510 行)
+    - `packets.py` - Packet 数据结构 (QCI/优先级/deadline)
+    - `buffer.py` - UEBuffer 和 BufferManager (多 bearer 排队管理)
+    - `qos.py` - QoSManager 和 NTNQoSManager (5QI 标准 + NTN 延迟补偿)
+    - `models.py` - 5 种 3GPP 流量模型 (Full Buffer/Poisson/FTP3/Video/VoIP)
+    - `statistics.py` - TrafficStatisticsTracker (延迟 CDF 和 KPI 计算)
+    - `__init__.py` - 导出 15 个公共 API
+  - `mac/`: MAC 层模块 (Phase 9 模块化重构, 2300 行)
+    - `bsr.py` - BSR 管理 (3GPP TS 38.321, 5-bit/8-bit 表, LCG 映射)
+    - `drx.py` - DRX 状态机 (Active/OnDuration/Inactivity/ShortCycle/LongCycle)
+    - `timing.py` - NTN 时序控制 (K0/K1/K2, Timing Advance, HARQ 适配)
+    - `__init__.py` - 导出 35 个公共 API
   - 主模块: `main.py` (轻量编排层, 274 行), `logging_utils.py`, `result_schema.py`, `progress_utils.py` 等。
   - 兼容包装器: `orbit.py`, `constellation.py`, `ntn_channel.py`, `beams.py` (Phase 6);
     `link_adapt.py`, `csi.py`, `harq.py`, `ntn_csi.py` (Phase 7) - 保持向后兼容性。
@@ -300,6 +394,7 @@ Repository Layout
 
 Roadmap (indicative)
 --------------------
+- Phase 9 MAC layer (BSR/DRX/NTN Timing) completed; next integrate with scheduler for realistic MAC-aware scheduling.
 - Expand orbit modelling with full ECEF frame support and richer beam patterns.
 - Integrate real-world interference datasets and per-beam correlation models.
 - Extend HARQ statistics and logging for multi-beam / multi-cell studies.
