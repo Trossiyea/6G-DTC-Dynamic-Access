@@ -13,6 +13,8 @@ Key Capabilities
 ----------------
 - **Modular architecture**: 代码按功能解耦为独立子模块 (`core/`, `data_io/`, `scheduler/`, `config/`, `simulation/`, `ntn/`, `link/`, `traffic/`, `mac/`)，
   便于单元测试、Web 可视化集成和二次开发。
+- **MAC-Scheduler integration (Phase 10)**: 统一的调度集成层将 MAC 模块（BSR/DRX/Timing）与调度器连接，
+  支持 QoS-aware 调度算法（M-LWDF、EXP-PF、EDF）和 NTN-aware HARQ 时序适配，实现真实 RAN 级仿真。
 - **MAC layer (Phase 9)**: 统一的 MAC 层子包 (`mac/`) 提供 3GPP-aligned 的 MAC 协议功能，
   包括 BSR（Buffer Status Report）管理、DRX（Discontinuous Reception）状态机和 NTN 时序控制（K0/K1/K2, Timing Advance）。
   支持 NTN 场景下的 RTT 补偿和 HARQ 时序自适应。
@@ -50,7 +52,7 @@ Quick Start
 
 ### 环境验证（推荐首次运行）
 ```bash
-# 验证 Phase 1-9 模块化架构和依赖（含 Phase 9 MAC 模块）
+# 验证 Phase 1-10 模块化架构和依赖（含 Phase 10 集成层）
 python run_test.py --verify
 ```
 
@@ -144,6 +146,10 @@ Configuration Highlights
 - **MAC NTN Timing（Phase 9）**：`ntn_scenario`（terrestrial/leo_600km/leo_1200km/meo/geo）、
   `k0_slots`、`k1_slots_base`、`k1_ntn_extension_slots`、`k2_slots`、
   `enable_ta_control`、`ta_common_ms`、`ta_granularity_us`、`harq_rtt_scaling`。
+- **QoS-aware 调度（Phase 10）**：`scheduler_algorithm`（pf/m-lwdf/exp-pf/edf）、
+  `mlwdf_delta`、`mlwdf_tau`、`exppf_beta`、`exppf_c`、`compensate_rtt_in_delay`。
+- **NTN HARQ 适配（Phase 10）**：`harq_auto_scale_processes`、`harq_max_ntn_processes`、
+  `ntn_timing_adaptation`。
 
 已移除/不再支持的键：`K_interferers`、`prb_bw_hz`、`noise_dbm`（噪声改用 SCS→kTB）、
 `enable_geometry`/`L_fs_db`（始终计算几何）、`csi_delay_ttis`（使用 per-path 延迟）、
@@ -282,6 +288,41 @@ ta_ms = timing_mgr.ta_controller.get_ta_for_ue_ms(ue_id=0)  # 获取 TA
 print(f"K1={k1} slots, TA={ta_ms:.1f} ms")
 ```
 
+```python
+# 方式7: MAC-Scheduler 集成 (Phase 10)
+from scheduler import MACSchedulerBridge, create_mac_scheduler_bridge, NTNHarqAdapter
+import numpy as np
+
+# 创建集成桥（连接 DRX/BSR/Timing 到调度器）
+bridge = create_mac_scheduler_bridge(
+    n_ue=100,
+    config={
+        "scheduler_algorithm": "m-lwdf",  # QoS-aware 调度
+        "enable_drx": True,
+        "enable_ntn_timing": True,
+        "ntn_scenario": "leo_600km",
+    },
+    tau_s_per_ue=np.array([0.010] * 100),  # 10ms 传播延迟
+)
+
+# 获取 UE 调度 mask (DRX 过滤睡眠 UE)
+ue_mask = bridge.get_ue_mask(tti=0)
+print(f"Active UEs: {np.sum(ue_mask)}/{len(ue_mask)}")
+
+# 计算 QoS-aware 调度 metric (M-LWDF)
+se_metric = np.random.rand(100) * 5.0  # 瞬时可达速率
+hol_delay = np.random.rand(100) * 50   # HoL 延迟 (ms)
+qos_metric = bridge.compute_qos_metric(se_metric, hol_delay)
+print(f"QoS metric range: [{qos_metric.min():.2f}, {qos_metric.max():.2f}]")
+
+# NTN HARQ 适配器
+from scheduler import create_ntn_harq_adapter
+harq_adapter = create_ntn_harq_adapter(n_ue=100, config={"tti_ms": 1.0},
+                                        tau_s_per_ue=np.array([0.010] * 100))
+k1 = harq_adapter.get_k1_for_ue(0)
+print(f"NTN-adapted K1: {k1} slots")
+```
+
 
 Outputs
 -------
@@ -329,11 +370,13 @@ Repository Layout
     - `capacity.py` - 容量/SE计算, MCS映射, EESM
   - `data_io/`: 数据输入输出
     - `radiomap.py` - Radio Map 加载 (MAT/HDF5 格式)
-  - `scheduler/`: 调度算法
+  - `scheduler/`: 调度算法 (Phase 10 扩展, 20 APIs)
     - `baseline.py` - 3GPP-like 宽带基线 PF 调度器
     - `radiomap.py` - RadioMap 感知连续块调度器 (EESM+MCS)
     - `subband.py` - 子带级基线调度器
     - `power_alloc.py` - DL 功率分配 (water-filling)
+    - `integration.py` - MAC-Scheduler 集成层 (MACSchedulerBridge, QoS 算法)
+    - `ntn_harq.py` - NTN-aware HARQ 适配器 (K1 动态调整, 进程扩展)
   - `config/`: 配置管理系统
     - `schema.py` - 19 个 dataclass 配置组（simulation, radio_map, harq, traffic, qos, latency_kpi, mac 等）
     - `compat.py` - ConfigDict 向后兼容包装器，支持字典风格访问
@@ -394,7 +437,8 @@ Repository Layout
 
 Roadmap (indicative)
 --------------------
-- Phase 9 MAC layer (BSR/DRX/NTN Timing) completed; next integrate with scheduler for realistic MAC-aware scheduling.
+- Phase 10 MAC-Scheduler integration completed; QoS-aware scheduling (M-LWDF/EXP-PF) and NTN HARQ adaptation now available.
+- Next: NTN scheduling algorithm research with realistic MAC-aware simulation environment.
 - Expand orbit modelling with full ECEF frame support and richer beam patterns.
 - Integrate real-world interference datasets and per-beam correlation models.
 - Extend HARQ statistics and logging for multi-beam / multi-cell studies.

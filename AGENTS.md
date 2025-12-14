@@ -7,11 +7,13 @@
     - `capacity.py` - capacity/SE calculations, MCS mapping, EESM, Shannon formulas
   - `data_io/`: data input/output
     - `radiomap.py` - Radio Map loading (MAT/HDF5 formats, auto-detection)
-  - `scheduler/`: scheduling algorithms
+  - `scheduler/`: scheduling algorithms (Phase 10 integration, 20 APIs)
     - `baseline.py` - 3GPP-like wideband PF scheduler
     - `radiomap.py` - RadioMap-aware contiguous block scheduler (greedy marginal ΔSE)
     - `subband.py` - subband-level baseline scheduler
     - `power_alloc.py` - DL power allocation (water-filling with box constraints)
+    - `integration.py` - MAC-Scheduler integration (MACSchedulerBridge, QoS algorithms)
+    - `ntn_harq.py` - NTN-aware HARQ adapter (dynamic K1, process scaling)
   - `config/`: type-safe configuration system
     - `schema.py` - 19 dataclass config groups (simulation, radio_map, harq, traffic, qos, latency_kpi, mac, etc.) with metadata
     - `compat.py` - ConfigDict wrapper for backward-compatible dict-style access
@@ -79,6 +81,7 @@
   - Link layer (Phase 7): `from link import MCS, choose_mcs_from_sinr, HarqManager, HarqManagerFull, OLLA, eff_sinr_eesm_db, calc_tbs_bits` (21 APIs available)
   - Traffic layer (Phase 8): `from traffic import BufferManager, create_traffic_generator, QoSManager, NTNQoSManager, Packet, TrafficStatisticsTracker` (15 APIs available)
   - MAC layer (Phase 9): `from mac import BSRManager, DRXController, NTNDRXController, SchedulingTimingManager, TimingAdvanceController, NTNScenario` (35 APIs available)
+  - Scheduler integration (Phase 10): `from scheduler import MACSchedulerBridge, create_mac_scheduler_bridge, NTNHarqAdapter, compute_mlwdf_metric, compute_exppf_metric, QoSSchedulerType` (20 APIs available)
   - Backward-compatible: `from orbit import OrbitModel`, `from constellation import ConstellationOrbit`, `from ntn_channel import sample_3gpp_ntn_fading` (Phase 6 legacy);
     `from link_adapt import MCS, OLLA`, `from csi import sinr_to_cqi`, `from harq import HarqManager` (Phase 7 legacy)
   - Main entry: `from code.main import run_once, run_constellation` (legacy-compatible wrappers)
@@ -86,9 +89,9 @@
 - Keep data paths relative to repo root; prefer `pathlib.Path` for new utilities.
 
 ## Testing Guidelines
-- Environment verification: run `python run_test.py --verify` to check Phase 1-9 module availability (including Phase 9 MAC), dependencies, and imports.
+- Environment verification: run `python run_test.py --verify` to check Phase 1-10 module availability (including Phase 10 integration), dependencies, and imports.
 - Scenario validation: run a city preset after behavioral changes (`python run_test.py --scenario toronto_single`); for orbit/scheduler edits, add a constellation case.
-- Unit tests: `./run_all_tests.sh --unit` runs Phase 6-9 module tests (imports, NTN geometry, MCS/CQI/EESM/HARQ functionality, Traffic/QoS/Statistics, MAC BSR/DRX/Timing, and integration).
+- Unit tests: `./run_all_tests.sh --unit` runs Phase 6-10 module tests (imports, NTN geometry, MCS/CQI/EESM/HARQ functionality, Traffic/QoS/Statistics, MAC BSR/DRX/Timing, Scheduler integration, and end-to-end tests).
 - Quick validation: `./run_all_tests.sh --quick` runs unit tests + 2 representative scenarios.
 - Test script (`run_test.py`) uses the new `load_scenario_config()` API to automatically merge scenario overrides with default config.
 - When adding features, document required data under `test/` and include sample usage in config files.
