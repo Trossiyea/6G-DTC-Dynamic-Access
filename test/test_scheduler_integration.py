@@ -370,10 +370,14 @@ class TestNTNHarqAdapter(unittest.TestCase):
         """Test K1 update from geometry."""
         from scheduler.ntn_harq import NTNHarqAdapter
 
-        adapter = NTNHarqAdapter(n_ue=3, config={"tti_ms": 1.0})
+        # Use MEO scenario which has higher max_k1 (64) to allow K1 differentiation
+        adapter = NTNHarqAdapter(n_ue=3, config={"tti_ms": 1.0, "ntn_scenario": "meo"})
 
-        # 10ms one-way delay = 20ms RTT = 20 slots
-        tau_s = np.array([0.010, 0.020, 0.030])
+        # Different one-way delays to produce different K1 values
+        # 5ms one-way = 10ms RTT = 10 slots → K1 ~14
+        # 10ms one-way = 20ms RTT = 20 slots → K1 ~24
+        # 15ms one-way = 30ms RTT = 30 slots → K1 ~34
+        tau_s = np.array([0.005, 0.010, 0.015])
         adapter.update_from_geometry(tau_s)
 
         # K1 should increase with delay
