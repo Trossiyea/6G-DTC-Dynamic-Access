@@ -49,11 +49,11 @@ class CSIDelayBenchmarkConfig:
 
 
 def create_base_config(bench_cfg: CSIDelayBenchmarkConfig) -> Dict[str, Any]:
-    """Create base simulation config for LEO scenario."""
+    """Create base simulation config for LEO scenario (matching dev branch)."""
     import os
     # Find radio map file
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    rm_path = os.path.join(base_dir, "radio_map", "Shanghai", "RadioMap", "RM_shanghai125_dBm.mat")
+    rm_path = os.path.join(base_dir, "radio_map", "Toronto", "RadioMap", "RM_toronto125_dBm.mat")
 
     return {
         "seed": bench_cfg.seed,
@@ -66,32 +66,57 @@ def create_base_config(bench_cfg: CSIDelayBenchmarkConfig) -> Dict[str, Any]:
         "radio_map_units": "dBm",
 
         # LEO satellite parameters
-        "sat_alt_km": 600,
-        "sat_elev_deg": 45,
-        "ntn_scenario": bench_cfg.ntn_scenario,
+        "sat_altitude_km": 600,
+        "carrier_freq_GHz": 2.0,
+        "beam_half_bw_deg": 8.0,
+        "beam_edge_drop_db": 3.0,
+        "cell_size_km": 0.125,
 
         # PHY parameters
         "scs_khz": 30,
         "P_tx_dbm": 30.0,
+        "G_rx_db": 38.0,
+        "rx_nf_db": 7.0,
+        "impl_loss_db": 1.0,
+        "overhead_eff": 0.85,
 
         # Channel
         "enable_time_varying": bench_cfg.enable_time_varying,
         "channel_model": "3gpp_ntn",
         "ntn_channel_profile": "s_band_handheld_urban",
-        "shadow_std_db": 3.0,
+        "shadow_std_db": 7.0,
 
-        # Scheduler
-        "pf_beta": 0.9,
+        # Scheduler (matching dev branch)
+        "pf_beta": 0.1,
         "use_mcs": True,
         "sched_require_contiguous": True,
+        "sched_eesm_beta_db": 2.5,
+        "baseline_sched_eesm_beta_db": 2.7,
+        "rm_sched_eesm_beta_db": 3.5,
 
-        # RadioMap uses prior info (no delay)
-        "rm_csi_delay_ttis": bench_cfg.rm_csi_delay_ttis,
+        # CSI delay and periodicity (key difference)
+        "baseline_csi_delay_ttis": 12,  # Baseline has CSI delay
+        "rm_csi_delay_ttis": 0,         # RadioMap uses prior info
+        "enable_cqi_periodicity_base": True,
+        "enable_cqi_periodicity_rm": False,
+        "cqi_period_ttis": 5,
+        "cqi_offset_ttis": 0,
+
+        # RadioMap estimation error (small)
+        "radiomap_est_error_db": 1.5,
+        "radiomap_blur_sigma": 1.0,
+
+        # Orbit dynamics (disabled for benchmark - requires TLE data)
+        "enable_orbit_dynamics": False,
+        "tti_ms": 1.0,
+
+        # Radio Map dynamics
+        "rm_flicker_db_std": 0.5,
 
         # HARQ
         "enable_harq_full": True,
         "harq_max_procs": 16,
-        "harq_ack_delay_ttis": 8,  # LEO RTT ~8ms
+        "harq_ack_delay_ttis": 10,
 
         # Recording
         "record_ue_thr": True,
@@ -106,9 +131,9 @@ def run_single_delay(
 ) -> BenchmarkResult:
     """Run simulation with specific CSI delay.
 
-    Compares:
-    - Baseline: Wideband CQI scheduler (pf_schedule_baseline)
-    - RadioMap: Per-PRB interference-aware scheduler (pf_schedule_radiomap_blocks)
+    Compares (matching dev branch behavior):
+    - Baseline: Per-PRB scheduler with instantaneous CSI (subject to delay)
+    - RadioMap: Per-PRB scheduler with RadioMap-predicted metric (no delay impact)
 
     Args:
         base_config: Base simulation configuration
@@ -119,54 +144,40 @@ def run_single_delay(
         BenchmarkResult with SE comparison
     """
     from simulation import SimulationEngine
-    from scheduler.baseline import pf_schedule_baseline
-    from scheduler.radiomap import pf_schedule_radiomap_blocks
 
     config = base_config.copy()
+    # Override baseline CSI delay for this test point
+    config["baseline_csi_delay_ttis"] = csi_delay_ttis
     config["show_progress"] = False
 
-    # Initialize engine to get state
     engine = SimulationEngine(config)
-    engine.initialize()
-    state = engine.state
+    result = engine.run()
 
-    T = config["T"]
-    Z = state.cap.shape[1]
+    # Extract metrics
+    baseline_se = result.get("avg_se_baseline_default", 0.0) or 0.0
+    radiomap_se = result.get("avg_se_radiomap", 0.0) or 0.0
 
-    # Baseline: Wideband CQI scheduler
-    baseline_se = pf_schedule_baseline(
-        cap_wb=state.cap_wb,
-        Z=Z,
-        T=T,
-        beta=config.get("pf_beta", 0.9),
-        snr_lin_wb=state.snr_lin_wb,
-        snr_lin_prb=state.snr_lin,
-        cap_prb=state.cap,
-        use_mcs=config.get("use_mcs", False),
-        config=config,
-    )
+    # Fairness (Jain index)
+    baseline_fairness = result.get("fairness_jain_base", 0.0) or 0.0
+    radiomap_fairness = result.get("fairness_jain_map", 0.0) or 0.0
 
-    # RadioMap: Per-PRB interference-aware scheduler
-    radiomap_se = pf_schedule_radiomap_blocks(
-        cap=state.cap,
-        T=T,
-        beta=config.get("pf_beta", 0.9),
-        snr_lin=state.snr_lin,
-        overhead_eff=1.0,
-        use_mcs=config.get("use_mcs", False),
-        power_split=False,
-        se_metric_override=None,
-        max_prbs_per_ue=None,
-        mcs_params=None,
-        se_metric_time=None,
-        snr_lin_time=None,
-        config=config,
-    )
+    # HARQ ACK rate
+    harq_base = result.get("harq_stats_base") or {}
+    harq_rm = result.get("harq_stats_map") or {}
+
+    base_ack = harq_base.get("ack_count", 1) if harq_base else 1
+    base_total = base_ack + (harq_base.get("nack_count", 0) if harq_base else 0)
+    rm_ack = harq_rm.get("ack_count", 1) if harq_rm else 1
+    rm_total = rm_ack + (harq_rm.get("nack_count", 0) if harq_rm else 0)
 
     return BenchmarkResult(
         csi_delay_ms=csi_delay_ttis * tti_ms,
         baseline_se=baseline_se,
         radiomap_se=radiomap_se,
+        baseline_fairness=baseline_fairness,
+        radiomap_fairness=radiomap_fairness,
+        baseline_harq_ack_rate=base_ack / max(base_total, 1),
+        radiomap_harq_ack_rate=rm_ack / max(rm_total, 1),
     )
 
 
