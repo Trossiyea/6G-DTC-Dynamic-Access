@@ -321,6 +321,7 @@ class SimulationEngine:
 
     def _run_static_schedulers(self, mcs_params: Dict) -> Dict[str, Any]:
         """Run schedulers in static (non-time-varying) mode."""
+        from scheduler.baseline import pf_schedule_baseline
         from scheduler.radiomap import pf_schedule_radiomap_blocks
 
         config = self.config
@@ -342,31 +343,33 @@ class SimulationEngine:
         ue_thr_base = [] if _rec_base_thr else None
         ue_thr_rm = [] if _rec_rm_thr else None
 
-        # Baseline scheduler
-        base_se_default = pf_schedule_radiomap_blocks(
-            state.cap, T, beta=config["pf_beta"],
-            snr_lin=state.snr_lin,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            se_metric_override=None,
-            max_prbs_per_ue=config.get("baseline_max_prbs_per_ue", config.get("max_prbs_per_ue")),
+        # Baseline scheduler (3GPP-like wideband PF)
+        base_se_default = pf_schedule_baseline(
+            cap_wb=state.cap_wb,
+            Z=int(state.Z),
+            T=T,
+            beta=float(config["pf_beta"]),
+            snr_lin_wb=state.snr_lin_wb,
+            overhead_eff=float(config.get("overhead_eff", 1.0)),
+            use_mcs=bool(config.get("use_mcs", False)),
+            power_split=bool(config.get("power_split", False)),
             mcs_params=mcs_params,
             se_metric_time=None,
-            snr_lin_time=None,
-            eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
-            require_contiguous=bool(config.get("sched_require_contiguous", True)),
-            rng=self._rng,
-            dl_power_model=str(config.get("baseline_dl_power_model", "equal_prb")),
-            P_tot_dbm=config.get("baseline_P_tot_dbm"),
-            P_ref_dbm=config.get("P_tx_dbm"),
-            p_min_dbm=config.get("baseline_p_min_dbm"),
-            p_max_dbm=config.get("baseline_p_max_dbm"),
+            snr_lin_wb_time=None,
+            snr_lin_prb=state.snr_lin,
+            cap_prb=state.cap,
+            snr_lin_time_prb=None,
+            force_wideband_throughput=False,
+            ue_mask_time=None,
+            harq_mgr=None,
+            config=config,
             record_assignments=_rec_base,
             assignments_out=assignments_base,
             record_ue_thr=_rec_base_thr,
             ue_thr_out=ue_thr_base,
-            config=config,
+            record_ue_ack_thr=False,
+            ue_ack_thr_out=None,
+            require_contiguous=bool(config.get("sched_require_contiguous", True)),
         )
 
         # RadioMap scheduler
@@ -414,6 +417,7 @@ class SimulationEngine:
 
     def _run_time_varying_schedulers(self, mcs_params: Dict) -> Dict[str, Any]:
         """Run schedulers in time-varying mode with HARQ."""
+        from scheduler.baseline import pf_schedule_baseline
         from scheduler.radiomap import pf_schedule_radiomap_blocks
         from link import HarqManager, HarqManagerFull
         from ntn_csi import snr_to_se_sched
@@ -645,35 +649,33 @@ class SimulationEngine:
         ue_thr_rm = [] if _rec_rm_thr else None
         ue_ack_rm = [] if _rec_rm_ack else None
 
-        # Baseline scheduler
-        base_se_default = pf_schedule_radiomap_blocks(
-            state.cap, T, beta=config["pf_beta"],
-            snr_lin=state.snr_lin,
-            overhead_eff=config.get("overhead_eff", 1.0),
-            use_mcs=config.get("use_mcs", False),
-            power_split=config.get("power_split", False),
-            se_metric_override=None,
-            max_prbs_per_ue=config.get("baseline_max_prbs_per_ue", config.get("max_prbs_per_ue")),
+        # Baseline scheduler (3GPP-like wideband PF)
+        base_se_default = pf_schedule_baseline(
+            cap_wb=state.cap_wb,
+            Z=int(state.Z),
+            T=T,
+            beta=float(config["pf_beta"]),
+            snr_lin_wb=state.snr_lin_wb,
+            overhead_eff=float(config.get("overhead_eff", 1.0)),
+            use_mcs=bool(config.get("use_mcs", False)),
+            power_split=bool(config.get("power_split", False)),
             mcs_params=mcs_params,
-            se_metric_time=se_time_base,
-            snr_lin_time=ts.snr_time,
-            eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
-            require_contiguous=bool(config.get("sched_require_contiguous", True)),
-            rng=self._rng,
+            se_metric_time=se_time_wb,
+            snr_lin_wb_time=ts.snr_wb_time,
+            snr_lin_prb=state.snr_lin,
+            cap_prb=state.cap,
+            snr_lin_time_prb=ts.snr_time,
+            force_wideband_throughput=False,
             ue_mask_time=None,
             harq_mgr=harq_mgr_base,
-            dl_power_model=str(config.get("baseline_dl_power_model", "equal_prb")),
-            P_tot_dbm=config.get("baseline_P_tot_dbm"),
-            P_ref_dbm=config.get("P_tx_dbm"),
-            p_min_dbm=config.get("baseline_p_min_dbm"),
-            p_max_dbm=config.get("baseline_p_max_dbm"),
+            config=config,
             record_assignments=_rec_base,
             assignments_out=assignments_base,
             record_ue_thr=_rec_base_thr,
             ue_thr_out=ue_thr_base,
             record_ue_ack_thr=_rec_base_ack,
             ue_ack_thr_out=ue_ack_base,
-            config=config,
+            require_contiguous=True,
         )
 
         # RadioMap scheduler

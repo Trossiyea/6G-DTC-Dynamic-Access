@@ -7,7 +7,7 @@ decisions, assigning PRBs across the top sqrt(N) UEs per TTI to avoid
 monopolization.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable, Any
 import numpy as np
 from tqdm import tqdm
 
@@ -38,6 +38,16 @@ def pf_schedule_baseline(
     ue_mask_time: Optional[np.ndarray] = None,
     harq_mgr: Optional[HarqManager] = None,
     config: Optional[Dict] = None,
+    # Recording options (UI/trace)
+    record_assignments: bool = False,
+    assignments_out: Optional[list] = None,
+    record_ue_thr: bool = False,
+    ue_thr_out: Optional[list] = None,
+    record_ue_ack_thr: bool = False,
+    ue_ack_thr_out: Optional[list] = None,
+    tti_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+    require_contiguous: bool = True,
 ) -> float:
     """
     3GPP-like baseline: proportional fair with wideband CQI.
@@ -94,7 +104,10 @@ def pf_schedule_baseline(
     )
 
     for t_idx in pbar_iter:
+        if should_stop is not None and bool(should_stop()):
+            break
         # Apply HARQ feedback and credit goodput
+        thr_ack = np.zeros(N_UE, dtype=float)
         if harq_mgr is not None:
             ack_bits = None
             try:
@@ -107,6 +120,12 @@ def pf_schedule_baseline(
                 thr_ack = np.asarray(ack_bits, dtype=float) / float(re_per_prb_val)
                 sum_rate += float(np.sum(thr_ack))
                 Rbar = (1 - beta) * Rbar + beta * thr_ack
+
+        if record_ue_ack_thr and ue_ack_thr_out is not None:
+            try:
+                ue_ack_thr_out.append(np.array(thr_ack, copy=True))
+            except Exception:
+                pass
 
         # Get metric for this TTI
         if se_metric_time is not None:
@@ -151,33 +170,124 @@ def pf_schedule_baseline(
             selected = np.array(sel, dtype=int)
             U_select = len(selected)
 
-        # Allocate PRBs equally across selected UEs
+        # Allocate PRBs equally across selected UEs.
         alloc_counts = np.full(U_select, Z // U_select, dtype=int)
         remainder = Z - int(alloc_counts.sum())
         if remainder > 0:
             alloc_counts[:remainder] += 1
 
-        # Build per-PRB winners by round-robin
+        # Winners: by default use contiguous blocks to align with single-TB HARQ interface.
         winners = np.full(Z, -1, dtype=int)
-        rem = alloc_counts.copy()
-        k_ptr = 0
-        for z in range(Z):
-            for _ in range(U_select):
-                if rem[k_ptr] > 0:
-                    winners[z] = selected[k_ptr]
-                    rem[k_ptr] -= 1
+        if require_contiguous:
+            z0 = 0
+            for k, ue in enumerate(selected):
+                n = int(alloc_counts[k])
+                if n <= 0:
+                    continue
+                winners[z0:z0 + n] = int(ue)
+                z0 += n
+            if z0 < Z:
+                winners[z0:] = int(selected[-1])
+        else:
+            # Fallback to round-robin interleaving.
+            rem = alloc_counts.copy()
+            k_ptr = 0
+            for z in range(Z):
+                for _ in range(U_select):
+                    if rem[k_ptr] > 0:
+                        winners[z] = int(selected[k_ptr])
+                        rem[k_ptr] -= 1
+                        k_ptr = (k_ptr + 1) % U_select
+                        break
                     k_ptr = (k_ptr + 1) % U_select
-                    break
-                k_ptr = (k_ptr + 1) % U_select
-            if winners[z] < 0:
-                winners[z] = selected[0]
+                if winners[z] < 0:
+                    winners[z] = int(selected[0])
 
-        # Compute throughput
+        if record_assignments and assignments_out is not None:
+            try:
+                assignments_out.append(np.array(winners, copy=True))
+            except Exception:
+                pass
+
+        # Compute scheduled throughput (instant), and/or register HARQ blocks.
         thr_i = np.zeros(N_UE)
         if power_split:
             counts = np.bincount(winners, minlength=N_UE)
         else:
             counts = np.ones(N_UE, dtype=int)
+
+        # Full HARQ path prefers contiguous blocks and uses per-UE TB registration.
+        if harq_mgr is not None and hasattr(harq_mgr, "on_scheduled_blocks"):
+            sched_info: Dict[int, Dict] = {}
+            for ue in range(N_UE):
+                prbs = np.flatnonzero(winners == ue)
+                if prbs.size == 0:
+                    continue
+                li = int(prbs.min())
+                ri = int(prbs.max())
+                n_prb = int(ri - li + 1)
+                if not bool(harq_mgr.can_schedule(ue)):
+                    continue
+                # Build per-PRB SINR vector (dB) for EESM/MCS selection
+                if snr_lin_time_prb is not None:
+                    snr_vec_lin = np.asarray(snr_lin_time_prb[t_idx, ue, li:ri + 1], dtype=float)
+                elif snr_lin_prb is not None:
+                    snr_vec_lin = np.asarray(snr_lin_prb[ue, li:ri + 1], dtype=float)
+                else:
+                    # Fallback: approximate from wideband
+                    snr_base = (
+                        snr_lin_wb_time[t_idx, ue]
+                        if snr_lin_wb_time is not None
+                        else (snr_lin_wb[ue] if snr_lin_wb is not None else 1e-9)
+                    )
+                    snr_vec_lin = np.full((n_prb,), float(snr_base), dtype=float)
+
+                sinr_vec_db = 10.0 * np.log10(np.maximum(snr_vec_lin, 1e-12))
+                sched_info[int(ue)] = {
+                    "sinr_vec_db": sinr_vec_db,
+                    "n_prb": n_prb,
+                    "li": li,
+                    "ri": ri,
+                    "eesm_beta_db": float(cfg.get("sched_eesm_beta_db", 1.0)),
+                }
+
+            if sched_info:
+                try:
+                    harq_mgr.on_scheduled_blocks(sched_info)
+                except Exception:
+                    pass
+
+            # Scheduled throughput recording (from HARQ TB sizes)
+            thr_sched = np.zeros(N_UE, dtype=float)
+            try:
+                if re_per_prb_val is None:
+                    re_per_prb_val = max(1, re_per_prb_from_config(cfg))
+                if hasattr(harq_mgr, "get_last_scheduled_info"):
+                    last = harq_mgr.get_last_scheduled_info()
+                    if last and "scheduled_tbs_bits" in last:
+                        thr_sched = np.asarray(last["scheduled_tbs_bits"], dtype=float) / float(re_per_prb_val)
+            except Exception:
+                pass
+
+            if record_ue_thr and ue_thr_out is not None:
+                try:
+                    ue_thr_out.append(np.array(thr_sched, copy=True))
+                except Exception:
+                    pass
+
+            if tti_callback is not None:
+                try:
+                    tti_callback({
+                        "t": int(t_idx),
+                        "winners": np.array(winners, copy=True),
+                        "thr_sched": np.array(thr_sched, copy=True),
+                        "thr_ack": np.array(thr_ack, copy=True),
+                    })
+                except Exception:
+                    pass
+
+            # PF state is updated only by ACKed throughput in this mode.
+            continue
 
         for z in range(Z):
             ue = winners[z]
@@ -229,12 +339,29 @@ def pf_schedule_baseline(
 
             thr_i[ue] += se * overhead_eff
 
+        if record_ue_thr and ue_thr_out is not None:
+            try:
+                ue_thr_out.append(np.array(thr_i, copy=True))
+            except Exception:
+                pass
+
         sum_rate += thr_i.sum()
         Rbar = (1 - beta) * Rbar + beta * thr_i
 
         # Update HARQ after scheduling
         if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
             harq_mgr.on_scheduled(np.unique(winners))
+
+        if tti_callback is not None:
+            try:
+                tti_callback({
+                    "t": int(t_idx),
+                    "winners": np.array(winners, copy=True),
+                    "thr_sched": np.array(thr_i, copy=True),
+                    "thr_ack": np.array(thr_ack, copy=True),
+                })
+            except Exception:
+                pass
 
     # Tail flush: realize ACKs that arrive after last TTI
     if harq_mgr is not None and bool(cfg.get("harq_flush_tail", True)):
