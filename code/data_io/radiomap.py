@@ -13,17 +13,19 @@ R[x, y, z] where x, y are spatial coordinates and z is frequency (PRB index).
 
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
 # Optional imports for MAT file support
 try:
     from scipy.io import loadmat
+    from scipy.io import whosmat
     _SCIPY_OK = True
 except ImportError:
     _SCIPY_OK = False
     loadmat = None
+    whosmat = None
 
 try:
     import h5py
@@ -92,6 +94,38 @@ def _load_mat_scipy(path: str, var_name: str) -> np.ndarray:
         print(f"[load_radio_map] '{var_name}' not found. Using '{pick_key}' instead.")
 
     return np.array(data[pick_key], dtype=float)
+
+
+def list_mat_variables(path: str) -> List[str]:
+    """List available variables/datasets in a MAT file.
+
+    Supports both traditional MAT files and HDF5-based MAT files (v7.3).
+
+    Args:
+        path: Path to the .mat file.
+
+    Returns:
+        List of variable names.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"MAT file not found: {path}")
+
+    # HDF5 MAT (v7.3)
+    if _H5PY_OK:
+        try:
+            with h5py.File(path, 'r') as f:
+                return sorted([str(k) for k in f.keys()])
+        except Exception:
+            pass
+
+    # Traditional MAT
+    if _SCIPY_OK and whosmat is not None:
+        try:
+            return sorted([name for (name, _shape, _dtype) in whosmat(path)])
+        except Exception:
+            return []
+
+    raise ImportError("scipy or h5py is required to inspect MAT variables")
 
 
 def load_radio_map_from_mat(

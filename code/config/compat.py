@@ -144,6 +144,86 @@ _KEY_TO_GROUP: Dict[str, str] = {
     "ho_ttt_ttis": "constellation",
     "constellation_prb_cap": "constellation",
 
+    # Traffic (Phase 8)
+    "traffic_model": "traffic",
+    "poisson_arrival_rate_hz": "traffic",
+    "poisson_packet_size_bytes": "traffic",
+    "poisson_packet_size_std_bytes": "traffic",
+    "poisson_qci": "traffic",
+    "ftp3_file_size_bytes": "traffic",
+    "ftp3_reading_time_ms": "traffic",
+    "ftp3_qci": "traffic",
+    "video_frame_rate_fps": "traffic",
+    "video_gop_size": "traffic",
+    "video_i_frame_size_bytes": "traffic",
+    "video_p_frame_size_bytes": "traffic",
+    "video_qci": "traffic",
+    "voip_codec": "traffic",
+    "voip_activity_factor": "traffic",
+    "voip_packet_interval_ms": "traffic",
+    "voip_qci": "traffic",
+    "mixed_embb_pct": "traffic",
+    "mixed_urllc_pct": "traffic",
+    "mixed_voip_pct": "traffic",
+
+    # QoS (Phase 8/10)
+    "enable_qos": "qos",
+    "scheduler_algorithm": "qos",
+    "mlwdf_alpha": "qos",
+    "mlwdf_delta": "qos",
+    "mlwdf_tau": "qos",
+    "exppf_beta": "qos",
+    "exppf_c": "qos",
+    "urllc_preemption": "qos",
+    "urllc_mini_slot": "qos",
+    "ntn_pdb_extension_factor": "qos",
+    "compensate_rtt_in_pdb": "qos",
+
+    # Latency KPI (Phase 8)
+    "record_packet_latency": "latency_kpi",
+    "latency_percentiles": "latency_kpi",
+    "record_per_qos_stats": "latency_kpi",
+    "max_stored_packets": "latency_kpi",
+
+    # MAC (Phase 9)
+    "enable_bsr": "mac",
+    "bsr_table_type": "mac",
+    "bsr_periodic_timer_ms": "mac",
+    "bsr_retx_timer_ms": "mac",
+    "enable_drx": "mac",
+    "drx_on_duration_ms": "mac",
+    "drx_inactivity_timer_ms": "mac",
+    "drx_short_cycle_ms": "mac",
+    "drx_long_cycle_ms": "mac",
+    "drx_short_cycle_timer": "mac",
+    "ntn_timing_adaptation": "mac",
+    "k1_slots_base": "mac",
+    "k1_ntn_extension_factor": "mac",
+    "harq_rtt_scaling": "mac",
+
+    # OALS (Phase 11 - Patent)
+    "enable_oals": "oals",
+    "lookahead_horizon_ttis": "oals",
+    "lookahead_sample_interval": "oals",
+    "lookahead_update_interval": "oals",
+    "alpha_urgent": "oals",
+    "beta_wait": "oals",
+    "theta_lookahead": "oals",
+    "gamma_decay": "oals",
+    "boost_factor": "oals",
+    "enable_trend_correction": "oals",
+    "trend_threshold_db": "oals",
+    "trend_epsilon": "oals",
+    "enable_predictive_ho": "oals",
+    "handover_prep_ttis": "oals",
+    "handover_recovery_ttis": "oals",
+    "enable_harq_lookahead": "oals",
+    "harq_sinr_aggressive_db": "oals",
+    "harq_sinr_conservative_db": "oals",
+    "harq_delta_threshold_db": "oals",
+    "early_retx_trend_threshold": "oals",
+    "early_retx_max_rv": "oals",
+
     # Output
     "write_json_report": "output",
     "report_basename": "output",
@@ -156,6 +236,9 @@ _KEY_TO_GROUP: Dict[str, str] = {
     "record_assignments": "output",
     "record_assignments_target": "output",
     "record_ue_thr": "output",
+    "record_ue_ack_thr": "output",
+    "enable_trace": "output",
+    "trace_level": "output",
 }
 
 
@@ -402,6 +485,31 @@ class ConfigDict(MutableMapping):
         """Access output configuration group."""
         return self._config.output
 
+    @property
+    def traffic(self):
+        """Access traffic configuration group."""
+        return self._config.traffic
+
+    @property
+    def qos(self):
+        """Access QoS configuration group."""
+        return self._config.qos
+
+    @property
+    def latency_kpi(self):
+        """Access latency KPI configuration group."""
+        return self._config.latency_kpi
+
+    @property
+    def mac(self):
+        """Access MAC configuration group."""
+        return self._config.mac
+
+    @property
+    def oals(self):
+        """Access OALS configuration group."""
+        return self._config.oals
+
     # ==========================================================================
     # Schema and documentation methods
     # ==========================================================================
@@ -425,7 +533,8 @@ class ConfigDict(MutableMapping):
             "simulation", "radio_map", "numerology", "channel",
             "link_budget", "geometry", "orbit", "time_varying",
             "csi", "scheduler", "power_allocation", "harq",
-            "mcs", "constellation", "output"
+            "mcs", "constellation", "output",
+            "traffic", "qos", "latency_kpi", "mac", "oals",
         ]:
             group = getattr(self._config, group_name, None)
             if group:

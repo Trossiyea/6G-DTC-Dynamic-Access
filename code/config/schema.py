@@ -577,6 +577,18 @@ class OutputConfig(ConfigGroup):
     record_ue_thr: bool = field(default=False, metadata={
         "description": "Record per-UE throughput timeline"
     })
+    record_ue_ack_thr: bool = field(default=False, metadata={
+        "description": "Record per-UE ACKed throughput timeline (HARQ)"
+    })
+
+    # UI/trace export (Phase 11+)
+    enable_trace: bool = field(default=False, metadata={
+        "description": "Enable per-TTI trace export for interactive UI playback"
+    })
+    trace_level: str = field(default="ui", metadata={
+        "description": "Trace detail level",
+        "options": ["kpi", "ui", "full"]
+    })
 
 
 @dataclass
@@ -685,7 +697,7 @@ class QoSConfig(ConfigGroup):
 
     scheduler_algorithm: str = field(default="pf", metadata={
         "description": "Scheduling algorithm",
-        "options": ["pf", "m-lwdf", "exp-pf", "round_robin", "max_rate"]
+        "options": ["pf", "m-lwdf", "exp-pf", "edf", "round_robin", "max_rate"]
     })
 
     # M-LWDF parameters
@@ -697,10 +709,18 @@ class QoSConfig(ConfigGroup):
         "description": "M-LWDF target delay violation probability",
         "min": 0.0, "max": 1.0
     })
+    mlwdf_tau: float = field(default=100.0, metadata={
+        "description": "M-LWDF delay bound (tau)",
+        "units": "ms", "min": 1.0
+    })
 
     # EXP-PF parameters
     exppf_beta: float = field(default=1.0, metadata={
         "description": "EXP-PF exponential weight",
+        "min": 0.0
+    })
+    exppf_c: float = field(default=1.0, metadata={
+        "description": "EXP-PF normalization constant",
         "min": 0.0
     })
 
@@ -1128,6 +1148,9 @@ class NTNSimConfig(ConfigGroup):
             "record_assignments": self.output.record_assignments,
             "record_assignments_target": self.output.record_assignments_target,
             "record_ue_thr": self.output.record_ue_thr,
+            "record_ue_ack_thr": self.output.record_ue_ack_thr,
+            "enable_trace": self.output.enable_trace,
+            "trace_level": self.output.trace_level,
         })
 
         # Traffic
@@ -1160,7 +1183,9 @@ class NTNSimConfig(ConfigGroup):
             "scheduler_algorithm": self.qos.scheduler_algorithm,
             "mlwdf_alpha": self.qos.mlwdf_alpha,
             "mlwdf_delta": self.qos.mlwdf_delta,
+            "mlwdf_tau": self.qos.mlwdf_tau,
             "exppf_beta": self.qos.exppf_beta,
+            "exppf_c": self.qos.exppf_c,
             "urllc_preemption": self.qos.urllc_preemption,
             "urllc_mini_slot": self.qos.urllc_mini_slot,
             "ntn_pdb_extension_factor": self.qos.ntn_pdb_extension_factor,
@@ -1477,6 +1502,12 @@ class NTNSimConfig(ConfigGroup):
             config.output.record_assignments_target = data["record_assignments_target"]
         if "record_ue_thr" in data:
             config.output.record_ue_thr = data["record_ue_thr"]
+        if "record_ue_ack_thr" in data:
+            config.output.record_ue_ack_thr = data["record_ue_ack_thr"]
+        if "enable_trace" in data:
+            config.output.enable_trace = data["enable_trace"]
+        if "trace_level" in data:
+            config.output.trace_level = data["trace_level"]
 
         # Traffic
         if "traffic_model" in data:
@@ -1529,8 +1560,12 @@ class NTNSimConfig(ConfigGroup):
             config.qos.mlwdf_alpha = data["mlwdf_alpha"]
         if "mlwdf_delta" in data:
             config.qos.mlwdf_delta = data["mlwdf_delta"]
+        if "mlwdf_tau" in data:
+            config.qos.mlwdf_tau = data["mlwdf_tau"]
         if "exppf_beta" in data:
             config.qos.exppf_beta = data["exppf_beta"]
+        if "exppf_c" in data:
+            config.qos.exppf_c = data["exppf_c"]
         if "urllc_preemption" in data:
             config.qos.urllc_preemption = data["urllc_preemption"]
         if "urllc_mini_slot" in data:

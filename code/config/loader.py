@@ -286,7 +286,8 @@ def _is_nested_format(data: Dict[str, Any]) -> bool:
         "simulation", "radio_map", "numerology", "channel",
         "link_budget", "geometry", "orbit", "time_varying",
         "csi", "scheduler", "power_allocation", "harq",
-        "mcs", "constellation", "output"
+        "mcs", "constellation", "output",
+        "traffic", "qos", "latency_kpi", "mac", "oals",
     }
     return any(k in data and isinstance(data[k], dict) for k in group_keys)
 

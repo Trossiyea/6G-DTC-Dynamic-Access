@@ -54,6 +54,7 @@ class ConstellationEngine:
         self._callbacks = CallbackManager()
         self._state: Optional[ConstellationState] = None
         self._rng: Optional[np.random.Generator] = None
+        self._trace: Optional[Dict[str, Any]] = None
 
     @property
     def state(self) -> Optional[ConstellationState]:
@@ -184,6 +185,28 @@ class ConstellationEngine:
         enable_tv = bool(config.get("enable_time_varying", False))
         vx, vy = config.get("rm_drift_px", (0, 0))
         flicker = float(config.get("rm_flicker_db_std", 0.0))
+        trace_enabled = bool(config.get("enable_trace", False)) or str(config.get("trace_level", "")).lower() in ("ui", "full", "kpi")
+
+        # Optional trace buffers for UI playback
+        if trace_enabled:
+            self._trace = {
+                "tti": np.arange(T, dtype=int),
+                "se_sched_base_per_prb": np.zeros(T, dtype=float),
+                "se_ack_base_per_prb": np.zeros(T, dtype=float),
+                "se_sched_rm_per_prb": np.zeros(T, dtype=float),
+                "se_ack_rm_per_prb": np.zeros(T, dtype=float),
+                "active_ues": np.zeros(T, dtype=int),
+                "candidate_sats": [],
+                "assignments_base_by_tti": [],
+                "assignments_rm_by_tti": [],
+                "ue_thr_sched_base": np.zeros((T, N_UE), dtype=float),
+                "ue_thr_ack_base": np.zeros((T, N_UE), dtype=float),
+                "ue_thr_sched_rm": np.zeros((T, N_UE), dtype=float),
+                "ue_thr_ack_rm": np.zeros((T, N_UE), dtype=float),
+                "serving_trace": np.zeros((T, N_UE), dtype=int),
+            }
+        else:
+            self._trace = None
 
         # Unified parameters
         prb_cap_unified = int(config.get("constellation_prb_cap", config.get("rm_max_prbs_per_ue", 20)))
@@ -217,7 +240,21 @@ class ConstellationEngine:
             # Get candidate satellites
             cand = state.orbit.candidate_indices_at(t_idx)
             if not cand:
+                # No visible satellites this TTI -> treat as outage
+                self._update_association([], assoc_metric_kind, min_elev, ho_enabled, ho_hyst_db, ho_ttt, t_idx)
+                if state.serving_trace is not None:
+                    state.serving_trace.append(np.array(state.serving, copy=True))
+                state.outage_ttis += (state.serving < 0).astype(int)
+                if trace_enabled and self._trace is not None:
+                    self._trace["candidate_sats"].append([])
+                    self._trace["assignments_base_by_tti"].append({})
+                    self._trace["assignments_rm_by_tti"].append({})
+                    self._trace["active_ues"][t_idx] = int(np.sum(state.serving >= 0))
+                    self._trace["serving_trace"][t_idx] = np.asarray(state.serving, dtype=int)
+                self._emit_tti_metrics(t_idx, T)
                 continue
+            if trace_enabled and self._trace is not None:
+                self._trace["candidate_sats"].append([int(x) for x in cand])
 
             # Clear per-TTI caches
             state.clear_per_tti_caches()
@@ -254,11 +291,20 @@ class ConstellationEngine:
             # Record serving trace
             if state.serving_trace is not None:
                 state.serving_trace.append(np.array(state.serving, copy=True))
+            if trace_enabled and self._trace is not None:
+                self._trace["serving_trace"][t_idx] = np.asarray(state.serving, dtype=int)
 
             # Update outage counter
             state.outage_ttis += (state.serving < 0).astype(int)
 
             # Per-satellite scheduling
+            base_thr_sched_t = np.zeros(N_UE, dtype=float)
+            base_thr_ack_t = np.zeros(N_UE, dtype=float)
+            rm_thr_sched_t = np.zeros(N_UE, dtype=float)
+            rm_thr_ack_t = np.zeros(N_UE, dtype=float)
+            base_assignments_by_sat: Dict[int, np.ndarray] = {}
+            rm_assignments_by_sat: Dict[int, np.ndarray] = {}
+
             for si in cand:
                 ue_idx = np.flatnonzero(state.serving == si)
                 if ue_idx.size == 0:
@@ -305,6 +351,16 @@ class ConstellationEngine:
                 # Scheduler calls
                 _cfg = dict(config)
                 _cfg['harq_flush_tail'] = False
+                # Avoid nested tqdm bars for per-satellite per-TTI calls
+                _cfg['show_progress'] = False
+
+                # Local trace outputs (1 TTI)
+                _a_base: Optional[list] = [] if trace_enabled else None
+                _t_base: Optional[list] = [] if trace_enabled else None
+                _ack_base: Optional[list] = [] if trace_enabled else None
+                _a_rm: Optional[list] = [] if trace_enabled else None
+                _t_rm: Optional[list] = [] if trace_enabled else None
+                _ack_rm: Optional[list] = [] if trace_enabled else None
 
                 base = pf_schedule_radiomap_blocks(
                     cap, 1, beta=config["pf_beta"],
@@ -327,7 +383,12 @@ class ConstellationEngine:
                     P_ref_dbm=config.get("P_tx_dbm"),
                     p_min_dbm=pmin,
                     p_max_dbm=pmax,
-                    record_assignments=False,
+                    record_assignments=trace_enabled,
+                    assignments_out=_a_base,
+                    record_ue_thr=trace_enabled,
+                    ue_thr_out=_t_base,
+                    record_ue_ack_thr=trace_enabled,
+                    ue_ack_thr_out=_ack_base,
                     config=_cfg,
                 )
 
@@ -352,12 +413,34 @@ class ConstellationEngine:
                     P_ref_dbm=config.get("P_tx_dbm"),
                     p_min_dbm=pmin,
                     p_max_dbm=pmax,
-                    record_assignments=False,
+                    record_assignments=trace_enabled,
+                    assignments_out=_a_rm,
+                    record_ue_thr=trace_enabled,
+                    ue_thr_out=_t_rm,
+                    record_ue_ack_thr=trace_enabled,
+                    ue_ack_thr_out=_ack_rm,
                     config=_cfg,
                 )
 
                 state.sum_rate_base_def += base * Z
                 state.sum_rate_rm += rm * Z
+
+                if trace_enabled:
+                    try:
+                        if _t_base and len(_t_base) > 0:
+                            base_thr_sched_t += np.asarray(_t_base[0], dtype=float)
+                        if _ack_base and len(_ack_base) > 0:
+                            base_thr_ack_t += np.asarray(_ack_base[0], dtype=float)
+                        if _t_rm and len(_t_rm) > 0:
+                            rm_thr_sched_t += np.asarray(_t_rm[0], dtype=float)
+                        if _ack_rm and len(_ack_rm) > 0:
+                            rm_thr_ack_t += np.asarray(_ack_rm[0], dtype=float)
+                        if _a_base and len(_a_base) > 0:
+                            base_assignments_by_sat[int(si)] = np.asarray(_a_base[0], dtype=int)
+                        if _a_rm and len(_a_rm) > 0:
+                            rm_assignments_by_sat[int(si)] = np.asarray(_a_rm[0], dtype=int)
+                    except Exception:
+                        pass
 
                 # Update per-satellite KPI
                 k = state.kpi_per_sat.get(si)
@@ -377,6 +460,19 @@ class ConstellationEngine:
                 k["served_ue_max"] = max(int(k["served_ue_max"]), int(ue_idx.size))
                 k["sum_se_base_def"] += float(base * Z)
                 k["sum_se_rm"] += float(rm * Z)
+
+            if trace_enabled and self._trace is not None:
+                self._trace["active_ues"][t_idx] = int(np.sum(state.serving >= 0))
+                self._trace["ue_thr_sched_base"][t_idx] = base_thr_sched_t
+                self._trace["ue_thr_ack_base"][t_idx] = base_thr_ack_t
+                self._trace["ue_thr_sched_rm"][t_idx] = rm_thr_sched_t
+                self._trace["ue_thr_ack_rm"][t_idx] = rm_thr_ack_t
+                self._trace["se_sched_base_per_prb"][t_idx] = float(np.sum(base_thr_sched_t) / max(1, Z))
+                self._trace["se_ack_base_per_prb"][t_idx] = float(np.sum(base_thr_ack_t) / max(1, Z))
+                self._trace["se_sched_rm_per_prb"][t_idx] = float(np.sum(rm_thr_sched_t) / max(1, Z))
+                self._trace["se_ack_rm_per_prb"][t_idx] = float(np.sum(rm_thr_ack_t) / max(1, Z))
+                self._trace["assignments_base_by_tti"].append(base_assignments_by_sat)
+                self._trace["assignments_rm_by_tti"].append(rm_assignments_by_sat)
 
             # Emit TTI metrics
             self._emit_tti_metrics(t_idx, T)
@@ -500,6 +596,7 @@ class ConstellationEngine:
         """Finalize simulation and build result dict."""
         import os
         import json
+        from .trace import SimulationTrace, SchedulerTrace
 
         config = self.config
         state = self._state
@@ -556,6 +653,42 @@ class ConstellationEngine:
 
         if state.serving_trace is not None:
             report["serving_trace"] = np.stack(state.serving_trace, axis=0)
+
+        trace_enabled = bool(config.get("enable_trace", False)) or str(config.get("trace_level", "")).lower() in ("ui", "full", "kpi")
+        if trace_enabled and self._trace is not None:
+            baseline_trace = SchedulerTrace(
+                assignments=None,
+                ue_thr_scheduled=np.asarray(self._trace.get("ue_thr_sched_base"), dtype=float),
+                ue_thr_acked=np.asarray(self._trace.get("ue_thr_ack_base"), dtype=float),
+                sum_se_scheduled_per_prb=np.asarray(self._trace.get("se_sched_base_per_prb"), dtype=float),
+                sum_se_acked_per_prb=np.asarray(self._trace.get("se_ack_base_per_prb"), dtype=float),
+            )
+            radiomap_trace = SchedulerTrace(
+                assignments=None,
+                ue_thr_scheduled=np.asarray(self._trace.get("ue_thr_sched_rm"), dtype=float),
+                ue_thr_acked=np.asarray(self._trace.get("ue_thr_ack_rm"), dtype=float),
+                sum_se_scheduled_per_prb=np.asarray(self._trace.get("se_sched_rm_per_prb"), dtype=float),
+                sum_se_acked_per_prb=np.asarray(self._trace.get("se_ack_rm_per_prb"), dtype=float),
+            )
+            trace = SimulationTrace(
+                mode="constellation",
+                tti=np.asarray(self._trace.get("tti"), dtype=int),
+                baseline=baseline_trace,
+                radiomap=radiomap_trace,
+                oals=None,
+                extra={
+                    "N_UE": int(N_UE),
+                    "Z": int(Z),
+                    "T": int(T),
+                    "prb_bw_hz": float(state.prb_bw_hz),
+                    "system_bandwidth_hz": float(state.prb_bw_hz) * float(Z),
+                    "candidate_sats": list(self._trace.get("candidate_sats", [])),
+                    "assignments_base_by_tti": list(self._trace.get("assignments_base_by_tti", [])),
+                    "assignments_rm_by_tti": list(self._trace.get("assignments_rm_by_tti", [])),
+                    "serving_trace": np.asarray(self._trace.get("serving_trace"), dtype=int),
+                },
+            )
+            report["trace"] = trace.to_dict()
 
         # Write JSON report
         try:

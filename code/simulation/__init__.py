@@ -57,6 +57,7 @@ from .helpers import (
 from .engine import SimulationEngine
 from .constellation_engine import ConstellationEngine
 from .traffic_simulator import TrafficSimulator, simulate_traffic_layer
+from .trace import SimulationTrace, SchedulerTrace, OALSTrace
 
 __all__ = [
     # State classes
@@ -81,4 +82,8 @@ __all__ = [
     # Traffic simulation
     "TrafficSimulator",
     "simulate_traffic_layer",
+    # UI trace
+    "SimulationTrace",
+    "SchedulerTrace",
+    "OALSTrace",
 ]

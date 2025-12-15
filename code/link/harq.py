@@ -165,6 +165,8 @@ class HarqManagerFull:
         self._tb_acked = 0
         self._tb_dropped = 0
         self._sum_retx_acked = 0
+        # Last scheduling info (for UI/trace export)
+        self._last_scheduled_info: Optional[Dict[str, np.ndarray]] = None
 
     # ------------------------
     # Public API used by schedulers
@@ -282,7 +284,17 @@ class HarqManagerFull:
                   'li': int, 'ri': int,  # contiguous PRB block indices
                 }
         """
+        # Initialize last scheduling info for this TTI (including empty schedules)
+        sched_bits = np.zeros(self.N, dtype=float)
+        sched_mcs_idx = np.full(self.N, -1, dtype=int)
+        sched_is_retx = np.zeros(self.N, dtype=bool)
+
         if not info:
+            self._last_scheduled_info = {
+                "scheduled_tbs_bits": sched_bits,
+                "scheduled_mcs_idx": sched_mcs_idx,
+                "scheduled_is_retx": sched_is_retx,
+            }
             return
         for u, d in info.items():
             u = int(u)
@@ -297,6 +309,10 @@ class HarqManagerFull:
                     # Shouldn't happen; clear and skip
                     self._retx[u] = None
                     continue
+                # Record scheduled info (retransmission uses the same TB size)
+                sched_bits[u] = float(tb.get("tbs_bits", 0))
+                sched_mcs_idx[u] = int(tb.get("mcs_idx", -1))
+                sched_is_retx[u] = True
                 # Combine effective SINR with new attempt
                 sinr_eff_now_db = eff_sinr_eesm_db(
                     np.asarray(d['sinr_vec_db']),
@@ -338,6 +354,10 @@ class HarqManagerFull:
                     dmrs_re_per_sym_per_prb=int(self.cfg.get('dmrs_re_per_sym_per_prb', 6)),
                     oh_prb=int(self.cfg.get('oh_prb', 0)),
                 )
+                # Record scheduled info (new transmission)
+                sched_bits[u] = float(tbs_bits)
+                sched_mcs_idx[u] = int(mcs.idx)
+                sched_is_retx[u] = False
                 tb = {
                     'tb_id': int(self._tb_next[u]),
                     'rv_idx': 0,            # RV sequence start
@@ -356,6 +376,21 @@ class HarqManagerFull:
                 self._tb_started += 1
                 # Schedule feedback
                 self._acks[u].append((self.t + self.D, tb['tb_id'], pidx))
+
+        self._last_scheduled_info = {
+            "scheduled_tbs_bits": sched_bits,
+            "scheduled_mcs_idx": sched_mcs_idx,
+            "scheduled_is_retx": sched_is_retx,
+        }
+
+    def get_last_scheduled_info(self) -> Optional[Dict[str, np.ndarray]]:
+        """Return last scheduling info captured in on_scheduled_blocks().
+
+        Useful for per-TTI trace export (UI playback, debugging).
+        """
+        if self._last_scheduled_info is None:
+            return None
+        return {k: np.array(v, copy=True) for k, v in self._last_scheduled_info.items()}
 
     # ------------------------
     # Internal helpers

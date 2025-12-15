@@ -86,6 +86,51 @@ def run_constellation(config: Dict) -> Dict:
     return engine.run()
 
 
+def _prepare_trace_config(config: Dict, trace_level: str = "ui") -> Dict:
+    """Prepare a config copy with trace/recording options enabled."""
+    try:
+        cfg = config.copy()
+    except Exception:
+        cfg = dict(config)
+
+    # Trace toggles (new OutputConfig keys; also works as extra keys)
+    cfg["enable_trace"] = True
+    cfg["trace_level"] = str(trace_level)
+
+    # Recording options used by SimulationEngine/ConstellationEngine
+    cfg["record_assignments"] = True
+    cfg["record_assignments_target"] = str(cfg.get("record_assignments_target", "both"))
+    if str(cfg.get("record_assignments_target", "both")).lower() == "rm":
+        cfg["record_assignments_target"] = "both"
+    cfg["record_ue_thr"] = True
+    cfg["record_ue_ack_thr"] = True
+
+    # Avoid nested progress bars; UI will render its own timeline
+    cfg["show_progress"] = False
+
+    return cfg
+
+
+def run_once_with_trace(config: Dict, trace_level: str = "ui") -> Dict:
+    """Single-satellite simulation with per-TTI trace enabled (UI-ready)."""
+    cfg = _prepare_trace_config(config, trace_level=trace_level)
+    return run_once(cfg)
+
+
+def run_constellation_with_trace(config: Dict, trace_level: str = "ui") -> Dict:
+    """Constellation simulation with per-TTI trace enabled (UI-ready)."""
+    cfg = _prepare_trace_config(config, trace_level=trace_level)
+    return run_constellation(cfg)
+
+
+def run_with_trace(config: Dict, trace_level: str = "ui") -> Dict:
+    """Auto-select single-satellite/constellation run with trace enabled."""
+    cfg = _prepare_trace_config(config, trace_level=trace_level)
+    if bool(cfg.get("enable_constellation", False)):
+        return run_constellation(cfg)
+    return run_once(cfg)
+
+
 def run_many(config: Dict, seeds: np.ndarray) -> Dict:
     """Run simulation with multiple seeds for statistical analysis.
 

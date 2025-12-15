@@ -324,12 +324,21 @@ class SimulationEngine:
         config = self.config
         state = self._state
         T = config["T"]
+        trace_enabled = bool(config.get("enable_trace", False)) or str(config.get("trace_level", "")).lower() in ("ui", "full", "kpi")
+        target = str(config.get("record_assignments_target", "rm")).lower()
+        if trace_enabled:
+            target = "both"
 
         # Recording options
-        _rec_rm = bool(config.get("record_assignments", False))
-        _rec_base = _rec_rm and str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all")
+        _rec_base = (trace_enabled or bool(config.get("record_assignments", False))) and target in ("base", "both", "all")
+        _rec_rm = (trace_enabled or bool(config.get("record_assignments", False))) and target in ("rm", "both", "all")
         assignments_base = [] if _rec_base else None
         assignments_rm = [] if _rec_rm else None
+        _rec_thr = trace_enabled or bool(config.get("record_ue_thr", False))
+        _rec_base_thr = _rec_thr and target in ("base", "both", "all")
+        _rec_rm_thr = _rec_thr and target in ("rm", "both", "all")
+        ue_thr_base = [] if _rec_base_thr else None
+        ue_thr_rm = [] if _rec_rm_thr else None
 
         # Baseline scheduler
         base_se_default = pf_schedule_radiomap_blocks(
@@ -353,6 +362,8 @@ class SimulationEngine:
             p_max_dbm=config.get("baseline_p_max_dbm"),
             record_assignments=_rec_base,
             assignments_out=assignments_base,
+            record_ue_thr=_rec_base_thr,
+            ue_thr_out=ue_thr_base,
             config=config,
         )
 
@@ -379,6 +390,8 @@ class SimulationEngine:
             p_max_dbm=config.get("rm_p_max_dbm"),
             record_assignments=_rec_rm,
             assignments_out=assignments_rm,
+            record_ue_thr=_rec_rm_thr,
+            ue_thr_out=ue_thr_rm,
             config=config,
         )
 
@@ -393,6 +406,8 @@ class SimulationEngine:
             "harq_stats_map": None,
             "assignments_base": assignments_base,
             "assignments_rm": assignments_rm,
+            "ue_thr_base": ue_thr_base,
+            "ue_thr_rm": ue_thr_rm,
         }
 
     def _run_time_varying_schedulers(self, mcs_params: Dict) -> Dict[str, Any]:
@@ -406,6 +421,10 @@ class SimulationEngine:
         ts = state.time_series
         T = config["T"]
         N_UE = config["N_UE"]
+        trace_enabled = bool(config.get("enable_trace", False)) or str(config.get("trace_level", "")).lower() in ("ui", "full", "kpi")
+        target = str(config.get("record_assignments_target", "rm")).lower()
+        if trace_enabled:
+            target = "both"
 
         # Apply CSI delays
         baseline_delay = int(config.get("baseline_csi_delay_ttis", 0))
@@ -435,13 +454,14 @@ class SimulationEngine:
                 se_time_rm = hold_series(se_time_rm, period, offset)
 
         # QoS metric weighting (optional)
-        qos_algorithm = config.get("qos_algorithm", "pf").lower()
-        if QOS_AVAILABLE and qos_algorithm in ("m-lwdf", "mlwdf", "exp-pf", "exppf"):
+        qos_algorithm = str(config.get("scheduler_algorithm", config.get("qos_algorithm", "pf"))).lower()
+        enable_qos = bool(config.get("enable_qos", qos_algorithm not in ("pf",)))
+        if enable_qos and QOS_AVAILABLE and qos_algorithm in ("m-lwdf", "mlwdf", "exp-pf", "exppf"):
             # Initialize QoS state
             hol_delay_ms = np.zeros(N_UE)
             qos_params = np.column_stack([
-                np.full(N_UE, config.get("qos_delta", 0.01)),
-                np.full(N_UE, config.get("qos_tau_ms", 100.0)),
+                np.full(N_UE, config.get("mlwdf_delta", config.get("qos_delta", 0.01))),
+                np.full(N_UE, config.get("mlwdf_tau", config.get("qos_tau_ms", 100.0))),
             ])
             avg_thr = np.full(N_UE, 1e-3)
 
@@ -460,10 +480,20 @@ class SimulationEngine:
                     )
                 elif qos_algorithm in ("exp-pf", "exppf"):
                     se_time_base[tt] = compute_exppf_metric(
-                        se_time_base[tt], avg_thr, hol_delay_ms, qos_params
+                        se_time_base[tt],
+                        avg_thr,
+                        hol_delay_ms,
+                        qos_params,
+                        beta=float(config.get("exppf_beta", 1.0)),
+                        c=float(config.get("exppf_c", 1.0)),
                     )
                     se_time_rm[tt] = compute_exppf_metric(
-                        se_time_rm[tt], avg_thr, hol_delay_ms, qos_params
+                        se_time_rm[tt],
+                        avg_thr,
+                        hol_delay_ms,
+                        qos_params,
+                        beta=float(config.get("exppf_beta", 1.0)),
+                        c=float(config.get("exppf_c", 1.0)),
                     )
 
                 # Update average throughput (simplified)
@@ -472,18 +502,32 @@ class SimulationEngine:
                 hol_delay_ms = hol_delay_ms * 0.5
 
         # OALS metric correction (Phase 11 - Patent)
+        oals_phi_time = None
+        oals_trend_time = None
+        oals_urgency_time = None
+        oals_correction_time = None
+        oals_update_ttis = None
         if OALS_AVAILABLE and state.oals_scheduler is not None:
+            from scheduler.lookahead import compute_correction_factor_batch
             oals = state.oals_scheduler
             update_interval = int(config.get("lookahead_update_interval", 10))
 
             # Initialize urgency (simplified: use time fraction as proxy)
             # In production, urgency would come from buffer/QoS manager
             urgency = np.zeros(N_UE)
+            if trace_enabled:
+                oals_phi_time = np.zeros((T, N_UE), dtype=float)
+                oals_trend_time = np.zeros((T, N_UE), dtype=float)
+                oals_urgency_time = np.zeros((T, N_UE), dtype=float)
+                oals_correction_time = np.ones((T, N_UE), dtype=float)
+                oals_update_ttis = []
 
             for tt in range(T):
                 # Update lookahead predictions periodically
                 if tt % update_interval == 0:
-                    oals.update_lookahead(state.ue_pos, tt)
+                    did_update = oals.update_lookahead(state.ue_pos, tt)
+                    if trace_enabled and did_update and oals_update_ttis is not None:
+                        oals_update_ttis.append(int(tt))
 
                 # Compute and apply OALS correction to RadioMap metrics
                 # Get QoS weight (use ones if QoS not enabled)
@@ -491,6 +535,20 @@ class SimulationEngine:
 
                 # Apply OALS correction to per-PRB metrics
                 oals.set_urgency(urgency)
+                if trace_enabled:
+                    phi = np.asarray(oals.get_phi_array(), dtype=float).reshape(-1)
+                    trend = np.asarray(oals.get_trend_array(), dtype=float).reshape(-1)
+                    if phi.size != N_UE:
+                        phi = np.ones(N_UE, dtype=float)
+                    if trend.size != N_UE:
+                        trend = np.zeros(N_UE, dtype=float)
+                    correction = compute_correction_factor_batch(phi, urgency, trend, oals.cfg)
+                    if correction.size != N_UE:
+                        correction = np.ones(N_UE, dtype=float)
+                    oals_phi_time[tt] = phi
+                    oals_trend_time[tt] = trend
+                    oals_urgency_time[tt] = urgency
+                    oals_correction_time[tt] = correction
                 se_time_rm[tt] = oals.compute_oals_metric(
                     se_time_rm[tt], qos_weight
                 )
@@ -532,19 +590,19 @@ class SimulationEngine:
             )
 
         # Recording options
-        _rec_base = bool(config.get("record_assignments", False)) and \
-            str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all")
-        _rec_base_thr = bool(config.get("record_ue_thr", False)) and \
-            str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all")
-        _rec_rm = bool(config.get("record_assignments", False)) and \
-            str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all")
-        _rec_rm_thr = bool(config.get("record_ue_thr", False)) and \
-            str(config.get("record_assignments_target", "rm")).lower() in ("rm", "both", "all")
+        _rec_base = (trace_enabled or bool(config.get("record_assignments", False))) and target in ("base", "both", "all")
+        _rec_base_thr = (trace_enabled or bool(config.get("record_ue_thr", False))) and target in ("base", "both", "all")
+        _rec_rm = (trace_enabled or bool(config.get("record_assignments", False))) and target in ("rm", "both", "all")
+        _rec_rm_thr = (trace_enabled or bool(config.get("record_ue_thr", False))) and target in ("rm", "both", "all")
+        _rec_base_ack = (trace_enabled or bool(config.get("record_ue_ack_thr", False))) and target in ("base", "both", "all")
+        _rec_rm_ack = (trace_enabled or bool(config.get("record_ue_ack_thr", False))) and target in ("rm", "both", "all")
 
         assignments_base = [] if _rec_base else None
         ue_thr_base = [] if _rec_base_thr else None
+        ue_ack_base = [] if _rec_base_ack else None
         assignments_rm = [] if _rec_rm else None
         ue_thr_rm = [] if _rec_rm_thr else None
+        ue_ack_rm = [] if _rec_rm_ack else None
 
         # Baseline scheduler
         base_se_default = pf_schedule_radiomap_blocks(
@@ -572,6 +630,8 @@ class SimulationEngine:
             assignments_out=assignments_base,
             record_ue_thr=_rec_base_thr,
             ue_thr_out=ue_thr_base,
+            record_ue_ack_thr=_rec_base_ack,
+            ue_ack_thr_out=ue_ack_base,
             config=config,
         )
 
@@ -601,6 +661,8 @@ class SimulationEngine:
             assignments_out=assignments_rm,
             record_ue_thr=_rec_rm_thr,
             ue_thr_out=ue_thr_rm,
+            record_ue_ack_thr=_rec_rm_ack,
+            ue_ack_thr_out=ue_ack_rm,
             config=config,
         )
 
@@ -637,11 +699,19 @@ class SimulationEngine:
             "assignments_rm": assignments_rm,
             "ue_thr_base": ue_thr_base,
             "ue_thr_rm": ue_thr_rm,
+            "ue_ack_base": ue_ack_base,
+            "ue_ack_rm": ue_ack_rm,
+            "oals_phi_time": oals_phi_time,
+            "oals_trend_time": oals_trend_time,
+            "oals_urgency_time": oals_urgency_time,
+            "oals_correction_time": oals_correction_time,
+            "oals_update_ttis": oals_update_ttis,
         }
 
     def _finalize(self, sched_result: Dict) -> Dict[str, Any]:
         """Finalize simulation and build result dict."""
         from link import re_per_prb_from_config
+        from .trace import SimulationTrace, SchedulerTrace, OALSTrace
 
         config = self.config
         state = self._state
@@ -697,6 +767,77 @@ class SimulationEngine:
         else:
             report["oals_enabled"] = False
 
+        # UI/trace export (optional)
+        trace_enabled = bool(config.get("enable_trace", False)) or str(config.get("trace_level", "")).lower() in ("ui", "full", "kpi")
+        if trace_enabled:
+            T = int(state.T)
+            Z = int(state.Z)
+
+            base_assign = report.get("assignments_base")
+            rm_assign = report.get("assignments_rm")
+            base_thr = report.get("ue_thr_time_base")
+            rm_thr = report.get("ue_thr_time_rm")
+            base_ack = report.get("ue_ack_time_base")
+            rm_ack = report.get("ue_ack_time_rm")
+
+            def _sum_se_per_prb(arr: Any) -> Any:
+                if arr is None:
+                    return None
+                try:
+                    return np.sum(np.asarray(arr, dtype=float), axis=1) / float(max(1, Z))
+                except Exception:
+                    return None
+
+            baseline_trace = SchedulerTrace(
+                assignments=base_assign,
+                ue_thr_scheduled=base_thr,
+                ue_thr_acked=base_ack,
+                sum_se_scheduled_per_prb=_sum_se_per_prb(base_thr),
+                sum_se_acked_per_prb=_sum_se_per_prb(base_ack),
+            )
+            radiomap_trace = SchedulerTrace(
+                assignments=rm_assign,
+                ue_thr_scheduled=rm_thr,
+                ue_thr_acked=rm_ack,
+                sum_se_scheduled_per_prb=_sum_se_per_prb(rm_thr),
+                sum_se_acked_per_prb=_sum_se_per_prb(rm_ack),
+            )
+
+            oals_trace = None
+            try:
+                phi = sched_result.get("oals_phi_time")
+                trend = sched_result.get("oals_trend_time")
+                urg = sched_result.get("oals_urgency_time")
+                corr = sched_result.get("oals_correction_time")
+                upd = sched_result.get("oals_update_ttis") or []
+                if phi is not None and trend is not None and urg is not None and corr is not None:
+                    oals_trace = OALSTrace(
+                        phi=np.asarray(phi, dtype=float),
+                        trend=np.asarray(trend, dtype=float),
+                        urgency=np.asarray(urg, dtype=float),
+                        correction=np.asarray(corr, dtype=float),
+                        update_ttis=[int(x) for x in list(upd)],
+                    )
+            except Exception:
+                oals_trace = None
+
+            trace = SimulationTrace(
+                mode="single",
+                tti=np.arange(T, dtype=int),
+                baseline=baseline_trace,
+                radiomap=radiomap_trace,
+                oals=oals_trace,
+                extra={
+                    "N_UE": int(state.N_UE),
+                    "Z": int(state.Z),
+                    "T": int(state.T),
+                    "prb_bw_hz": float(state.prb_bw_hz),
+                    "system_bandwidth_hz": float(sys_bw_hz),
+                    "scheduler_algorithm": str(config.get("scheduler_algorithm", config.get("qos_algorithm", "pf"))),
+                },
+            )
+            report["trace"] = trace.to_dict()
+
         # Write JSON report if configured
         self._write_json_report(report)
 
@@ -735,6 +876,14 @@ class SimulationEngine:
                 thr_mat_b = np.stack(ue_thr_base, axis=0)
                 report["ue_thr_time_base"] = thr_mat_b
                 report["per_ue_se_base_avg"] = (np.sum(thr_mat_b, axis=0) / float(max(1, T) * state.Z)).tolist()
+
+            ue_ack_rm = sched_result.get("ue_ack_rm")
+            if ue_ack_rm is not None and len(ue_ack_rm) > 0:
+                report["ue_ack_time_rm"] = np.stack(ue_ack_rm, axis=0)
+
+            ue_ack_base = sched_result.get("ue_ack_base")
+            if ue_ack_base is not None and len(ue_ack_base) > 0:
+                report["ue_ack_time_base"] = np.stack(ue_ack_base, axis=0)
         except Exception:
             pass
 

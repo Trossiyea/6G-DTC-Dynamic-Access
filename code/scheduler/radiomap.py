@@ -13,7 +13,7 @@ Features:
 - HARQ integration with retransmission priority
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Callable, Any
 import numpy as np
 from tqdm import tqdm
 
@@ -51,6 +51,10 @@ def pf_schedule_radiomap_blocks(
     assignments_out: Optional[list] = None,
     record_ue_thr: bool = False,
     ue_thr_out: Optional[list] = None,
+    record_ue_ack_thr: bool = False,
+    ue_ack_thr_out: Optional[list] = None,
+    tti_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
     config: Optional[Dict] = None,
 ) -> float:
     """
@@ -86,6 +90,10 @@ def pf_schedule_radiomap_blocks(
         assignments_out: Output list for assignments
         record_ue_thr: If True, record per-UE throughput
         ue_thr_out: Output list for per-UE throughput
+        record_ue_ack_thr: If True, record per-UE ACKed throughput (HARQ full mode)
+        ue_ack_thr_out: Output list for per-UE ACKed throughput
+        tti_callback: Optional callback invoked after each TTI with debug info
+        should_stop: Optional function to allow early termination
         config: Configuration dict
 
     Returns:
@@ -116,7 +124,11 @@ def pf_schedule_radiomap_blocks(
     )
 
     for t_idx in pbar_iter:
+        if should_stop is not None and bool(should_stop()):
+            break
         # HARQ feedback processing
+        thr_ack = np.zeros(N_UE, dtype=float)
+        thr_sched = np.zeros(N_UE, dtype=float)
         if harq_mgr is not None:
             ack_bits = None
             try:
@@ -129,6 +141,12 @@ def pf_schedule_radiomap_blocks(
                 thr_ack = np.asarray(ack_bits, dtype=float) / float(re_per_prb_val)
                 sum_rate += float(np.sum(thr_ack))
                 Rbar = (1 - beta) * Rbar + beta * thr_ack
+
+        if record_ue_ack_thr and ue_ack_thr_out is not None:
+            try:
+                ue_ack_thr_out.append(np.array(thr_ack, copy=True))
+            except Exception:
+                pass
 
         mask_t = None
         if ue_mask_time is not None:
@@ -367,6 +385,21 @@ def pf_schedule_radiomap_blocks(
                 dl_power_model, P_tot_dbm, P_ref_dbm, p_min_dbm, p_max_dbm,
                 eesm_beta_db, harq_mgr
             )
+            # Scheduled (not yet ACKed) throughput based on TB sizes
+            try:
+                if re_per_prb_val is None:
+                    re_per_prb_val = max(1, re_per_prb_from_config(cfg))
+                if hasattr(harq_mgr, "get_last_scheduled_info"):
+                    last = harq_mgr.get_last_scheduled_info()
+                    if last and "scheduled_tbs_bits" in last:
+                        thr_sched = np.asarray(last["scheduled_tbs_bits"], dtype=float) / float(re_per_prb_val)
+            except Exception:
+                pass
+            if record_ue_thr and ue_thr_out is not None:
+                try:
+                    ue_thr_out.append(np.array(thr_sched, copy=True))
+                except Exception:
+                    pass
         else:
             # Legacy throughput accumulation
             snr_scaled = apply_dl_power_allocation(
@@ -388,6 +421,7 @@ def pf_schedule_radiomap_blocks(
                 )
                 thr_i[ue] = (ri - li + 1) * se_per_prb * overhead_eff
 
+            thr_sched = thr_i
             if record_ue_thr and ue_thr_out is not None:
                 try:
                     ue_thr_out.append(np.array(thr_i, copy=True))
@@ -400,6 +434,18 @@ def pf_schedule_radiomap_blocks(
             if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
                 scheduled = np.flatnonzero(k_assigned > 0)
                 harq_mgr.on_scheduled(scheduled)
+
+        if tti_callback is not None:
+            try:
+                tti_callback({
+                    "t": int(t_idx),
+                    "winners": np.array(winners, copy=True),
+                    "k_assigned": np.array(k_assigned, copy=True),
+                    "thr_sched": np.array(thr_sched, copy=True),
+                    "thr_ack": np.array(thr_ack, copy=True),
+                })
+            except Exception:
+                pass
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
     return avg_sum_rate_per_prb
