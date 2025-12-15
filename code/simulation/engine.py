@@ -514,9 +514,26 @@ class SimulationEngine:
             oals = state.oals_scheduler
             update_interval = int(config.get("lookahead_update_interval", 10))
 
-            # Initialize urgency (simplified: use time fraction as proxy)
-            # In production, urgency would come from buffer/QoS manager
-            urgency = np.zeros(N_UE)
+            # Initialize urgency. In production, urgency should come from Traffic/QoS manager.
+            # For UI/benchmarking, we support simple synthetic urgency models via config.
+            urgency_dist = str(config.get("urgency_distribution", "ramp") or "ramp").lower().strip()
+            if urgency_dist in ("zero", "none", "off"):
+                urgency = np.zeros(N_UE, dtype=float)
+            elif urgency_dist in ("uniform",):
+                urgency = np.asarray(self._rng.random(N_UE), dtype=float)
+            elif urgency_dist in ("bursty",):
+                frac = float(config.get("urgency_burst_frac", 0.2))
+                frac = float(np.clip(frac, 0.0, 1.0))
+                n_hi = int(round(frac * N_UE))
+                urgency = 0.2 * np.asarray(self._rng.random(N_UE), dtype=float)
+                if n_hi > 0:
+                    idx = self._rng.choice(N_UE, size=n_hi, replace=False)
+                    urgency[idx] = 0.8 + 0.4 * np.asarray(self._rng.random(n_hi), dtype=float)
+            elif urgency_dist in ("mixed",):
+                urgency = np.asarray(self._rng.random(N_UE), dtype=float)
+            else:
+                # "ramp" and any unknown kind: keep the legacy ramp+reset model.
+                urgency = np.zeros(N_UE, dtype=float)
             if trace_enabled:
                 oals_phi_time = np.zeros((T, N_UE), dtype=float)
                 oals_trend_time = np.zeros((T, N_UE), dtype=float)
@@ -555,11 +572,33 @@ class SimulationEngine:
                     se_time_rm[tt], qos_weight
                 )
 
-                # Update urgency (simplified model: linear growth with occasional reset)
-                urgency = np.clip(urgency + 0.01, 0.0, 1.0)
-                # Randomly reset some UEs (simulating packet delivery)
-                reset_mask = self._rng.random(N_UE) < 0.1
-                urgency[reset_mask] = 0.0
+                # Update urgency (synthetic model)
+                if urgency_dist in ("ramp",):
+                    urgency = np.clip(urgency + 0.01, 0.0, 1.0)
+                    reset_mask = self._rng.random(N_UE) < 0.1
+                    urgency[reset_mask] = 0.0
+                elif urgency_dist in ("uniform",):
+                    urgency = np.asarray(self._rng.random(N_UE), dtype=float)
+                elif urgency_dist in ("bursty",):
+                    frac = float(config.get("urgency_burst_frac", 0.2))
+                    frac = float(np.clip(frac, 0.0, 1.0))
+                    n_hi = int(round(frac * N_UE))
+                    urgency = 0.2 * np.asarray(self._rng.random(N_UE), dtype=float)
+                    if n_hi > 0:
+                        idx = self._rng.choice(N_UE, size=n_hi, replace=False)
+                        urgency[idx] = 0.8 + 0.4 * np.asarray(self._rng.random(n_hi), dtype=float)
+                elif urgency_dist in ("mixed",):
+                    jitter = float(config.get("urgency_jitter_std", 0.05))
+                    urgency = np.clip(
+                        urgency + self._rng.normal(0.0, jitter, size=N_UE),
+                        0.0,
+                        None,
+                    )
+                    refresh = self._rng.random(N_UE) < float(config.get("urgency_refresh_prob", 0.05))
+                    urgency[refresh] = np.asarray(self._rng.random(np.count_nonzero(refresh)), dtype=float)
+                else:
+                    # "zero"/"none"/"off" or unknown: keep constant.
+                    pass
 
             logger.debug("OALS metric correction applied for %d TTIs", T)
 

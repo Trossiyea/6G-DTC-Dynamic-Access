@@ -143,7 +143,10 @@ def create_oals_base_config(bench_cfg: OALSBenchmarkConfig) -> Dict[str, Any]:
 
         # PHY parameters
         "scs_khz": 30,
-        "P_tx_dbm": 30.0,
+        # Benchmark note:
+        # The bundled Radio Maps have strong interference levels (median around -45 dBm/PRB).
+        # For algorithm/UI verification we use a higher per-PRB EIRP to keep SE non-trivial.
+        "P_tx_dbm": 60.0,
         "G_rx_db": 38.0,
         "rx_nf_db": 7.0,
         "impl_loss_db": 1.0,
@@ -152,9 +155,10 @@ def create_oals_base_config(bench_cfg: OALSBenchmarkConfig) -> Dict[str, Any]:
         # Channel - time varying REQUIRED for OALS
         "enable_time_varying": bench_cfg.enable_time_varying,
         "enable_orbit_dynamics": bench_cfg.enable_orbit_dynamics,
-        "channel_model": "3gpp_ntn",
-        "ntn_channel_profile": "s_band_handheld_urban",
-        "shadow_std_db": 7.0,
+        # Use a deterministic channel for OALS algorithm benchmarking so that
+        # geometry-driven lookahead is measurable (instead of being swamped by i.i.d fading).
+        "channel_model": "legacy",
+        "shadow_std_db": 0.0,
 
         # TLE for orbit prediction (required for OALS)
         "tle_name": "OALS-TEST-SAT",
@@ -170,11 +174,12 @@ def create_oals_base_config(bench_cfg: OALSBenchmarkConfig) -> Dict[str, Any]:
         "auto_orbit_start_min_elev_deg": 5.0,
         "ref_lat_deg": 43.65108,
         "ref_lon_deg": -79.34702,
-        "tti_ms": 1.0,
+        # Coarser time step so orbit/beam movement is visible within short benchmarks.
+        "tti_ms": 10.0,
 
         # Scheduler
         "pf_beta": 0.1,
-        "use_mcs": True,
+        "use_mcs": False,
         "sched_require_contiguous": True,
         "sched_eesm_beta_db": 2.5,
         "baseline_sched_eesm_beta_db": 2.7,
@@ -189,11 +194,11 @@ def create_oals_base_config(bench_cfg: OALSBenchmarkConfig) -> Dict[str, Any]:
         "cqi_offset_ttis": 0,
 
         # RadioMap estimation error
-        "radiomap_est_error_db": 1.5,
-        "radiomap_blur_sigma": 1.0,
+        "radiomap_est_error_db": 0.0,
+        "radiomap_blur_sigma": 0.0,
 
         # Radio Map dynamics
-        "rm_flicker_db_std": 0.5,
+        "rm_flicker_db_std": 0.0,
 
         # HARQ
         "enable_harq_full": True,
@@ -222,6 +227,9 @@ def create_oals_base_config(bench_cfg: OALSBenchmarkConfig) -> Dict[str, Any]:
         "trace_level": "kpi",
         "show_progress": False,
         "write_json_report": False,
+
+        # OALS synthetic urgency model (SimulationEngine supports this key)
+        "urgency_distribution": bench_cfg.urgency_distribution,
     }
 
 
@@ -262,36 +270,60 @@ def run_single_oals_test(
 
     config = base_config.copy()
 
-    # Apply OALS parameters
-    config["lookahead_horizon_ttis"] = lookahead_horizon
-    config["alpha_urgent"] = alpha_urgent
-    config["beta_wait"] = beta_wait
-    config["gamma_decay"] = gamma_decay
+    # First run WITHOUT OALS to get a clean RadioMap baseline (same orbit/time-varying series).
+    config_no_oals = config.copy()
+    config_no_oals["enable_oals"] = False
+    result_no_oals = _run_engine(config_no_oals)
 
-    # Run simulation
-    result = _run_engine(config)
+    # Then run WITH OALS (same base config, only lookahead params differ).
+    config_oals = config.copy()
+    config_oals["enable_oals"] = True
+    config_oals["lookahead_horizon_ttis"] = lookahead_horizon
+    config_oals["alpha_urgent"] = alpha_urgent
+    config_oals["beta_wait"] = beta_wait
+    config_oals["gamma_decay"] = gamma_decay
+    result_oals = _run_engine(config_oals)
 
-    # Extract OALS statistics
-    oals_stats = result.get("oals_stats", {})
-    if oals_stats is None:
-        oals_stats = {}
+    baseline_se = result_no_oals.get("avg_se_baseline_default", 0.0) or 0.0
+    radiomap_se = result_no_oals.get("avg_se_radiomap", 0.0) or 0.0
+    oals_se = result_oals.get("avg_se_radiomap", 0.0) or 0.0
 
-    # Extract metrics
-    baseline_se = result.get("avg_se_baseline_default", 0.0) or 0.0
-    oals_se = result.get("avg_se_radiomap", 0.0) or 0.0  # OALS modifies radiomap path
+    baseline_fairness = result_no_oals.get("fairness_jain_base", 0.0) or 0.0
+    radiomap_fairness = result_no_oals.get("fairness_jain_map", 0.0) or 0.0
+    oals_fairness = result_oals.get("fairness_jain_map", 0.0) or 0.0
 
-    # Fairness
-    baseline_fairness = result.get("fairness_jain_base", 0.0) or 0.0
-    oals_fairness = result.get("fairness_jain_map", 0.0) or 0.0
+    # Extract OALS statistics (updates only; per-TTI recommendations are computed below).
+    oals_stats = result_oals.get("oals_stats", {}) or {}
 
-    # HARQ ACK rate
-    harq_base = result.get("harq_stats_base") or {}
-    harq_rm = result.get("harq_stats_map") or {}
+    # HARQ ACK rates (baseline uses baseline scheduler; OALS uses radiomap path)
+    harq_base = result_no_oals.get("harq_stats_base") or {}
+    harq_rm_base = result_no_oals.get("harq_stats_map") or {}
+    harq_rm_oals = result_oals.get("harq_stats_map") or {}
 
     base_ack = harq_base.get("ack_count", 1) if harq_base else 1
     base_total = base_ack + (harq_base.get("nack_count", 0) if harq_base else 0)
-    rm_ack = harq_rm.get("ack_count", 1) if harq_rm else 1
-    rm_total = rm_ack + (harq_rm.get("nack_count", 0) if harq_rm else 0)
+    rm_ack_base = harq_rm_base.get("ack_count", 1) if harq_rm_base else 1
+    rm_total_base = rm_ack_base + (harq_rm_base.get("nack_count", 0) if harq_rm_base else 0)
+    rm_ack_oals = harq_rm_oals.get("ack_count", 1) if harq_rm_oals else 1
+    rm_total_oals = rm_ack_oals + (harq_rm_oals.get("nack_count", 0) if harq_rm_oals else 0)
+
+    # Derive "delay/urgent/now" ratios from the recorded phi/urgency series (conceptual).
+    oals_schedule_now = 0
+    oals_delay = 0
+    oals_urgent = 0
+    try:
+        trace = result_oals.get("trace") or {}
+        oals_trace = trace.get("oals") or {}
+        phi = np.asarray(oals_trace.get("phi"), dtype=float)
+        urg = np.asarray(oals_trace.get("urgency"), dtype=float)
+        if phi.ndim == 2 and urg.ndim == 2 and phi.shape == urg.shape:
+            urgent_mask = urg > float(alpha_urgent)
+            delay_mask = (urg < float(beta_wait)) & (phi < float(config_oals.get("theta_lookahead", 0.7)))
+            oals_urgent = int(np.count_nonzero(urgent_mask))
+            oals_delay = int(np.count_nonzero(delay_mask & (~urgent_mask)))
+            oals_schedule_now = int(phi.size - oals_urgent - oals_delay)
+    except Exception:
+        pass
 
     return OALSBenchmarkResult(
         lookahead_horizon=lookahead_horizon,
@@ -299,17 +331,17 @@ def run_single_oals_test(
         beta_wait=beta_wait,
         gamma_decay=gamma_decay,
         baseline_se=baseline_se,
-        radiomap_se=oals_se,  # For comparison, we use this as reference
+        radiomap_se=radiomap_se,
         oals_se=oals_se,
         oals_updates=oals_stats.get("updates", 0),
-        oals_schedule_now=oals_stats.get("schedule_now", 0),
-        oals_delay=oals_stats.get("delay", 0),
-        oals_urgent=oals_stats.get("urgent", 0),
+        oals_schedule_now=oals_schedule_now,
+        oals_delay=oals_delay,
+        oals_urgent=oals_urgent,
         baseline_fairness=baseline_fairness,
-        radiomap_fairness=oals_fairness,
+        radiomap_fairness=radiomap_fairness,
         oals_fairness=oals_fairness,
         baseline_harq_ack_rate=base_ack / max(base_total, 1),
-        oals_harq_ack_rate=rm_ack / max(rm_total, 1),
+        oals_harq_ack_rate=rm_ack_oals / max(rm_total_oals, 1),
     )
 
 
@@ -401,7 +433,12 @@ def run_benchmark(
             results.append(result)
 
             if verbose:
-                print(f"  OALS SE: {result.oals_se:.4f}, Gain vs Baseline: {result.oals_vs_baseline_pct:+.2f}%")
+                print(
+                    f"  Base SE: {result.baseline_se:.4f}, RM SE: {result.radiomap_se:.4f}, OALS SE: {result.oals_se:.4f}"
+                )
+                print(
+                    f"  Gain vs RM: {result.oals_vs_radiomap_pct:+.2f}%, vs Base: {result.oals_vs_baseline_pct:+.2f}%"
+                )
                 print(f"  Updates: {result.oals_updates}, Delay ratio: {result.delay_ratio:.2%}")
 
     elif test_type == "alpha":
@@ -420,7 +457,12 @@ def run_benchmark(
             results.append(result)
 
             if verbose:
-                print(f"  OALS SE: {result.oals_se:.4f}, Gain vs Baseline: {result.oals_vs_baseline_pct:+.2f}%")
+                print(
+                    f"  Base SE: {result.baseline_se:.4f}, RM SE: {result.radiomap_se:.4f}, OALS SE: {result.oals_se:.4f}"
+                )
+                print(
+                    f"  Gain vs RM: {result.oals_vs_radiomap_pct:+.2f}%, vs Base: {result.oals_vs_baseline_pct:+.2f}%"
+                )
                 print(f"  Urgent ratio: {result.urgent_ratio:.2%}, Delay ratio: {result.delay_ratio:.2%}")
 
     elif test_type == "gamma":
@@ -439,7 +481,12 @@ def run_benchmark(
             results.append(result)
 
             if verbose:
-                print(f"  OALS SE: {result.oals_se:.4f}, Gain vs Baseline: {result.oals_vs_baseline_pct:+.2f}%")
+                print(
+                    f"  Base SE: {result.baseline_se:.4f}, RM SE: {result.radiomap_se:.4f}, OALS SE: {result.oals_se:.4f}"
+                )
+                print(
+                    f"  Gain vs RM: {result.oals_vs_radiomap_pct:+.2f}%, vs Base: {result.oals_vs_baseline_pct:+.2f}%"
+                )
 
     elif test_type == "full":
         # Full parameter grid (reduced for efficiency)
@@ -459,7 +506,12 @@ def run_benchmark(
                     results.append(result)
 
                     if verbose:
-                        print(f"  OALS SE: {result.oals_se:.4f}, Gain: {result.oals_vs_baseline_pct:+.2f}%")
+                        print(
+                            f"  Base SE: {result.baseline_se:.4f}, RM SE: {result.radiomap_se:.4f}, OALS SE: {result.oals_se:.4f}"
+                        )
+                        print(
+                            f"  Gain vs RM: {result.oals_vs_radiomap_pct:+.2f}%, vs Base: {result.oals_vs_baseline_pct:+.2f}%"
+                        )
 
     return results
 
@@ -469,30 +521,38 @@ def print_summary(results: List[OALSBenchmarkResult]) -> None:
     print("\n" + "=" * 90)
     print("OALS (Orbit-Aware Lookahead Scheduling) Benchmark Results")
     print("=" * 90)
-    print(f"{'H(TTI)':<8} {'α':<6} {'γ':<6} {'Base SE':<10} {'OALS SE':<10} "
-          f"{'Gain(%)':<10} {'Delay%':<8} {'Updates':<8}")
+    print(
+        f"{'H(TTI)':<8} {'α':<6} {'γ':<6} {'Base SE':<10} {'RM SE':<10} {'OALS SE':<10} "
+        f"{'GainRM(%)':<10} {'Delay%':<8} {'Updates':<8}"
+    )
     print("-" * 90)
 
     for r in results:
         delay_pct = r.delay_ratio * 100
-        print(f"{r.lookahead_horizon:<8} {r.alpha_urgent:<6.2f} {r.gamma_decay:<6.2f} "
-              f"{r.baseline_se:<10.4f} {r.oals_se:<10.4f} "
-              f"{r.oals_vs_baseline_pct:<+10.2f} {delay_pct:<8.1f} {r.oals_updates:<8}")
+        print(
+            f"{r.lookahead_horizon:<8} {r.alpha_urgent:<6.2f} {r.gamma_decay:<6.2f} "
+            f"{r.baseline_se:<10.4f} {r.radiomap_se:<10.4f} {r.oals_se:<10.4f} "
+            f"{r.oals_vs_radiomap_pct:<+10.2f} {delay_pct:<8.1f} {r.oals_updates:<8}"
+        )
 
     print("-" * 90)
 
     # Summary statistics
     if len(results) > 0:
-        gains = [r.oals_vs_baseline_pct for r in results]
-        print(f"Average Gain: {np.mean(gains):+.2f}%  |  "
-              f"Max: {np.max(gains):+.2f}%  |  "
-              f"Min: {np.min(gains):+.2f}%")
+        gains_rm = [r.oals_vs_radiomap_pct for r in results]
+        gains_base = [r.oals_vs_baseline_pct for r in results]
+        print(
+            f"Average Gain vs RM: {np.mean(gains_rm):+.2f}%  |  "
+            f"Max: {np.max(gains_rm):+.2f}%  |  "
+            f"Min: {np.min(gains_rm):+.2f}%"
+        )
+        print(f"Average Gain vs Base: {np.mean(gains_base):+.2f}%")
 
         # Best configuration
-        best_idx = np.argmax(gains)
+        best_idx = int(np.argmax(gains_rm))
         best = results[best_idx]
         print(f"\nBest Config: H={best.lookahead_horizon}, α={best.alpha_urgent}, γ={best.gamma_decay}")
-        print(f"  -> Gain: {best.oals_vs_baseline_pct:+.2f}%, Updates: {best.oals_updates}")
+        print(f"  -> Gain vs RM: {best.oals_vs_radiomap_pct:+.2f}%, Updates: {best.oals_updates}")
 
 
 def export_results(results: List[OALSBenchmarkResult], path: str) -> None:
