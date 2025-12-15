@@ -30,7 +30,10 @@ Public API (25 exports):
 
     Orbit:
         - OrbitModel
+        - StaticOrbitModel
         - compute_geometry_and_beam
+        - parse_tle_epoch_utc
+        - find_visible_orbit_start_datetime
 
     Constellation:
         - TLESatellite
@@ -65,8 +68,11 @@ from .geometry import (
 # Orbit model (single satellite)
 from .orbit import (
     OrbitModel,
+    StaticOrbitModel,
     compute_geometry_and_beam,
     _parse_orbit_start_utc,
+    parse_tle_epoch_utc,
+    find_visible_orbit_start_datetime,
 )
 
 # Constellation management (multi-satellite)
@@ -105,8 +111,11 @@ __all__ = [
     "compute_elevation_deg",
     # Orbit
     "OrbitModel",
+    "StaticOrbitModel",
     "compute_geometry_and_beam",
     "_parse_orbit_start_utc",
+    "parse_tle_epoch_utc",
+    "find_visible_orbit_start_datetime",
     # Constellation
     "TLESatellite",
     "ConstellationOrbit",

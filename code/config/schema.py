@@ -266,6 +266,19 @@ class OrbitConfig(ConfigGroup):
         "units": "degrees"
     })
 
+    # Optional: auto-adjust orbit_start_datetime to a visible pass (single-sat demo/UI)
+    auto_orbit_start_for_visibility: bool = field(default=False, metadata={
+        "description": "Auto-shift orbit_start_datetime to a visible pass"
+    })
+    auto_orbit_start_search_hours: float = field(default=24.0, metadata={
+        "description": "Search window for auto orbit start time",
+        "units": "hours", "min": 0.1
+    })
+    auto_orbit_start_min_elev_deg: float = field(default=5.0, metadata={
+        "description": "Minimum elevation for auto orbit start time",
+        "units": "degrees", "min": -90.0, "max": 90.0
+    })
+
 
 @dataclass
 class TimeVaryingConfig(ConfigGroup):
@@ -1046,6 +1059,9 @@ class NTNSimConfig(ConfigGroup):
             "ref_lat_deg": self.orbit.ref_lat_deg,
             "ref_lon_deg": self.orbit.ref_lon_deg,
             "map_rotation_deg": self.orbit.map_rotation_deg,
+            "auto_orbit_start_for_visibility": self.orbit.auto_orbit_start_for_visibility,
+            "auto_orbit_start_search_hours": self.orbit.auto_orbit_start_search_hours,
+            "auto_orbit_start_min_elev_deg": self.orbit.auto_orbit_start_min_elev_deg,
         })
 
         # Time Varying
@@ -1346,6 +1362,12 @@ class NTNSimConfig(ConfigGroup):
             config.orbit.ref_lon_deg = data["ref_lon_deg"]
         if "map_rotation_deg" in data:
             config.orbit.map_rotation_deg = data["map_rotation_deg"]
+        if "auto_orbit_start_for_visibility" in data:
+            config.orbit.auto_orbit_start_for_visibility = bool(data["auto_orbit_start_for_visibility"])
+        if "auto_orbit_start_search_hours" in data:
+            config.orbit.auto_orbit_start_search_hours = float(data["auto_orbit_start_search_hours"])
+        if "auto_orbit_start_min_elev_deg" in data:
+            config.orbit.auto_orbit_start_min_elev_deg = float(data["auto_orbit_start_min_elev_deg"])
 
         # Time Varying
         if "enable_time_varying" in data:

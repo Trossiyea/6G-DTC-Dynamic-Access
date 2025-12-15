@@ -7,6 +7,7 @@ geometry utilities in ntn/geometry.py.
 
 Classes:
     OrbitModel: TLE-driven orbit/beam model for single-satellite scenarios.
+    StaticOrbitModel: Geometry-only orbit model (no TLE dynamics).
 
 Functions:
     compute_geometry_and_beam: Quick geometry computation without TLE.
@@ -39,6 +40,101 @@ except Exception:  # pragma: no cover
     load = None  # type: ignore
     wgs84 = None  # type: ignore
     _SKYFIELD_OK = False
+
+
+def parse_tle_epoch_utc(tle_line1: str) -> Optional[datetime]:
+    """Parse the epoch field from TLE line1 to a timezone-aware UTC datetime.
+
+    TLE epoch format is YYDDD.DDDDDDDD where DDD is day-of-year.
+    Returns None if parsing fails.
+    """
+    try:
+        s = str(tle_line1)
+        field = s[18:32].strip() if len(s) >= 32 else ""
+        if field:
+            yy = int(field[0:2])
+            ddd_frac = float(field[2:])
+        else:
+            m = re.search(r"\s(\d{2})(\d{3}\.\d+)\s", s)
+            if not m:
+                return None
+            yy = int(m.group(1))
+            ddd_frac = float(m.group(2))
+
+        year = 2000 + yy if yy < 57 else 1900 + yy
+        doy = int(math.floor(ddd_frac))
+        frac = float(ddd_frac - doy)
+        return datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=doy - 1, seconds=frac * 86400.0)
+    except Exception:
+        return None
+
+
+def _to_skyfield_time(ts, dt: datetime):
+    return ts.utc(
+        dt.year, dt.month, dt.day,
+        dt.hour, dt.minute, dt.second + dt.microsecond * 1e-6
+    )
+
+
+def find_visible_orbit_start_datetime(
+    tle_lines: Tuple[str, str],
+    ref_lat_deg: float,
+    ref_lon_deg: float,
+    start_utc: datetime,
+    search_hours: float = 24.0,
+    min_elev_deg: float = 5.0,
+    step_sec_fallback: float = 60.0,
+) -> Optional[datetime]:
+    """Find a start datetime where the satellite is visible above min elevation.
+
+    Intended for demos/benchmarks/UI bootstrapping so a single-satellite run does
+    not start in outage due to poor satellite geometry.
+    """
+    if not _SKYFIELD_OK:
+        return None
+
+    try:
+        sat = EarthSatellite(tle_lines[0], tle_lines[1], "SAT")
+        ts = load.timescale()
+        loc = wgs84.latlon(float(ref_lat_deg), float(ref_lon_deg), elevation_m=0.0)
+
+        t0 = start_utc.astimezone(timezone.utc)
+        t1 = t0 + timedelta(hours=float(search_hours))
+        t_sf0 = _to_skyfield_time(ts, t0)
+        t_sf1 = _to_skyfield_time(ts, t1)
+
+        # Prefer event-based peak time.
+        try:
+            t_ev, ev = sat.find_events(loc, t_sf0, t_sf1, altitude_degrees=float(min_elev_deg))
+            for te, e in zip(t_ev, ev):
+                if int(e) == 1:  # culmination
+                    dt_peak = te.utc_datetime()
+                    if dt_peak.tzinfo is None:
+                        dt_peak = dt_peak.replace(tzinfo=timezone.utc)
+                    return dt_peak.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+        # Fallback: sample and pick max elevation.
+        step = max(1.0, float(step_sec_fallback))
+        n_steps = int(max(1.0, float(search_hours) * 3600.0 / step))
+        best_dt: Optional[datetime] = None
+        best_elev = -1e9
+        for i in range(n_steps + 1):
+            dt = t0 + timedelta(seconds=step * i)
+            tt = _to_skyfield_time(ts, dt)
+            topocentric = (sat - loc).at(tt)
+            alt, _, _ = topocentric.altaz()
+            elev = float(alt.degrees)
+            if elev > best_elev:
+                best_elev = elev
+                best_dt = dt
+        if best_dt is not None and best_elev >= float(min_elev_deg):
+            return best_dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+    return None
 
 
 def _parse_orbit_start_utc(t0_val) -> datetime:
@@ -145,6 +241,31 @@ def compute_geometry_and_beam(
     return L_fs_per_ue, G_rx_per_ue, np.asarray(elev_deg, dtype=float)
 
 
+class StaticOrbitModel:
+    """Geometry-only orbit model without TLE dynamics.
+
+    Provides the same `get_geometry()` signature as OrbitModel so that OALS can
+    be instantiated even when Skyfield/TLE is not used.
+    """
+
+    def __init__(self, config: Dict, X: int, Y: int):
+        self.config = dict(config)
+        self.X = int(X)
+        self.Y = int(Y)
+        self.tti_s = float(config.get("tti_ms", 1.0)) * 1e-3
+
+    def get_geometry(
+        self,
+        ue_pos: np.ndarray,
+        t: int = 0,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        L_fs_db, G_rx_db, elev_deg = compute_geometry_and_beam(self.config, self.X, self.Y, ue_pos)
+        alt_km = float(self.config.get("sat_altitude_km", 600.0))
+        tau_s = np.full((ue_pos.shape[0],), (alt_km * 1000.0) / 3e8, dtype=float)
+        f_d_hz = np.zeros((ue_pos.shape[0],), dtype=float)
+        return np.atleast_1d(L_fs_db), np.atleast_1d(G_rx_db), tau_s, f_d_hz, np.atleast_1d(elev_deg)
+
+
 class OrbitModel:
     """TLE-driven orbit/beam model using Skyfield.
 
@@ -224,6 +345,20 @@ class OrbitModel:
                     raise RuntimeError(
                         "ref_lat_deg/ref_lon_deg must be set or auto_ref_from_tle=True"
                     )
+
+                if bool(config.get("auto_orbit_start_for_visibility", False)):
+                    min_elev = float(config.get("auto_orbit_start_min_elev_deg", config.get("min_elev_deg", 5.0)))
+                    hours = float(config.get("auto_orbit_start_search_hours", 24.0))
+                    dt_vis = find_visible_orbit_start_datetime(
+                        (tle_lines[0], tle_lines[1]),
+                        float(self.ref_lat_deg),
+                        float(self.ref_lon_deg),
+                        self.sf_t0,
+                        search_hours=hours,
+                        min_elev_deg=min_elev,
+                    )
+                    if dt_vis is not None:
+                        self.sf_t0 = dt_vis
             else:
                 raise ValueError("TLE lines or tle_path must be provided for OrbitModel")
 

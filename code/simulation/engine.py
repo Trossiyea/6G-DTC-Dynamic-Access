@@ -52,7 +52,7 @@ except ImportError:
 
 # Lazy imports to avoid circular dependencies
 from data_io.radiomap import select_radio_map
-from ntn import compute_geometry_and_beam, OrbitModel
+from ntn import compute_geometry_and_beam, OrbitModel, StaticOrbitModel
 from logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -164,6 +164,8 @@ class SimulationEngine:
         orbit_model = None
         if config.get("enable_orbit_dynamics", False):
             orbit_model = OrbitModel(config, X, Y)
+        elif OALS_AVAILABLE and config.get("enable_oals", False):
+            orbit_model = StaticOrbitModel(config, X, Y)
 
         # Optional OALS scheduler (Phase 11 - Patent)
         oals_scheduler = None

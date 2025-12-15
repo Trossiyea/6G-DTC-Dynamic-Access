@@ -185,7 +185,60 @@ class TestTraceExport(unittest.TestCase):
             self.assertIn("candidate_sats", extra)
             self.assertEqual(len(extra.get("candidate_sats", [])), int(config["T"]))
 
+    def test_oals_fallback_without_orbit_dynamics(self):
+        """OALS should still run (StaticOrbitModel fallback) when orbit dynamics is disabled."""
+        from simulation.engine import SimulationEngine
+
+        config = {
+            "Z": 51,
+            "N_UE": 4,
+            "T": 6,
+            "seed": 11,
+
+            "radio_map_mat_path": "radio_map/Toronto/RadioMap/RM_toronto125_dBm.mat",
+            "radio_map_mat_var": "XdB_recon_tensor",
+            "radio_map_units": "dBm",
+
+            "enable_time_varying": True,
+            "enable_orbit_dynamics": False,
+            "enable_oals": True,
+
+            "enable_trace": True,
+            "trace_level": "ui",
+
+            "pf_beta": 0.1,
+            "shadow_std_db": 3.0,
+            "P_tx_dbm": 30.0,
+            "scs_khz": 30,
+            "sat_altitude_km": 600.0,
+            "carrier_freq_GHz": 2.0,
+            "cell_size_km": 0.125,
+            "ref_lat_deg": 43.65108,
+            "ref_lon_deg": -79.34702,
+
+            "lookahead_horizon_ttis": 20,
+            "lookahead_sample_interval": 5,
+            "lookahead_update_interval": 10,
+            "alpha_urgent": 0.8,
+            "beta_wait": 0.3,
+            "theta_lookahead": 0.7,
+            "gamma_decay": 2.0,
+            "boost_factor": 2.0,
+
+            "enable_harq_full": False,
+            "enable_harq_deferral": False,
+            "write_json_report": False,
+            "show_progress": False,
+        }
+
+        out = SimulationEngine(config).run()
+        self.assertIn("trace", out)
+        trace = out["trace"]
+        self.assertIn("oals", trace)
+        self.assertEqual(np.asarray(trace["oals"]["phi"]).shape, (int(config["T"]), int(config["N_UE"])))
+        self.assertIn("oals_stats", out)
+        self.assertGreaterEqual(int(out["oals_stats"].get("updates", 0)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-

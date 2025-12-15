@@ -70,6 +70,9 @@ _KEY_TO_GROUP: Dict[str, str] = {
     "ref_lat_deg": "orbit",
     "ref_lon_deg": "orbit",
     "map_rotation_deg": "orbit",
+    "auto_orbit_start_for_visibility": "orbit",
+    "auto_orbit_start_search_hours": "orbit",
+    "auto_orbit_start_min_elev_deg": "orbit",
 
     # Time Varying
     "enable_time_varying": "time_varying",
