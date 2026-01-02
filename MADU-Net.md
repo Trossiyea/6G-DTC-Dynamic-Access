@@ -1,177 +1,249 @@
-# MADU-Net: Map-Aware Deep Unfolded Network (Simplified OFDMA Model)
+# MADU-Net: Map-Aware Deep Unfolded **Block Scheduler** (Aligned with This Repo)
 
-## 1. 系统模型与问题定义 (System Model & Formulation)
-
-我们考虑一个采用 **OFDMA** 下行链路的手机直连卫星（DtC）系统。由于子载波正交性，波束内不存在用户间干扰。主要干扰源为地面网络产生的背景干扰。
-
-### 1.1 物理量定义
-
-*   **集合：** 用户集 $\mathcal{U} = \{1, ..., U\}$，资源块（PRB）集 $\mathcal{K} = \{1, ..., K\}$。
-*   **优化变量：** 功率分配矩阵 $\mathbf{P} \in \mathbb{R}^{U \times K}$，其中 $p_{u,k}$ 表示分配给用户 $u$ 在 PRB $k$ 上的功率。
-*   **信道状态 (CSI):**
-    *   $h_{u,k}$: 大尺度信道增益（包含路径损耗和阴影衰落）。由于小尺度衰落变化过快，调度主要依据大尺度特征。
-*   **环境状态 (Environment):**
-    *   $I_{map}(u,k)$: 从三维电磁地图 $\mathcal{M}$ 采样得到的地面干扰功率。
-    *   $\sigma^2$: 热噪声功率（包含残留的波束间干扰）。
-
-### 1.2 信干噪比 (SINR)
-
-在单波束 OFDMA 模型中，SINR 的分母**不包含**其他用户的发射功率。
-$$
-\gamma_{u,k}(p_{u,k}) = \frac{h_{u,k} p_{u,k}}{I_{map}(u,k) + \sigma^2}
-$$
-*注：这是一个完全解耦的表达式，每个 RB 的质量仅取决于自身功率和环境。*
-
-### 1.3 优化问题 (Optimization Problem)
-
-目标是最大化加权和速率（Weighted Sum Rate），同时满足功率预算和连续性约束。
-
-$$
-\begin{aligned}
-\max_{\mathbf{P}} \quad & J(\mathbf{P}) = \sum_{u=1}^{U} w_u \sum_{k=1}^{K} \log_2 \left( 1 + \gamma_{u,k}(p_{u,k}) \right) \\
-\text{s.t.} \quad & \text{C1: } p_{u,k} \ge 0, \quad \forall u, k \\
-& \text{C2: } \sum_{u=1}^{U} \sum_{k=1}^{K} p_{u,k} \le P_{total} \quad (\text{卫星总功率约束}) \\
-& \text{C3: } \sum_{u=1}^{U} \mathbb{I}(p_{u,k} > 0) \le 1, \quad \forall k \quad (\text{RB正交性约束}) \\
-& \text{C4: } \text{Adjacency Constraint} \quad (\text{RB连续性约束})
-\end{aligned}
-$$
-
-*   **难点分析：** 尽管目标函数 $J(\mathbf{P})$ 是凸的，但 **C3 (整数约束)** 和 **C4 (组合约束)** 将该问题变成了 NP-hard 的混合整数非线性规划（MINLP）问题。传统的注水算法（Water-filling）无法处理 C4。
+本文档给出一套**与当前仓库实现严格对齐**的 MADU‑Net 设计，用于手机直连卫星（DtC）下行 OFDMA 场景的 **CQI‑free 细粒度调度**。  
+与旧版本（以连续功率矩阵 $\mathbf{P}\in\mathbb{R}^{U\times K}$ 为变量）不同，本仓库的调度核心是 **PRB→UE 分配** + **每 UE 单连续块** 约束（见 `code/main.py` 的 `pf_schedule_radiomap_blocks`），因此 MADU‑Net 也以“块调度”为中心建模。
 
 ---
 
-## 1.4 CQI-free 观测模型（与仿真实现对齐）
+## 1. 与仓库对齐的问题定义 (Problem Formulation)
 
-本项目的目标是 **取代 UE CQI 反馈**：调度器不依赖 UE 上报 CQI/CSI，而是基于网络侧可得信息进行资源分配与链路自适应。
+### 1.1 资源与时隙
 
-- **Truth（用于环境/解码评估）**：$(H_{true}, I_{true})$ 由物理引擎产生（3GPP+TLE+radiomap，可包含 shadowing / fast fading）。
-- **Observation（用于调度/MCS 选择）**：$(\hat{H}, \hat{I})$ 在网络侧构建：
-  - $\hat{H}$：由 UE 位置 + 卫星几何/链路预算得到（例如 FSPL + antenna gain；不依赖 UE CQI）。
-  - $\hat{I}$：由静态电磁地图（长期统计 radiomap）查询得到。
+- UE 集合：$\mathcal{U}=\{1,\dots,U\}$
+- PRB 集合：$\mathcal{Z}=\{1,\dots,Z\}$（本仓库用 `Z` 表示 PRB 数）
+- TTI：$t\in\{1,\dots,T\}$
 
-在代码中，CQI 老化/观测失配通过评估脚本 `python madu.py evaluate --config configs/env_s_band.yaml` 体现：`stale` / `geom(+map)` 使用不同的观测来做调度与 MCS 选择，并在真实信道下计算 **goodput + outage**。
+每个 TTI 输出一个分配向量：
+\[
+\mathbf{a}_t \in \mathcal{U}^{Z},\quad a_{t,z}\in\mathcal{U}
+\]
+其中 $a_{t,z}$ 表示 PRB $z$ 分配给哪个 UE（对应代码中的 `winners[z]`）。
 
----
+### 1.2 CQI‑free 观测与真实评估（Repo 对齐）
 
-## 2. MADU-Net 算法架构 (Algorithm Architecture)
+本仓库把“调度可见的信息”和“真实性能评估”分开：
 
-MADU-Net 通过深度展开（Deep Unfolding）将**梯度上升法（Gradient Ascent）**与**卷积神经网络（CNN）**结合，利用神经网络的非线性能力来“软化”并解决 C3 和 C4 约束。
+- **Observation（调度可见）**：$\hat{\mathbf{s}}_t\in\mathbb{R}^{U\times Z}$，每个 UE/PRB 的预测指标（推荐用 *预测 SE* 或由预测 SINR 映射得到的 SE）。
+  - 来源：UE 位置 + 几何链路预算 + radiomap 干扰查询（可叠加地图误差/blur 与 CSI delay）。
+  - 对应实现：`se_pred_k1` 或 `se_metric_time[t]`（`code/main.py` 内部构造，调度器实际使用的就是这个矩阵）。
+- **Truth（真实性能）**：$\mathbf{\gamma}_t\in\mathbb{R}^{U\times Z}$ 或 $\mathbf{snr}_t$，包含真实 shadowing/fast fading/真实干扰扰动等。
+  - 对应实现：`snr_true`，用于 `EESM + MCS (+HARQ)` 的吞吐/goodput 结算。
 
-### 2.1 基础迭代逻辑 (The Backbone)
+> 论文叙述建议：MADU‑Net 仅使用 $\hat{\mathbf{s}}_t$（CQI‑free），并在真实信道上评估，从而突出“观测失配鲁棒性”。
 
-我们展开 **投影梯度上升 (Projected Gradient Ascent)** 算法。
-目标函数的理论梯度（关于 $p_{u,k}$）为：
-$$
-\nabla_{u,k} = \frac{\partial J}{\partial p_{u,k}} = \frac{w_u}{(\ln 2)} \cdot \frac{h_{u,k}}{I_{map}(u,k) + \sigma^2 + h_{u,k} p_{u,k}}
-$$
-*物理意义：* 该梯度指示了在忽略连续性约束时，哪些 RB 性价比最高（信道好、干扰小）。
+### 1.3 约束（与仓库一致）
 
-### 2.2 网络详细设计
+- **C3（OFDMA 正交）**：每个 PRB 只能分配给一个 UE（$\mathbf{a}_t$ 本身即满足）。
+- **C4（连续块）**：每个 UE 在一个 TTI 内至多获得一个连续 PRB 区间 $[l_{t,u},r_{t,u}]$（可为空）：
+  \[
+  \{z: a_{t,z}=u\}\in\{\varnothing,\{l_{t,u},\dots,r_{t,u}\}\}
+  \]
+- 可选工程约束（同仓库参数）：每 UE PRB 上限 $r_{t,u}-l_{t,u}+1\le K_{\max}$；HARQ gating（`can_schedule(u)`）；重传块预留（`retx_requirements`）。
 
-网络输入为 $(I_{map}, \hat{\mathbf{H}}, \mathbf{w})$，输出为 $\mathbf{P}$。网络包含 **Map Encoder** 和 **$L$ 层 Unfolded Solver**。
+### 1.4 目标：PF‑goodput 最大化（与实现一致）
 
-#### **模块 A: 地图特征提取器 (Map Encoder)**
+定义每 UE 在 TTI $t$ 的有效吞吐（或等价 SE 和）：
+\[
+\mathrm{thr}_{t,u}=\sum_{z:a_{t,z}=u} \tilde{s}_{t,u,z}\cdot \eta
+\]
+- $\tilde{s}_{t,u,z}$：真实链路映射后的有效 SE（`EESM + MCS (+HARQ)` 后的 goodput 归因）
+- $\eta$：开销因子（`overhead_eff`）
 
-*   **功能：** 提取干扰的频域平滑度特征（识别哪些频段是成片干净的，适合连续分配）。
-*   **输入：** $I_{map}$ 张量。
-*   **结构：** 1D-CNN (沿频域卷积) 或 2D-CNN (如果考虑多波束空间关联)。
-*   **输出：** 特征矩阵 $\mathbf{F} \in \mathbb{R}^{U \times K \times C}$。
-
-#### **模块 B: 深度展开层 (Unfolded Layer $l$)**
-
-第 $l$ 层的更新规则如下：
-
-**1. 物理梯度计算 (Physics Awareness):**
-$$ \mathbf{G}^{(l)} = \text{CalculateGradient}(\mathbf{P}^{(l)}, \mathbf{H}, I_{map}) $$
-*这保留了物理模型的最优性方向。*
-
-**2. 神经梯度修正 (AI Refinement):**
-利用 CNN 修正梯度，使其倾向于选择连续的块。
-$$ \Delta \mathbf{P}^{(l)} = \text{CNN}_{refine}\left( \text{Concat}[\mathbf{G}^{(l)}, \mathbf{P}^{(l)}, \mathbf{F}] \right) $$
-$$ \hat{\mathbf{P}}^{(l)} = \mathbf{P}^{(l)} + \mu \cdot \Delta \mathbf{P}^{(l)} $$
-
-**3. 连续性平滑 (Smoothness Enforcement - 处理 C4):**
-在频域应用 1D 卷积（类似于平均滤波），迫使孤立的功率尖峰被抑制，相邻的功率被拉平。
-$$ \tilde{\mathbf{P}}^{(l)} = \text{Conv1D}_{smooth}(\hat{\mathbf{P}}^{(l)}) $$
-
-**4. 正交性与功率投影 (Orthogonality & Projection - 处理 C2, C3):**
-这是 OFDMA 特有的步骤。我们需要保证一个 RB 主要分给一个用户。
-
-*   **Softmax 操作 (Across Users):**
-    $$ \mathbf{S}_{u,k} = \text{Softmax}_{\text{dim}=u}(\tilde{\mathbf{P}}^{(l)} \cdot \beta) $$
-    *这会让某个 RB 上的功率分配趋向于 One-hot（即只给一个用户）。*
-*   **总功率归一化:**
-    $$ \mathbf{P}^{(l+1)} = \mathbf{S} \cdot P_{total} / \sum \mathbf{S} $$
+PF 记忆状态（指数平均）：
+\[
+R_{t+1,u}=(1-\beta)R_{t,u}+\beta\cdot \mathrm{thr}_{t,u}
+\]
+目标是提升长期 PF‑goodput（等价理解为最大化 $\sum_u \log R_{t,u}$ 的增量）。
 
 ---
 
-## 3. 训练策略 (Training Strategy)
+## 2. 启发式基线（当前仓库）(Heuristic Baseline)
 
-采用无监督训练。由于移除了用户间干扰，训练会更加稳定。
+当前 RadioMap 调度器 `pf_schedule_radiomap_blocks` 采用“seed + grow”的贪心块构造：
 
-### 3.1 损失函数
+1. 未开块 UE 选择一个未分配 PRB 作为 seed；
+2. 已开块 UE 只允许向左/向右扩展（保证连续）；
+3. 每一步选择最大化 **PF 边际增益** 的动作：
+   \[
+   \text{metric}(a)\approx \frac{\Delta \widehat{\mathrm{thr}}(a)}{R_{t,u}}
+   \]
+   其中 $\Delta \widehat{\mathrm{thr}}$ 由 $\hat{\mathbf{s}}_t$（或其块均值/单 MCS 的 EESM 近似）计算。
+4. 可选：对最终 UE‑块执行 group water‑filling（同一块内每 PRB 等功率）。
 
-$$ \mathcal{L} = \mathcal{L}_{rate} + \lambda_{cont} \mathcal{L}_{cont} + \lambda_{orth} \mathcal{L}_{orth} $$
-
-1.  **Rate Loss:** $\mathcal{L}_{rate} = - \sum w_u \log(1 + \text{SINR})$
-2.  **Continuity Loss (全变分 TV):**
-    鼓励同一用户的功率谱是平滑的阶梯状。
-    $$ \mathcal{L}_{cont} = \sum_u \sum_k | p_{u,k+1} - p_{u,k} |^2 $$
-3.  **Orthogonality Loss (正交性惩罚):**
-    虽然 Softmax 提供了软正交，但为了确保输出也是正交的，加入惩罚项：
-    $$ \mathcal{L}_{orth} = \sum_k \left( (\sum_u p_{u,k})^2 - \sum_u (p_{u,k})^2 \right) $$
-    *当且仅当每个 RB 只有一个用户有功率时，该项为 0。*
+该启发式强在“可行性与工程细节”，弱在“全局性”（纯贪心易受局部峰值/纹理误判影响）。MADU‑Net 的设计目标是：**保留硬约束更新**，仅学习“每一步如何选动作”，从而系统性超过贪心。
 
 ---
 
-## 4. 算法流程伪代码
+## 3. MADU‑Net（Repo 对齐版）架构：Deep Unfolded Block Scheduler
+
+### 3.1 深度展开视角 (Deep Unfolding)
+
+把一个 TTI 的块构造过程展开成 $L$ 层（通常 $L=Z$，也可提前停止以控复杂度）。第 $l$ 层维护状态：
+
+- 已分配向量 $\mathbf{a}^{(l)}$（部分 PRB 已被占用）
+- 每 UE 的块边界 $(l^{(l)}_u,r^{(l)}_u)$、已分配 PRB 数 $k^{(l)}_u$
+- PF 状态 $R_{t,u}$
+- CQI‑free 观测矩阵 $\hat{\mathbf{s}}_t$ 与其纹理编码
+- 可选 HARQ 状态（`can_schedule`、`retx_mask`、`retx_requirements`）
+
+每层选择一个离散动作 $a^{(l)}$ 并做**硬更新**：
+
+- **硬更新（Hard Projection/Update）**：复用仓库同构的“assign + 边界更新”逻辑，结构上保证 C3/C4（无需 TV/Softmax 去软逼近约束）。
+
+### 3.2 Map Encoder：把“点值”变成“纹理特征”
+
+对每个 UE，把沿 PRB 的观测序列编码为局部纹理特征：
+
+\[
+\mathbf{F}_{t,u}=\mathrm{MapEnc}_\phi(\hat{\mathbf{s}}_{t,u}, \hat{\mathbf{i}}_{t,u}) \in \mathbb{R}^{Z\times C}
+\]
+
+- 推荐实现：1D‑CNN/TCN（对频域纹理更强、更轻量）；也可用小型 Transformer。
+- 直觉：连续块调度关心“某个 PRB 周围是否也干净”，纹理特征可区分“孤立低干扰点”与“宽带干净子带”。
+
+UE 级上下文向量：
+\[
+\mathbf{c}_{t,u}=\mathrm{UEEnc}_\psi([R_{t,u},\text{HARQ}_u,\text{geometry}_u,\dots])\in\mathbb{R}^{d}
+\]
+
+### 3.3 候选动作集：对齐实现、控制动作空间
+
+为了与仓库流程一致并避免 $U\times Z$ 的巨大动作空间，在第 $l$ 层构造有限候选动作：
+
+- **Seed 候选**：对每个未开块 UE，从其未分配 PRB 中取 Top‑$B$ 个（按 $\hat{s}_{t,u,z}$）作为候选 seed：$(u,z)$。
+- **Grow 候选**：对已开块 UE，最多两个候选：向左扩展/向右扩展（若边界相邻 PRB 未分配）。
+- **Retx 约束候选**：若某 UE 有重传块需求，则把满足需求的动作作为硬约束（必须选/必须预留）。
+
+候选规模约为 $|\mathcal{A}^{(l)}|\approx U\cdot(B+2)$，易于批量打分并保持实时性。
+
+### 3.4 MADU‑Net Scorer：学习替换“贪心 PF metric”
+
+对每个候选动作 $a$ 构造动作特征（示例）：
+
+- UE 上下文：$\mathbf{c}_{t,u}$
+- 动作位置纹理：$\mathbf{F}_{t,u}[z]$（seed）或 $\mathbf{F}_{t,u}[l_u\!-\!1], \mathbf{F}_{t,u}[r_u\!+\!1]$（grow）
+- 观测边际增益：$\Delta\hat{g}(a)$（seed 用 $\hat{s}_{t,u,z}$；grow 用“块均值变化 + 边界增益”等）
+- PF 因子：$1/(R_{t,u}+\epsilon)$
+- 约束相关：剩余 PRB 配额、HARQ retx 标记等
+
+用一个轻量 MLP 输出动作 logit：
+\[
+\ell(a)=f_\theta(\mathrm{feat}(a))
+\]
+
+训练时用 softmax 形成策略 $\pi_\theta(a)\propto \exp(\ell(a)/\tau)$ 并采样（用于探索与 RL），推理时用 argmax 得到确定性决策。
+
+### 3.5 输出与功率分配（保持评估一致性）
+
+MADU‑Net 的**主输出**是每 TTI 的 `winners[z]`，完全复用当前评估管线：
+
+- 真实链路：`snr_true` → `EESM + MCS`（单块单 MCS）→（可选）HARQ goodput；
+- 可选后处理功率分配：复用 `equal_prb` 或 group `waterfill`（同仓库）。
+
+若论文需要更强增益，可让网络额外输出块级权重 $\alpha_{t,u}$（作为 water‑filling 的权重或鲁棒 margin），但**不改变**调度变量与约束。
+
+### 3.6 算法流程伪代码（单个 TTI）
 
 ```python
-def MADU_Net_Forward(I_map, H, w):
-    # 1. 初始化
-    # 均匀分配或基于比例公平权重的启发式初始化
-    P = Initialize_Power(P_total, w) 
-    
-    # 2. 提取地图特征
-    Map_Feats = Map_Encoder(I_map) # [Batch, U, K, 16]
+def madu_net_schedule_one_tti(se_obs, Rbar, harq_state, B=4, L=None):
+    # se_obs: [U, Z]  (CQI-free 观测指标，等价于仓库调度器的 se_pred_k1 / se_metric_time[t])
+    # Rbar:   [U]     (PF 记忆状态)
+    # 输出: winners[z] (每个 PRB 分配给哪个 UE), 且每 UE 至多 1 个连续块
 
-    # 3. 迭代展开 (假设 10 层)
-    for i in range(10):
-        # A. 计算物理梯度 (Decoupled Gradient)
-        # grad[u,k]只与该用户在该RB的状态有关，计算极快
-        Num = w * H
-        Denom = (I_map + Noise + H * P) * np.log(2)
-        Grad = Num / Denom
-        
-        # B. 神经网络修正 (注入连续性偏好)
-        # 输入: 梯度, 当前功率, 地图特征
-        # 输出: 修正量 Delta_P
-        Delta_P = ResNet_Block(cat([Grad, P, Map_Feats]))
-        
-        P_temp = P + learning_rate * Delta_P
-        
-        # C. 强制平滑 (1D Convolution along K dim)
-        # kernel 如 [0.2, 0.6, 0.2]，平滑频域毛刺
-        P_smooth = Conv1D(P_temp, kernel_size=3)
-        
-        # D. 投影 (Projection)
-        # D1: 保证非负
-        P_pos = ReLU(P_smooth)
-        
-        # D2: 软正交 (Softmax across users)
-        # 温度系数 temp 越小，分配越趋向于独占
-        Scores = Softmax(P_pos / temp, dim=Users)
-        
-        # D3: 恢复功率幅度并归一化
-        Magnitude = Sum(P_pos, dim=Users)
-        P = Scores * Magnitude
-        P = P * (P_total / Sum(P))
+    U, Z = se_obs.shape
+    L = Z if L is None else min(L, Z)
 
-    return P
+    # 0) 预处理：Map Encoder（逐 UE 沿 PRB 编码纹理）
+    F = MapEnc(se_obs)  # F[u, z, C]
+
+    # 1) 初始化（与仓库同构）
+    winners = [-1] * Z
+    l_idx = [-1] * U
+    r_idx = [-1] * U
+    k_assigned = [0] * U
+
+    # 2) 可选：按 HARQ 重传需求预留块（与仓库逻辑一致）
+    preassign_retx_blocks(winners, l_idx, r_idx, k_assigned, harq_state)
+
+    for step in range(L):
+        if all(z >= 0 for z in winners):
+            break
+
+        # 3) 构造候选动作集合（seed top-B + grow L/R）
+        A = []
+        for u in range(U):
+            if not can_schedule(u, harq_state):
+                continue
+            if k_assigned[u] == 0:
+                A += seed_candidates_topB(u, se_obs[u], winners, B)
+            else:
+                A += grow_candidates_LR(u, winners, l_idx[u], r_idx[u])
+
+        # 4) 学习打分：用 scorer 替换启发式 delta/Rbar
+        logits = []
+        for a in A:
+            feat = build_action_features(a, se_obs, F, Rbar, l_idx, r_idx, k_assigned, harq_state)
+            logits.append(Scorer(feat))  # f_theta
+
+        # 5) 选择并硬更新（保证 C3/C4）
+        a_star = A[argmax(logits)]      # 推理：argmax；训练：softmax 采样
+        apply_assign(a_star, winners, l_idx, r_idx, k_assigned)
+
+    return winners, l_idx, r_idx
 ```
 
-## 5. 方案优势总结 (For Paper)
+---
 
-1.  **复杂问题简化求解：** 将包含离散约束（正交性）和组合约束（连续性）的 MINLP 问题，转化为一个端到端的平滑优化过程。
-2.  **物理可解释性：** 网络每一层都在执行“梯度上升”，保证了算法是在试图最大化和速率，而不是黑盒盲猜。
-3.  **电磁地图价值最大化：** 相比于传统算法只能看到当前的 $I_{map}$ 数值，MADU-Net 的 Encoder 能看到 $I_{map}$ 的**纹理特征**，从而自动避开那些“虽然当前点干扰低，但周围干扰高，不适合建立连续块”的区域。
+## 4. 训练策略（面向“强于启发式”的论文目标）
+
+离散动作的端到端无监督（直接最大化 goodput）方差大、收敛慢。为了稳定获得**超过贪心启发式**的结果，推荐“两阶段训练”：
+
+### 4.1 阶段 A：Imitation Learning（从更强 Teacher 蒸馏）
+
+构造一个比当前贪心更强的 teacher，用于生成动作序列标签：
+
+- 在相同观测 $\hat{\mathbf{s}}_t$ 下，用 **beam search / 多随机重启 / 局部交换改进** 搜索更优序列（严格满足 C3/C4/HARQ/PRB 上限）。
+- 用与仓库一致的 reward 做序列评估：
+  - 快速版：`EESM + MCS` 的吞吐 surrogate；
+  - 完整版：包含 HARQ goodput（更贴近最终指标）。
+
+学生网络最小化交叉熵：
+\[
+\mathcal{L}_{\text{IL}}=-\sum_{l=1}^{L}\log \pi_\theta(a^{(l)}_{\text{teacher}}|\mathrm{state}^{(l)})
+\]
+
+优势：收敛稳定、样本效率高，并且可在论文中自然解释“为何能系统性超越贪心”（因为 teacher 本身就是“非贪心更强基线”）。
+
+### 4.2 阶段 B：RL Fine‑tuning（对齐最终 goodput）
+
+在 imitation 初始化基础上，用策略梯度/actor‑critic 直接优化最终指标：
+
+- 回报 $G$：可选总 goodput、或 PF 加权 goodput（与 PF 目标一致）；
+- 加入 entropy 正则提升探索、降低局部最优风险；
+- 训练时覆盖地图误差/blur、CSI delay、flicker、orbit dynamics 等扰动（对应仓库已有 config），增强泛化鲁棒性。
+
+### 4.3 论文可写的消融点（建议）
+
+- 无 MapEnc（仅点值 $\hat{s}$）vs 有 MapEnc（纹理特征）。
+- 启发式 PF metric vs MADU‑Net learned scorer。
+- imitation only vs imitation + RL。
+- 不同 Top‑$B$ 与展开层数 $L$（复杂度‑性能折中）。
+
+---
+
+## 5. 推理与集成（与仓库评估接口一致）
+
+建议的集成方式是把 MADU‑Net 作为 `pf_schedule_radiomap_blocks` 的“可学习动作打分器”替换件：
+
+- 输入复用调度器已有的 `se_pred_k1 / se_metric_time[t]`、`Rbar`、HARQ 状态；
+- 输出仍是 `winners` 与块边界（与当前记录/可视化接口一致）；
+- 其余吞吐、MCS、HARQ 评估全部复用现有实现；
+- 用 `run_test.py` 的多场景基准与现有启发式做对比即可形成论文实验。
+
+---
+
+## 6. 论文贡献表述（推荐写法）
+
+1. **CQI‑free 的地图感知深度展开块调度**：在不依赖 UE CQI 的前提下，利用 radiomap 频域纹理提升连续 PRB 块的选择质量。
+2. **结构化可行性保证**：通过“展开 + 硬更新”天然满足 OFDMA 正交与单块连续约束，无需软正交/TV 去近似组合约束。
+3. **超越贪心的训练范式**：以“更强 teacher 搜索”蒸馏 + RL goodput 微调，使网络系统性超过现有启发式，并在地图误差/CSI delay 下保持鲁棒。
