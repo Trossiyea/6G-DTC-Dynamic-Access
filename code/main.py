@@ -570,7 +570,33 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     cfg = config or {}
     harq_priority_bonus = float(cfg.get("harq_retx_priority_bonus", 0.0))
     re_per_prb_val: Optional[int] = None
-
+    scheduler_kind = str(cfg.get("scheduler_kind", "heuristic")).lower()
+    use_nsgbs = (scheduler_kind == "nsgbs")
+    nsgbs_scorer = None
+    if use_nsgbs:
+        try:
+            from nsgbs import load_nsgbs_scorer
+            nsgbs_scorer = load_nsgbs_scorer(cfg)
+            if nsgbs_scorer is None:
+                print("[NS-GBS] No model loaded; falling back to heuristic scoring.")
+                use_nsgbs = False
+        except Exception as exc:
+            print(f"[NS-GBS] Failed to load model ({exc}); falling back to heuristic scoring.")
+            use_nsgbs = False
+    collect_dataset = bool(cfg.get("nsgbs_collect_dataset", False))
+    dataset_out = cfg.get("nsgbs_dataset_out") if collect_dataset else None
+    if collect_dataset and dataset_out is None:
+        dataset_out = []
+        cfg["nsgbs_dataset_out"] = dataset_out
+    dataset_stride = max(1, int(cfg.get("nsgbs_collect_stride", 1) or 1))
+    dataset_max_samples = cfg.get("nsgbs_collect_max_samples", None)
+    dataset_topb = max(1, int(cfg.get("nsgbs_topB", 4) or 4))
+    dataset_window = max(1, int(cfg.get("nsgbs_window", 3) or 3))
+    if dataset_window % 2 == 0:
+        dataset_window += 1
+    dataset_use_harq = bool(cfg.get("nsgbs_use_harq_features", True))
+    dataset_enabled = collect_dataset and (dataset_out is not None)
+    dataset_count = 0
     N_UE = cap_wb.shape[0]
     # Use Shannon cap as metric by default; if use_mcs, convert to MCS SE (k=1) for metric
     if se_metric_time is None:
@@ -762,6 +788,33 @@ def pf_schedule_radiomap_blocks(
     cfg = config or {}
     harq_priority_bonus = float(cfg.get("harq_retx_priority_bonus", 0.0))
     re_per_prb_val: Optional[int] = None
+    scheduler_kind = str(cfg.get("scheduler_kind", "heuristic")).lower()
+    use_nsgbs = (scheduler_kind == "nsgbs")
+    nsgbs_scorer = None
+    if use_nsgbs:
+        try:
+            from nsgbs import load_nsgbs_scorer
+            nsgbs_scorer = load_nsgbs_scorer(cfg)
+            if nsgbs_scorer is None:
+                print("[NS-GBS] No model loaded; falling back to heuristic scoring.")
+                use_nsgbs = False
+        except Exception as exc:
+            print(f"[NS-GBS] Failed to load model ({exc}); falling back to heuristic scoring.")
+            use_nsgbs = False
+    collect_dataset = bool(cfg.get("nsgbs_collect_dataset", False))
+    dataset_out = cfg.get("nsgbs_dataset_out") if collect_dataset else None
+    if collect_dataset and dataset_out is None:
+        dataset_out = []
+        cfg["nsgbs_dataset_out"] = dataset_out
+    dataset_stride = max(1, int(cfg.get("nsgbs_collect_stride", 1) or 1))
+    dataset_max_samples = cfg.get("nsgbs_collect_max_samples", None)
+    dataset_topb = max(1, int(cfg.get("nsgbs_topB", 4) or 4))
+    dataset_window = max(1, int(cfg.get("nsgbs_window", 3) or 3))
+    if dataset_window % 2 == 0:
+        dataset_window += 1
+    dataset_use_harq = bool(cfg.get("nsgbs_use_harq_features", True))
+    dataset_enabled = collect_dataset and (dataset_out is not None)
+    dataset_count = 0
 
     N_UE, Z = cap.shape
     rng = np.random.default_rng(0) if rng is None else rng
@@ -823,6 +876,16 @@ def pf_schedule_radiomap_blocks(
         if se_metric_time is None and (se_metric_override is not None):
             se_pred_k1 = np.asarray(se_metric_override, dtype=float)
 
+        snr_true_t = None
+        if dataset_enabled:
+            if snr_lin_time is not None:
+                snr_true_t = np.asarray(snr_lin_time[t_idx], dtype=float)
+            elif snr_lin is not None:
+                snr_true_t = np.asarray(snr_lin, dtype=float)
+            else:
+                gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap)) - 1.0)
+                snr_true_t = gamma
+
         # Winners and blocks
         winners = np.full(Z, -1, dtype=int)
         l_idx = np.full(N_UE, -1, dtype=int)
@@ -882,6 +945,192 @@ def pf_schedule_radiomap_blocks(
             li, ri = int(l_idx[ue]), int(r_idx[ue])
             block_se_pred[ue] = pred_block_se(ue, li, ri)
 
+        def retx_bonus_for_ue(ue: int) -> float:
+            if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
+                try:
+                    _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
+                    if _retx_mask[ue]:
+                        return harq_priority_bonus
+                except Exception:
+                    return 0.0
+            return 0.0
+
+        def iter_actions():
+            """Yield candidate actions in the same order as the legacy heuristic scan."""
+            for ue in range(N_UE):
+                if (harq_mgr is not None) and (not harq_mgr.can_schedule(ue)):
+                    continue
+                if (mask_t is not None) and (not mask_t[ue]):
+                    continue
+                # Respect per-UE PRB cap
+                if (max_prbs_per_ue is not None) and (k_assigned[ue] >= int(max_prbs_per_ue)):
+                    continue
+                k0 = int(k_assigned[ue])
+                if k0 == 0:
+                    z0 = next_unassigned_best(ue)
+                    if z0 is not None:
+                        yield ("seed", ue, int(z0))
+                    continue
+                # Grow actions (contiguous if required)
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                if (not require_contiguous) or can_grow_left(ue):
+                    zl = li - 1 if k0 > 0 else None
+                    if zl is not None and zl >= 0 and winners[zl] < 0:
+                        yield ("grow_left", ue, int(zl))
+                if (not require_contiguous) or can_grow_right(ue):
+                    zr = ri + 1 if k0 > 0 else None
+                    if zr is not None and zr < Z and winners[zr] < 0:
+                        yield ("grow_right", ue, int(zr))
+
+        def score_action_heuristic(action) -> float:
+            kind, ue, z = action
+            if kind == "seed":
+                se_new = float(se_pred_k1[ue, z])
+                delta = se_new  # block sum gain for first PRB
+            else:
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                se_old = float(block_se_pred[ue])
+                if kind == "grow_left":
+                    li_new, ri_new = int(z), ri
+                else:
+                    li_new, ri_new = li, int(z)
+                se_new = pred_block_se(ue, li_new, ri_new)
+                k0 = int(k_assigned[ue])
+                k_new = k0 + 1
+                delta = k_new * se_new - k0 * se_old
+            metric = delta / Rbar[ue]
+            metric += retx_bonus_for_ue(ue)
+            return metric
+
+        def score_action_nsgbs(action) -> float:
+            if nsgbs_scorer is None:
+                return score_action_heuristic(action)
+            feat = build_nsgbs_features(action)
+            score = nsgbs_scorer.score(feat)
+            if isinstance(score, np.ndarray):
+                return float(score.reshape(-1)[0])
+            return float(score)
+
+        def score_action(action) -> float:
+            return score_action_nsgbs(action) if use_nsgbs else score_action_heuristic(action)
+
+        kind_to_id = {"seed": 0, "grow_left": 1, "grow_right": 2, "fallback": 3}
+
+        def window_vals(vec: np.ndarray, center: int, win: int) -> np.ndarray:
+            radius = win // 2
+            out = np.empty(win, dtype=float)
+            for i in range(-radius, radius + 1):
+                idx = center + i
+                if idx < 0:
+                    idx = 0
+                elif idx >= vec.size:
+                    idx = vec.size - 1
+                out[i + radius] = vec[idx]
+            return out
+
+        def pred_delta_for_action(action) -> float:
+            kind, ue, z = action
+            k0 = int(k_assigned[ue])
+            if k0 == 0 or kind == "seed":
+                se_new = float(se_pred_k1[ue, z])
+                return se_new
+            li, ri = int(l_idx[ue]), int(r_idx[ue])
+            se_old = float(block_se_pred[ue])
+            if kind == "grow_left":
+                li_new, ri_new = int(z), ri
+            elif kind == "grow_right":
+                li_new, ri_new = li, int(z)
+            else:
+                li_new, ri_new = li, ri
+            se_new = pred_block_se(ue, li_new, ri_new)
+            k_new = k0 + 1 if kind in ("grow_left", "grow_right") else k0
+            return k_new * se_new - k0 * se_old
+
+        def build_nsgbs_features(action) -> np.ndarray:
+            kind, ue, z = action
+            se_vec = np.asarray(se_pred_k1[ue], dtype=float)
+            win = window_vals(se_vec, int(z), dataset_window)
+            k0 = int(k_assigned[ue])
+            block_pred = float(block_se_pred[ue]) if k0 > 0 else 0.0
+            delta_pred = pred_delta_for_action(action)
+            pf_inv = 1.0 / float(Rbar[ue] + 1e-6)
+            retx_flag = 1.0 if (dataset_use_harq and retx_bonus_for_ue(ue) > 0.0) else 0.0
+            if max_prbs_per_ue is None:
+                cap_rem = -1.0
+            else:
+                cap_rem = float(int(max_prbs_per_ue) - k0)
+            kind_id = float(kind_to_id.get(kind, 3))
+            tail = np.array([k0, block_pred, delta_pred, pf_inv, retx_flag, cap_rem, kind_id], dtype=float)
+            return np.concatenate([win, tail])
+
+        def delta_true_for_action(action, snr_true: np.ndarray) -> float:
+            kind, ue, z = action
+            k0 = int(k_assigned[ue])
+            if k0 == 0 or kind in ("seed", "fallback"):
+                snr_vec = snr_true[ue, int(z):int(z) + 1]
+                se_new = _block_se_from_snr_vec(
+                    snr_vec,
+                    1,
+                    use_mcs,
+                    mcs_params,
+                    eesm_beta_db,
+                )
+                return se_new
+            li, ri = int(l_idx[ue]), int(r_idx[ue])
+            snr_old = snr_true[ue, li:ri + 1]
+            se_old = _block_se_from_snr_vec(
+                snr_old,
+                k0 if power_split else 1,
+                use_mcs,
+                mcs_params,
+                eesm_beta_db,
+            )
+            if kind == "grow_left":
+                li_new, ri_new = int(z), ri
+            elif kind == "grow_right":
+                li_new, ri_new = li, int(z)
+            else:
+                li_new, ri_new = li, ri
+            k_new = k0 + 1 if kind in ("grow_left", "grow_right") else k0
+            snr_new = snr_true[ue, li_new:ri_new + 1]
+            se_new = _block_se_from_snr_vec(
+                snr_new,
+                k_new if power_split else 1,
+                use_mcs,
+                mcs_params,
+                eesm_beta_db,
+            )
+            return k_new * se_new - k0 * se_old
+
+        def iter_actions_for_dataset(seed_topb: int):
+            for ue in range(N_UE):
+                if (harq_mgr is not None) and (not harq_mgr.can_schedule(ue)):
+                    continue
+                if (mask_t is not None) and (not mask_t[ue]):
+                    continue
+                if (max_prbs_per_ue is not None) and (k_assigned[ue] >= int(max_prbs_per_ue)):
+                    continue
+                k0 = int(k_assigned[ue])
+                if k0 == 0:
+                    ord_row = order_per_ue[ue]
+                    picked = 0
+                    for z in ord_row:
+                        if winners[int(z)] < 0:
+                            yield ("seed", ue, int(z))
+                            picked += 1
+                            if picked >= seed_topb:
+                                break
+                    continue
+                li, ri = int(l_idx[ue]), int(r_idx[ue])
+                if (not require_contiguous) or can_grow_left(ue):
+                    zl = li - 1 if k0 > 0 else None
+                    if zl is not None and zl >= 0 and winners[zl] < 0:
+                        yield ("grow_left", ue, int(zl))
+                if (not require_contiguous) or can_grow_right(ue):
+                    zr = ri + 1 if k0 > 0 else None
+                    if zr is not None and zr < Z and winners[zr] < 0:
+                        yield ("grow_right", ue, int(zr))
+
         # If HARQ has pending retransmissions with resource constraints, pre-assign their blocks
         if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_requirements'):
             try:
@@ -915,77 +1164,36 @@ def pf_schedule_radiomap_blocks(
         # Count already assigned by pre-assignment
         assigned_cnt = int(np.sum(winners >= 0))
         while assigned_cnt < Z:
+            if dataset_enabled and (assigned_cnt % dataset_stride == 0):
+                actions_ds = list(iter_actions_for_dataset(dataset_topb))
+                if actions_ds and (snr_true_t is not None):
+                    feats = [build_nsgbs_features(a) for a in actions_ds]
+                    deltas = np.array([delta_true_for_action(a, snr_true_t) for a in actions_ds], dtype=np.float32)
+                    label = int(np.argmax(deltas))
+                    actions_arr = np.array(
+                        [(kind_to_id.get(a[0], 3), int(a[1]), int(a[2])) for a in actions_ds],
+                        dtype=np.int16,
+                    )
+                    dataset_out.append({
+                        "features": np.asarray(feats, dtype=np.float32),
+                        "label": label,
+                        "actions": actions_arr,
+                        "deltas": deltas,
+                        "t_idx": int(t_idx),
+                        "step": int(assigned_cnt),
+                    })
+                    dataset_count += 1
+                    if (dataset_max_samples is not None) and (dataset_count >= int(dataset_max_samples)):
+                        dataset_enabled = False
+
             # Build best action per UE: seed or grow L/R
             best_delta = -1e9
-            best_action = None  # (ue, z_to_assign)
-            for ue in range(N_UE):
-                if (harq_mgr is not None) and (not harq_mgr.can_schedule(ue)):
-                    continue
-                if (mask_t is not None) and (not mask_t[ue]):
-                    continue
-                # Respect per-UE PRB cap
-                if (max_prbs_per_ue is not None) and (k_assigned[ue] >= int(max_prbs_per_ue)):
-                    continue
-                k0 = int(k_assigned[ue])
-                # Seed action
-                if k0 == 0:
-                    z0 = next_unassigned_best(ue)
-                    if z0 is not None:
-                        se_new = float(se_pred_k1[ue, z0])
-                        delta = se_new  # block sum gain for first PRB
-                        metric = delta / Rbar[ue]
-                        # Retransmission priority boost, if any
-                        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
-                            try:
-                                _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
-                                if _retx_mask[ue]:
-                                    metric += harq_priority_bonus
-                            except Exception:
-                                pass
-                        if metric > best_delta:
-                            best_delta = metric
-                            best_action = (ue, int(z0))
-                    continue
-
-                # Grow actions (contiguous if required)
-                li, ri = int(l_idx[ue]), int(r_idx[ue])
-                se_old = float(block_se_pred[ue])
-                # Left growth
-                if (not require_contiguous) or can_grow_left(ue):
-                    zl = li - 1 if k0 > 0 else None
-                    if zl is not None and zl >= 0 and winners[zl] < 0:
-                        se_new = pred_block_se(ue, zl, ri)
-                        k_new = k0 + 1
-                        delta = k_new * se_new - k0 * se_old
-                        metric = delta / Rbar[ue]
-                        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
-                            try:
-                                _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
-                                if _retx_mask[ue]:
-                                    metric += harq_priority_bonus
-                            except Exception:
-                                pass
-                        if metric > best_delta:
-                            best_delta = metric
-                            best_action = (ue, int(zl))
-                # Right growth
-                if (not require_contiguous) or can_grow_right(ue):
-                    zr = ri + 1 if k0 > 0 else None
-                    if zr is not None and zr < Z and winners[zr] < 0:
-                        se_new = pred_block_se(ue, li, zr)
-                        k_new = k0 + 1
-                        delta = k_new * se_new - k0 * se_old
-                        metric = delta / Rbar[ue]
-                        if (harq_mgr is not None) and hasattr(harq_mgr, 'get_retx_ues'):
-                            try:
-                                _retx_mask = np.asarray(harq_mgr.get_retx_ues(), dtype=bool)
-                                if _retx_mask[ue]:
-                                    metric += harq_priority_bonus
-                            except Exception:
-                                pass
-                        if metric > best_delta:
-                            best_delta = metric
-                            best_action = (ue, int(zr))
+            best_action = None  # (kind, ue, z_to_assign)
+            for action in iter_actions():
+                metric = score_action(action)
+                if metric > best_delta:
+                    best_delta = metric
+                    best_action = action
 
             # Fallback: if no action found (e.g., all capped), assign highest remaining PRB to best UE
             if best_action is None:
@@ -999,9 +1207,9 @@ def pf_schedule_radiomap_blocks(
                 if cand.size == 0:
                     break
                 ue = int(cand[np.argmax(se_pred_k1[cand, z] / Rbar[cand])])
-                best_action = (ue, z)
+                best_action = ("fallback", ue, z)
 
-            ue_sel, z_sel = best_action
+            _, ue_sel, z_sel = best_action
             apply_assign(int(ue_sel), int(z_sel))
             assigned_cnt += 1
 

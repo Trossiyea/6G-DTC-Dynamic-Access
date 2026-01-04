@@ -93,6 +93,20 @@ CONFIG.update({
     # Baseline tuned a bit more conservative than RM to stabilize ACKs
     "baseline_sched_eesm_beta_db": 2.7,
     "rm_sched_eesm_beta_db": 3.5,
+    # Scheduler kind: "heuristic" (default) or "nsgbs" (neural-scored greedy block scheduler)
+    "scheduler_kind": "heuristic",
+    # NS-GBS inference knobs (Phase1 scaffolding; model integration added later)
+    "nsgbs_model_path": None,
+    "nsgbs_topB": 4,
+    "nsgbs_window": 3,
+    "nsgbs_use_harq_features": True,
+    "nsgbs_score_mode": "classify",
+    # Dataset collection for NS-GBS (Phase2)
+    "nsgbs_collect_dataset": False,
+    "nsgbs_collect_stride": 1,
+    "nsgbs_collect_max_samples": None,
+    # NS-GBS inference device (optional)
+    "nsgbs_device": None,
 })
 
 # Access gating/HO removed in minimal DL-only preset
