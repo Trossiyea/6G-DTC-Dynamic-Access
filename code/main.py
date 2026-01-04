@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Optional, Union
 import os
 import json
+import time
 from scipy.io import loadmat
 from tqdm import tqdm
 from csi import sinr_to_se_mcs, effective_sinr_eesm
@@ -595,6 +596,8 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     if dataset_window % 2 == 0:
         dataset_window += 1
     dataset_use_harq = bool(cfg.get("nsgbs_use_harq_features", True))
+    add_z_feat = bool(cfg.get("nsgbs_add_z", False))
+    add_step_feat = bool(cfg.get("nsgbs_add_step", False))
     dataset_enabled = collect_dataset and (dataset_out is not None)
     dataset_count = 0
     N_UE = cap_wb.shape[0]
@@ -813,8 +816,16 @@ def pf_schedule_radiomap_blocks(
     if dataset_window % 2 == 0:
         dataset_window += 1
     dataset_use_harq = bool(cfg.get("nsgbs_use_harq_features", True))
+    add_z_feat = bool(cfg.get("nsgbs_add_z", False))
+    add_step_feat = bool(cfg.get("nsgbs_add_step", False))
     dataset_enabled = collect_dataset and (dataset_out is not None)
     dataset_count = 0
+    collect_stats = bool(cfg.get("nsgbs_collect_stats", False))
+    stats_out = cfg.get("nsgbs_stats_out") if collect_stats else None
+    if collect_stats and stats_out is None:
+        stats_out = {}
+        cfg["nsgbs_stats_out"] = stats_out
+    stats = {"steps": 0, "actions_total": 0, "score_calls": 0, "score_time_sec": 0.0} if collect_stats else None
 
     N_UE, Z = cap.shape
     rng = np.random.default_rng(0) if rng is None else rng
@@ -1072,6 +1083,15 @@ def pf_schedule_radiomap_blocks(
                 cap_rem = float(int(max_prbs_per_ue) - k0)
             kind_id = float(kind_to_id.get(kind, 3))
             tail = np.array([k0, block_pred, delta_pred, pf_inv, retx_flag, cap_rem, kind_id], dtype=float)
+            extras = []
+            if add_z_feat:
+                denom = float(Z - 1) if Z > 1 else 1.0
+                extras.append(np.array([float(z) / denom], dtype=float))
+            if add_step_feat:
+                denom = float(Z) if Z > 0 else 1.0
+                extras.append(np.array([float(assigned_cnt) / denom], dtype=float))
+            if extras:
+                return np.concatenate([win, tail] + extras)
             return np.concatenate([win, tail])
 
         def delta_true_for_action(action, snr_true: np.ndarray) -> float:
@@ -1175,6 +1195,8 @@ def pf_schedule_radiomap_blocks(
         # Count already assigned by pre-assignment
         assigned_cnt = int(np.sum(winners >= 0))
         while assigned_cnt < Z:
+            if collect_stats and use_nsgbs and (nsgbs_scorer is not None):
+                stats["steps"] += 1
             if dataset_enabled and (assigned_cnt % dataset_stride == 0):
                 actions_ds = list(iter_actions_for_dataset(dataset_topb))
                 if actions_ds and (snr_true_t is not None):
@@ -1202,10 +1224,17 @@ def pf_schedule_radiomap_blocks(
             actions = None
             if use_nsgbs and (nsgbs_scorer is not None):
                 actions = list(iter_actions())
+                if collect_stats:
+                    stats["actions_total"] += len(actions)
                 if actions:
                     try:
                         feats = np.asarray([build_nsgbs_features(a) for a in actions], dtype=np.float32)
+                        t0 = time.perf_counter()
                         scores = np.asarray(nsgbs_scorer.score(feats), dtype=float).reshape(-1)
+                        dt = time.perf_counter() - t0
+                        if collect_stats:
+                            stats["score_calls"] += 1
+                            stats["score_time_sec"] += dt
                         if scores.size == len(actions):
                             scores = np.where(np.isfinite(scores), scores, -1e9)
                             best_action = actions[int(np.argmax(scores))]
@@ -1466,6 +1495,9 @@ def pf_schedule_radiomap_blocks(
                 harq_mgr.on_scheduled(scheduled)
 
     avg_sum_rate_per_prb = sum_rate / (T * Z)
+    if collect_stats and stats_out is not None:
+        stats_out.clear()
+        stats_out.update(stats)
     return avg_sum_rate_per_prb
 
 
@@ -2039,6 +2071,7 @@ def run_once(config: Dict) -> Dict:
         "sched_stats": None,
         "harq_stats_base": harq_stats_base,
         "harq_stats_map": harq_stats_map,
+        "nsgbs_stats": config.get("nsgbs_stats_out"),
     }
 
     # Attach PRB assignment timeline and per-UE throughput if recorded

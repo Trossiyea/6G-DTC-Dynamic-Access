@@ -101,6 +101,10 @@ CONFIG.update({
     "nsgbs_window": 3,
     "nsgbs_use_harq_features": True,
     "nsgbs_score_mode": "classify",
+    "nsgbs_add_z": False,
+    "nsgbs_add_step": False,
+    "nsgbs_collect_stats": False,
+    "nsgbs_stats_out": None,
     # Dataset collection for NS-GBS (Phase2)
     "nsgbs_collect_dataset": False,
     "nsgbs_collect_stride": 1,

@@ -73,7 +73,11 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--topB", type=int, default=4)
     parser.add_argument("--window", type=int, default=3)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None, help="Single seed (overrides seed-start/num-seeds)")
+    parser.add_argument("--seed-start", type=int, default=1, help="First seed value")
+    parser.add_argument("--num-seeds", type=int, default=1, help="Number of seeds to run")
+    parser.add_argument("--add-z", action="store_true", help="Append z/Z to features")
+    parser.add_argument("--add-step", action="store_true", help="Append step/Z to features")
     parser.add_argument("--no-progress", action="store_true")
     args = parser.parse_args()
 
@@ -91,9 +95,6 @@ def main():
         cfg["T"] = int(args.T)
     if args.N_UE is not None:
         cfg["N_UE"] = int(args.N_UE)
-    if args.seed is not None:
-        cfg["seed"] = int(args.seed)
-
     cfg["show_progress"] = not args.no_progress
     cfg["scheduler_kind"] = "heuristic"
     cfg["nsgbs_collect_dataset"] = True
@@ -101,13 +102,28 @@ def main():
     cfg["nsgbs_collect_max_samples"] = args.max_samples
     cfg["nsgbs_topB"] = int(max(1, args.topB))
     cfg["nsgbs_window"] = int(max(1, args.window))
+    cfg["nsgbs_add_z"] = bool(args.add_z)
+    cfg["nsgbs_add_step"] = bool(args.add_step)
+
+    if args.seed is not None:
+        seeds = [int(args.seed)]
+    else:
+        seeds = list(range(int(args.seed_start), int(args.seed_start) + int(args.num_seeds)))
 
     dataset = []
-    cfg["nsgbs_dataset_out"] = dataset
-
     from main import run_once
 
-    run_once(cfg)
+    for seed in seeds:
+        cfg_run = cfg.copy()
+        cfg_run["seed"] = int(seed)
+        cfg_run["nsgbs_dataset_out"] = dataset
+        if args.max_samples is not None:
+            remaining = int(args.max_samples) - len(dataset)
+            if remaining <= 0:
+                break
+            cfg_run["nsgbs_collect_max_samples"] = remaining
+        print(f"[NS-GBS] running seed={seed} (samples={len(dataset)})")
+        run_once(cfg_run)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +150,15 @@ def main():
         "out": str(out_path),
         "num_samples": int(len(dataset)),
         "feature_dim": int(features[0].shape[1]) if len(dataset) > 0 else 0,
+        "num_ue": int(cfg.get("N_UE", 0)),
+        "ttis": int(cfg.get("T", 0)),
+        "prb_count": int(cfg.get("Z", 0)),
+        "topB": int(args.topB),
+        "window": int(args.window),
+        "stride": int(args.stride),
+        "add_z": bool(args.add_z),
+        "add_step": bool(args.add_step),
+        "seeds": seeds,
         "config": to_jsonable(cfg),
     }
     with open(str(out_path) + ".json", "w", encoding="utf-8") as f:
