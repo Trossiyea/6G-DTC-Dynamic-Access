@@ -967,9 +967,20 @@ def pf_schedule_radiomap_blocks(
                     continue
                 k0 = int(k_assigned[ue])
                 if k0 == 0:
-                    z0 = next_unassigned_best(ue)
-                    if z0 is not None:
-                        yield ("seed", ue, int(z0))
+                    if use_nsgbs and dataset_topb > 1:
+                        ord_row = order_per_ue[ue]
+                        picked = 0
+                        for z in ord_row:
+                            zz = int(z)
+                            if winners[zz] < 0:
+                                yield ("seed", ue, zz)
+                                picked += 1
+                                if picked >= dataset_topb:
+                                    break
+                    else:
+                        z0 = next_unassigned_best(ue)
+                        if z0 is not None:
+                            yield ("seed", ue, int(z0))
                     continue
                 # Grow actions (contiguous if required)
                 li, ri = int(l_idx[ue]), int(r_idx[ue])
@@ -1187,13 +1198,27 @@ def pf_schedule_radiomap_blocks(
                         dataset_enabled = False
 
             # Build best action per UE: seed or grow L/R
-            best_delta = -1e9
             best_action = None  # (kind, ue, z_to_assign)
-            for action in iter_actions():
-                metric = score_action(action)
-                if metric > best_delta:
-                    best_delta = metric
-                    best_action = action
+            actions = None
+            if use_nsgbs and (nsgbs_scorer is not None):
+                actions = list(iter_actions())
+                if actions:
+                    try:
+                        feats = np.asarray([build_nsgbs_features(a) for a in actions], dtype=np.float32)
+                        scores = np.asarray(nsgbs_scorer.score(feats), dtype=float).reshape(-1)
+                        if scores.size == len(actions):
+                            scores = np.where(np.isfinite(scores), scores, -1e9)
+                            best_action = actions[int(np.argmax(scores))]
+                    except Exception:
+                        best_action = None
+
+            if best_action is None:
+                best_delta = -1e9
+                for action in (actions if actions is not None else iter_actions()):
+                    metric = score_action_heuristic(action)
+                    if metric > best_delta:
+                        best_delta = metric
+                        best_action = action
 
             # Fallback: if no action found (e.g., all capped), assign highest remaining PRB to best UE
             if best_action is None:

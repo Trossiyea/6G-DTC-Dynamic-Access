@@ -283,6 +283,8 @@ def main():
         example = torch.zeros((1, feat_dim), dtype=torch.float32)
         scripted = torch.jit.trace(model.cpu(), example)
         scripted.save(str(ts_path))
+        with open(str(ts_path) + ".json", "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=True, indent=2)
 
     if args.export_numpy:
         params = {}

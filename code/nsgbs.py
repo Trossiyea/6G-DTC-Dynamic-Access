@@ -80,13 +80,17 @@ def load_nsgbs_scorer(cfg: dict) -> Optional[NSGBSScorer]:
 
     if str(model_path).endswith(".ts"):
         model = torch.jit.load(model_path, map_location=device)
-        meta_path = str(model_path) + ".json"
-        if os.path.exists(meta_path):
+        meta_candidates = [
+            str(model_path) + ".json",
+            os.path.splitext(str(model_path))[0] + ".pt.json",
+        ]
+        meta_path = next((p for p in meta_candidates if os.path.exists(p)), None)
+        if meta_path is not None:
             meta = _load_meta(meta_path)
             mean = np.asarray(meta.get("mean"), dtype=np.float32) if meta.get("mean") is not None else None
             std = np.asarray(meta.get("std"), dtype=np.float32) if meta.get("std") is not None else None
         else:
-            print("[NS-GBS] TorchScript meta not found; running without normalization.")
+            print(f"[NS-GBS] TorchScript meta not found ({meta_candidates}); running without normalization.")
     else:
         meta_path = str(model_path) + ".json"
         if not os.path.exists(meta_path):
