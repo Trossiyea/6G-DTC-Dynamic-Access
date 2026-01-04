@@ -1,0 +1,1509 @@
+\documentclass[type=master]{fduthesis}
+
+\fdusetup{
+  style = {
+    cjk-font = mac,
+    font     = times,
+    % fullwidth-stop = mapping, % 可选：理工论文常用“．”避免与下标 o/0 混淆（仅 XeLaTeX 真正生效）
+    bib-backend  = bibtex,
+    bib-resource = {main.bib},
+  },
+  % info 类用于录入论文信息
+  info = {
+    title = {面向手机直连卫星的可解耦接入网络架构设计与资源编排方法研究},
+    % 中文标题
+    % 长标题建议使用 “\\” 命令手动换行（不是指在源文件里输入回车符，当然
+    % 源文件里适当的换行可以有助于代码清晰）：
+    %   title = {最高人民法院、最高人民检察院关于适用\\
+    %            犯罪嫌疑人、被告人逃匿、死亡案件违法所得\\
+    %            没收程序若干问题的规定},
+    %
+    title* = {Research on Resource Orchestration Mechanisms for\\ LEO Satellite Access Networks with a Decoupled Architecture},
+    % 英文标题
+    %
+    author = {孔维泽},
+    % 作者姓名
+    %
+    % author* = {Your name},
+    % 作者姓名（英文 / 拼音）
+    % 目前不需要填写
+    %
+    supervisor = {高跃\quad 教授},
+    % 导师
+    % 姓名与职称之间可以用 \quad 打印一个空格
+    %
+    major = {计算机技术},
+    % 专业
+    %
+    degree = professional,
+    % 学位类型
+    % 允许选项：
+    %   degree = academic|professional
+    % 说明：
+    %   academic      学术学位
+    %   professional  专业学位
+    %
+    department = {计算与智能创新学院},
+    % 院系
+    %
+    student-id = {23210240202},
+    % 作者学号
+    %
+    date = {2025 年 1 月 29 日},
+    % 日期
+    % 注释掉表示使用编译日期
+    %
+    % secret-level = ii,
+    % 密级
+    % 允许选项：
+    %   secret-level = none|i|ii|iii
+    % 说明：
+    %   none  不显示密级与保密年限
+    %   i     秘密
+    %   ii    机密
+    %   iii   绝密
+    %
+    % secret-year = {五年},
+    % 保密年限
+    % secret-level = none 时该选项无效
+    %
+    instructors = {
+      {张\quad 三 \quad 教\quad 授},
+      {李\quad 四 \quad 教\quad 授},
+      {王五六     \quad 研究员}
+    },
+    % 指导小组成员
+    % 使用英文逗号 “,” 分隔
+    % 如有需要，可以用 \quad 手工对齐
+    %
+    keywords = {低轨卫星通信, 非地面网络, 卫星接入网络，可解耦架构, 资源编排},
+    % 中文关键词
+    % 使用英文逗号 “,” 分隔
+    %
+    keywords* = {LEO Satellite Communication, Non-Terrestrial Network, Satellite Access Network, Decoupled Architecture, Resource Orchestration},
+    % 英文关键词
+    % 使用英文逗号 “,” 分隔
+    %
+    clc = {O413.1},
+    % 中图分类号
+    %
+    % jel = {C02},
+    % JEL 分类号，仅适用于经济学院等部分院系
+  }
+}
+
+% 需要的宏包可以自行调用
+\usepackage{physics}
+
+\usepackage{algorithm}      % 算法浮动体环境
+\usepackage{algpseudocode}  % 算法伪代码环境 (algorithmicx)
+\usepackage{amsmath}        % 数学公式支持 (包括 \eqref)
+\usepackage{amssymb}        % 更多的数学符号支持
+% 如果你的文档类不是 ctexart (如 article)，需要加上这一行以支持中文
+\usepackage{ctex}
+
+% 需要的命令可以自行定义
+\newcommand{\hilbertH}{\symcal{H}}
+\newcommand{\ee}{\symrm{e}}
+\newcommand{\ii}{\symrm{i}}
+
+\begin{document}
+
+% 这个命令用来关闭版心底部强制对齐，可以减少不必要的 underfull \vbox 提示，但会影响排版效果
+% \raggedbottom
+
+% 前置部分包含目录、中英文摘要以及符号表等
+\frontmatter
+
+% 目录
+\tableofcontents
+% 插图目录
+\listoffigures
+% 表格目录
+% \listoftables
+
+\begin{abstract}
+  中文摘要
+\end{abstract}
+
+\begin{abstract*}
+  English abstract
+\end{abstract*}
+
+% 符号表
+% 语法与 LaTeX 表格一致：列用 & 区分，行用 \\ 区分
+% 如需修改格式，可以使用可选参数：
+%   \begin{notation}[ll]
+%     $x$ & 坐标 \\
+%     $p$ & 动量
+%   \end{notation}
+% 可选参数与 LaTeX 标准表格的列格式说明语法一致
+% 这里的 “ll” 表示两列均为自动宽度，并且左对齐
+\begin{notation}[ll]
+  $x$                  & 坐标        \\
+  $p$                  & 动量        \\
+  $\psi(x)$            & 波函数      \\
+  $\bra{x}$            & 左矢（bra） \\
+  $\ket{x}$            & 右矢（ket） \\
+  $\ip{\alpha}{\beta}$ & 内积        \\
+\end{notation}
+
+% 主体部分是论文的核心
+\mainmatter
+
+% 建议采用多文件编译的方式
+% 比较好的做法是把每一章放进一个单独的 tex 文件里，并在这里用 \include 导入，例如
+%   \include{chapter1}
+%   \include{chapter2}
+%   \include{chapter3}
+
+\chapter{绪论}
+
+\section{研究背景与意义}
+当前，全球移动通信技术正处于由第五代（5G）向第六代（6G）演进的关键窗口期。随着“万物智联”愿景的持续深化，人类社会对通信服务的需求已突破人口稠密的城市区域，加速向海洋、沙漠及高空等自然环境严苛且地面基础设施匮乏的广阔空间延伸。受限于建设成本与地理屏障，传统地面蜂窝网络难以达成全球范围内的无缝覆盖\cite{WANG2023DirectToCell}。在此背景下，非地面网络（Non-Terrestrial Networks, NTN）凭借其广域覆盖、强抗毁性及不受地形限制的固有优势，被第三代合作伙伴计划（3rd Generation Partnership Project, 3GPP）与国际电信联盟（International Telecommunication Union, ITU）确立为 6G 时代实现立体泛在连接的核心架构组件\cite{WNY2023, giordani2020non}。其中，低轨（Low Earth Orbit, LEO）卫星星座凭借较低的传播损耗与传输时延，正成为构建全球信息基础设施的关键支点\cite{XCZ2021, cui2022space}。
+
+近年来，卫星制造工艺与发射成本的持续降低驱动了卫星通信应用范式的深刻变革，其中最具代表性的演进趋势即为“手机直连卫星”（Direct-to-Cell, D2C）技术\cite{SYH2023, LSD2024}。与传统依赖高增益专用终端的卫星通信模式不同，D2C 旨在实现普通消费级智能手机与卫星网络的直接互联，从而推动卫星通信由特定领域的利基市场向大众消费市场转型\cite{rappaport2025spectrum}。Starlink 与 AST SpaceMobile 等系统的成功部署，标志着 D2C 已成为新一代移动通信的技术高地\cite{Starlink2025Direct, AST2025MNO}。然而，在大规模商业化应用进程中，现有的卫星接入网（Satellite Access Network, SAN）在架构灵活性与资源管理效能方面仍面临严峻挑战，这构成了本文研究的核心出发点。
+
+首先，现有的卫星接入网架构难以适配 D2C 场景下高度动态且非均匀的业务需求。目前星载处理架构呈现明显的两极化特征：一种是“透明转发（Bent-pipe）”架构，卫星仅作为物理层中继，虽具备载荷结构简单、技术成熟度高等优点，但信号需经过地面信关站二次处理，导致长距离回传引起的传输时延较大，难以满足实时性业务需求；另一种则是完全的“再生处理（Regenerative）”架构，即在卫星载荷上集成 5G 接入网基站功能（Next Generation NodeB, gNB）。该架构允许卫星在本地完成信号的解调、解码及协议栈处理，不仅能显著压缩用户面（User Plane）时延，还能通过星上信号再生有效抑制链路噪声累积，提升链路预算（Link Margin）与频谱效率。然而，星上基带处理逻辑的复杂化对 LEO 平台严苛的体积、重量、功耗及成本（SWaP-C）约束带来了沉重负担\cite{xiao2022leo, yahia2024scalable}。在 D2C 场景下，业务流量通常表现出剧烈的潮汐效应与突发性（如应急救援），现有的刚性架构无法在时延性能与能效平衡之间实现动态权衡\cite{kong2025flexsan}。因此，引入地面网络中成熟的功能分割（Functional Split）与云边协同理念，构建一种物理可解耦、逻辑可重构的弹性卫星接入架构，是提升网络效能的关键\cite{jia2021vnf, alba2022dynamic}。
+
+其次，手机直连卫星场景下的频谱共存干扰与资源编排面临技术瓶颈。为确保与标准地面终端的兼容性，D2C 系统通常复用地面蜂窝频段（如 LTE/NR 频段），这不可避免地引入了复杂的星地同频干扰（Co-channel Interference）\cite{heydarishahreza2024spectrum, lim2023interference}。传统的无线资源管理机制严重依赖用户终端（UE）的实时信道状态信息（Channel State Information, CSI）反馈，但在 LEO 卫星通信环境下，长达数十毫秒的往返时延（Round-Trip Time, RTT）导致 CSI 在到达卫星侧时已发生严重“老化（Aging）”，致使基于瞬时反馈的调度机制失效\cite{ZHU2025Interference, tuzi2023distributed}。此外，面对海量并发连接产生的海量干扰状态，传统算法难以在毫秒级调度周期内完成全局最优的干扰规避\cite{li2024radio}。基于此，探索利用电磁地图（Radio Map）等先验空间信息进行资源编排与干扰协调，成为突破 D2C 系统性能瓶颈的必然途径\cite{li2024radio}。
+
+综上所述，开展面向手机直连卫星的可解耦接入架构与智能化资源编排方法研究，具有重要的理论意义与工程应用价值。在理论层面，本研究通过将软件定义网络（SDN）与网络功能虚拟化（NFV）思想引入卫星网络，提出弹性可重构的 FlexSAN 架构模型，并建立基于电磁地图先验信息的资源优化理论，旨在弥补传统刚性架构与滞后反馈机制在 D2C 环境下的理论缺陷。在应用层面，本研究设计的动态架构切换机制与抗干扰资源编排算法，能够显著降低星上计算开销，提升系统频谱效率与连接稳定性，从而为未来 6G 空天地一体化网络的大规模商业化部署提供关键的技术支撑\cite{liu2024democratizing, YS2024}。
+
+\section{国内外研究现状}
+
+\subsection{NTN 标准化演进与手机直连业务态势}
+在面向 6G 的空天地一体化网络愿景下，非地面网络（Non-Terrestrial Networks, NTN）正从传统的“广域覆盖补盲”向“全体系深度融合”演进。现有文献普遍认为，低轨（Low Earth Orbit, LEO）卫星星座凭借其全球覆盖能力及相对较低的传播时延，已成为 NTN 体系中最具工程可行性的承载形态\cite{9217520,9970355}。作为 NTN 关键子系统，卫星接入网（Satellite Access Network, SAN）的架构形态与资源管理效率被视为决定手机直连卫星（Direct-to-Cell, D2C）用户体验与运营成本的核心要素\cite{10500741,9722775}。
+
+在标准化层面，3GPP 已构建了相对完备的 NTN 支持体系：TR 23.737 系统性地讨论了卫星接入 5G 核心网的架构要点与网元交互逻辑；TR 38.801 确立了新空口（New Radio, NR）接入架构与接口研究框架；TR 38.821 则提供了 NTN 的典型链路参数与技术解决方案\cite{3gpp.23.737,3gpp.38.801,3gpp.38.821}。与此同时，TR 38.811 针对 LEO 场景下的多普勒频移（Doppler Shift）与时延漂移特性进行了精细化建模，为评估“长时延与快时变”特性对高层协议机制的影响提供了理论依据\cite{3gpp.38.811}。尽管标准体系确立了 D2C 与地面蜂窝协议栈的互操作性，但在星载资源受限、馈电链路时延显著及网络拓扑动态演进的复杂约束下，如何在标准边界内实现可重构的接入能力与高效的在线资源编排，仍是当前学术界与产业界面临的严峻挑战\cite{3gpp.38.821}。
+
+产业界的快速推进进一步放大了技术体制间的结构性矛盾。D2C 被公认为卫星通信由专用终端向消费级移动终端渗透的关键路径，相关研究已针对其网络形态及性能瓶颈开展了深入的工程化讨论\cite{10.1145/3686138.3686140}。针对真实星座条件的测评数据揭示，当用户规模与业务负载呈现强非均匀波动时，传统的单一静态接入形态难以在“低时延保障、星载功耗（Power Consumption）控制及网络可扩展性”之间达成多目标最优平衡，这为研究可解耦接入架构与弹性资源编排方法提供了迫切的现实需求\cite{9970355,10500741,10978515}。
+
+\subsection{卫星接入网架构与功能分割}
+在 SAN 的体系形态演进中，透明载荷（Transparent Payload）与再生载荷（Regenerative Payload）构成了两条主流演进路线。3GPP 明确定义了两类载荷的典型部署方式及其协议栈分工\cite{3gpp.23.737,3gpp.38.801}。相比仅承担射频转发任务的透明载荷，再生载荷能够将基带处理（Baseband Processing）乃至高层协议栈功能下沉至卫星侧，通过缩短用户面时延提升交互体验，被视为 5G/6G 星地融合演进的关键路径\cite{3gpp.38.821,9722775}。然而，再生能力的提升伴随着基带处理逻辑复杂度的激增，受限于 LEO 卫星平台的体积、重量与功耗（Size, Weight, and Power, SWaP）约束，架构选择已演变为性能增益与载荷开销之间的深度博弈\cite{9970355}。
+
+为破解性能与成本的权衡难题，功能分割（Functional Split）理念被引入 SAN 架构设计。文献综述表明，不同分割点（Split Options）对时延敏感度、计算强度及接口交互成本的影响差异显著，必须结合非地面链路特性进行跨层优化\cite{larsen2018survey}。针对 NTN 环境的评估结果显示，卫星链路的传播时延显著限制了低层分割的可行性，使得架构选型更倾向于对前传（Fronthaul）带宽与时延要求较低的高层分割\cite{10572042,campana2023ran}。此外，已有研究尝试从能效角度优化 Open RAN 框架下的功能分割选择，但现有模型往往聚焦于单一目标的静态优化，难以适配 D2C 场景下由“流量潮汐”与“差异化体验需求”驱动的动态权衡逻辑\cite{10901285}。
+
+在工程实施层面，功能分割方案受到标准接口机制的严格约束。以 Split 2 架构为例，分布单元（DU）与集中单元（CU）通过 F1 接口进行协同，其控制面与用户面规程均遵循 3GPP 标准化定义\cite{3gpp.38.470,3gpp.38.475}。尽管标准化有助于实现厂商间的互操作性，但在 SAN 场景下，F1 接口必须跨越具有长时延、有限容量及高误码率特征的馈电链路。这种物理链路的结构性缺陷会显著放大信令交互开销，导致接口标准合规并不等价于端到端性能受控\cite{campana2023ran,10572042}。因此，面向 D2C 的可解耦接入架构不仅涉及协议栈的逻辑拆分，更是一个耦合了信令开销、链路物理特性与星载资源约束的复杂系统工程问题\cite{3gpp.38.821,9970355}。
+
+\subsection{卫星资源编排与弹性重构}
+在接入网资源编排领域，地面 5G 网络已形成较为成熟的虚拟化无线接入网（vRAN）编排体系。文献\cite{9107209} 针对功能分割与资源调度的联合编排进行了系统建模，并提出了相应的启发式求解框架；文献\cite{9781611} 则进一步探讨了在线自适应机制，旨在时延与吞吐量之间实现动态调节。同时，基于开放 RAN（O-RAN）的自动化管理架构为实现“可观测、可决策、可编排”的闭环控制提供了参考路径\cite{d2022orchestran}。然而，由于星地链路传播时延显著高于地面光纤承载，上述依赖高频闭环反馈（Closed-loop Feedback）的策略在卫星场景下极易面临状态老化与信令风暴等结构性瓶颈\cite{3gpp.38.821,campana2023ran}。
+
+此外，SAN 架构下的在线决策面临显著的“用户间性能耦合”挑战。海量终端共享有限的星上计算与基带资源，排队效应会导致系统时延呈现非线性恶化。相关研究揭示了 LEO 时变信道下排队时延对负载波动的敏感性，证明了并发连接规模的激增是引发系统级时延劣化的诱因\cite{9454162}。这意味着在 D2C 业务具备显著潮汐特征的背景下，基于固定架构的资源分配往往会导致资源利用效率的极端化：低负载时段出现星载资源冗余与成本空耗，而高负载时段则因排队阻塞严重影响服务连续性\cite{9970355,9454162}。
+
+基于此，研究范式正从既定架构下的资源分配转向架构与资源联合编排。该方向要求将功能分割选项、星上算力分配、准入控制以及业务服务质量（QoS）约束纳入统一的最优控制框架。鉴于 D2C 毫秒级的调度周期与动态网络状态，编排算法必须具备低复杂度与在线实时求解能力\cite{9781611,9107209}。尽管现有研究为此提供了方法论储备，但面向 SAN 的专用建模及低开销落地机制仍存在广阔的探索空间\cite{campana2023ran,10572042}。
+
+\subsection{同频干扰治理与先验信息驱动}
+频谱稀缺性是制约 D2C 规模化部署的核心瓶颈。为兼容现役移动终端生态，D2C 业务通常复用既有地面蜂窝频段，这不可避免地引入了复杂的星地同频/邻频干扰\cite{heydarishahreza2024_spectrumsharing}。现有综述指出，此类干扰具有多维来源与强时变特征，已成为影响 D2C 链路可靠性的关键因素\cite{heydarishahreza2024_spectrumsharing}。在 NTN 物理特性建模中，传播时延与多普勒效应的叠加进一步加剧了干扰环境的不确定性\cite{3gpp.38.811,3gpp.38.821}。
+
+传统的无线资源管理（RRM）机制高度依赖用户设备（UE）反馈的信道状态信息（CSI）或信道质量指示（CQI）。但在 D2C 场景下，反馈信息往往在到达卫星端时已失效，难以支持精确的链路自适应\cite{3gpp.38.821}。此外，常规 CQI 上报通常基于子带（Subband）粒度，无法精确刻画物理资源块（Physical Resource Block, PRB）级别的异质干扰特性，导致调度器难以利用频域中的“干净资源”，从而抑制了系统吞吐量的提升\cite{3gpp.38.214,3gpp.36.213}。因此，过度依赖终端反馈的机制正面临频谱效率与稳定性的性能天花板\cite{heydarishahreza2024_spectrumsharing,3gpp.38.821}。
+
+针对星地共存挑战，学术界提出了静态隔离、空间零陷抑制（Interference Nulling）及动态频谱接入（DSA）等方案。其中，空间域抑制虽能降低特定方向的干扰，但对载荷天线阵列的控制精度提出了极高要求\cite{kang2024_interference_nulling}。相比之下，基于数据库驱动的共享机制（如授权共享接入 LSA）因其可监管性与工程可行性而备受关注\cite{hoyhtya2017_database,milheiro2020_lsa_detector}。在此基础上，利用多源数据构建高时空分辨率的电磁地图（Radio Map）或干扰地图，被视为一种“精细化、先验化”的资源管理新形态。相关概念验证（PoC）已初步证实了通过地图驱动实现星地频谱共享的可行性\cite{kokkinen2023_poc}。尽管随机几何等统计模型在宏观分析中具有便利性，但由于其与真实基站部署的偏差，基于数字孪生或实测数据驱动的地图方案在提升资源编排精度方面展现出更强的实用价值\cite{wang2022_sg_accuracy}。
+
+进一步地，博弈论（Game Theory）与深度强化学习（DRL）等智能化方案在功率控制、多波束调度与频率分配中展现了优异的性能潜力\cite{li2025_game_theoretic,huang2024_drl_rsma}。然而，在 D2C 的实时调度约束与星载算力限制下，复杂模型的在线推理与数据依赖性仍是落地瓶颈\cite{heydarishahreza2024_spectrumsharing}。因此，更具工程价值的研究方向在于：在电磁地图先验信息的辅助下，设计低复杂度、可解释且具备干扰感知能力的资源编排算法，并将其与可解耦接入架构深度联动，构建端到端的闭环优化体系\cite{hoyhtya2017_database,3gpp.38.821}。
+
+\section{本文主要研究内容}
+本论文聚焦于手机直连卫星应用场景，深入探讨了在低轨星座网络“长传播时延、强多普勒频移、高动态切换及异构同频干扰”约束下，卫星接入网面临的架构僵化与资源编排低效问题。本文以再生载荷为研究对象，综合考量星载平台受限的算力资源、馈电链路往返时延引入的信令开销、以及现有机制在频谱共享中干扰感知粒度不足的瓶颈，构建了“可解耦接入架构设计—干扰感知资源编排方法—架构与算法协同闭环验证”的系统化研究体系。主要创新工作与贡献体现在以下三个层面。
+
+首先，针对传统卫星接入网因固化载荷形态而导致的“低负载资源冗余、高负载排队拥塞”的结构性矛盾，本文提出了一种可解耦、可重构的弹性再生卫星接入网架构——FlexSAN。该架构基于 3GPP 功能分割理论，针对卫星通信的特殊约束，重点实现了星载全栈基站（On-board gNB, Split 0）与星载分布单元（On-board gNB-DU, Split 2）两种形态的工程化部署。通过引入虚拟化网络功能实例化机制，FlexSAN 具备了按用户粒度进行动态架构切换的能力，从而在端到端时延预算与星载计算开销之间建立了可在线调节的权衡模型。有别于现有研究仅停留在架构形态的定性对比，本文基于原型测量数据，量化了 F1 接口跨越馈电链路传输时引入的确定性时延开销，并揭示了并发用户规模增长对星载排队时延的非线性放大效应。这一工作为证明“D2C 网络需具备适应动态负载与差异化服务的架构弹性”提供了坚实的实证依据，确立了 FlexSAN 作为后续精细化资源编排底座的核心价值。
+
+其次，针对 D2C 系统复用地面蜂窝频段所引发的严峻星地同频干扰问题，本文提出了一种基于电磁地图引导的两阶段联合资源编排算法。鉴于 NTN 环境下的长往返时延会导致基于 UE 反馈的 CSI/CQI 信息严重老化，进而导致链路自适应失效，本文转而采用具备时空先验信息的电磁地图作为调度核心输入。该方法结合卫星轨道几何与链路预算（Link Budget），在物理资源块（PRB）粒度上实现对用户瞬时 $SINR$ 的精准预测。在此基础上，设计了满足 NR 连续资源分配约束的比例公平边际增益贪心频谱分配策略，实现了对“频谱空穴”与“干扰受限区”的差异化利用；进而，在卫星总发射功率约束下，引入注水（Water-Filling）算法进行功率再分配，使得功率资源向信道条件更优的 PRB 倾斜。该算法在设计上充分兼容了目标 $BLER$、$OLLA$ 及 $HARQ$ 流程，通过降低对高频闭环反馈的依赖，显著增强了调度系统在多普勒频移与快时变信道条件下的鲁棒性与频谱效率。
+
+最后，本文从系统工程视角建立了 FlexSAN 架构与电磁地图引导调度算法之间的深层耦合关系，实现了“架构赋能算法”的闭环协同论证。由于 PRB 级干扰预测与非凸功率优化算法存在显著的在线计算开销，若卫星长期锁定为全功能再生模式，协议栈处理将与调度算法竞争有限的星载算力，极易引发计算排队并压缩调度窗口，导致决策滞后。基于此，本文证明了 FlexSAN 的必要性：通过将计算密集的 CU 功能按需卸载至地面（Split 2 模式），FlexSAN 能够在满足时延约束的前提下释放星载算力裕度，为高复杂度的干扰感知编排算法提供可持续的实时运行环境。反之，精细化编排算法带来的吞吐量提升与连接稳定性增强，又降低了单位业务所需的频带资源与重传压力，从而缓解了架构层面的拥塞态势。这一结论从机制上阐明了“架构解耦”并非单纯的物理拆分，而是通过重构算力分布主动重塑算法可执行性的关键手段，从而将架构灵活性与抗干扰编排统一在同一系统优化目标之下。
+
+\section{论文结构安排}
+本论文共分为五章，逻辑结构遵循“背景与问题阐述—理论综述—架构设计—算法实现—总结展望”的学术论证链条，具体内容安排如下。
+
+第一章为绪论。本章首先阐述了 6G 时代非地面网络与手机直连卫星业务的战略背景与技术演进趋势，深入剖析了 LEO 星座特有的链路几何演化、多普勒效应、频繁切换及长传播时延对接入网协议栈与时延预算的系统性影响。在此基础上，本章重点指出了 D2C 场景下频谱复用导致的异构同频干扰以及传统反馈机制失效的工程瓶颈，明确了本文围绕“可解耦接入架构设计”与“干扰感知资源编排”协同优化的研究目标、技术路线及核心创新点。
+
+第二章为卫星接入网络架构与资源调度技术综述。本章系统梳理了从透明转发到再生处理的 SAN 架构演进脉络，重点探讨了功能分割技术在 NTN 场景下的适用边界，分析了其与馈电链路时延、F1 接口信令开销之间的强耦合关系，并总结了地面 vRAN/O-RAN 编排范式直接迁移至卫星场景的局限性。此外，本章对 D2C 同频干扰治理技术进行了分类综述，论证了电磁地图等数据库式先验信息源在提升干扰感知粒度与降低反馈依赖方面的独特优势，为后续章节的模型构建与机制选择奠定了理论基础。
+
+第三章为可解耦卫星接入网络架构设计。本章正式提出了 FlexSAN 的总体系统架构，给出了涵盖用户集合、带宽资源与星载计算容量约束的形式化系统模型，并建立了由传输时延、排队时延及架构接口时延共同构成的端到端时延统一分析框架。基于该框架，本章详细阐述了面向不同负载区间的动态编排机制，说明了如何通过按用户粒度灵活切换 On-board gNB 与 On-board gNB-DU 模式，实现时延体验与 OPEX 的在线最优权衡，并通过实验仿真验证了该架构在应对动态业务负载与差异化服务需求时的有效性。
+
+第四章为面向 D2C 的干扰感知资源编排方法。本章首先构建了基于电磁地图引导的链路预算与 PRB 级 $SINR$ 预测模型，随后提出了一套两阶段联合优化算法：第一阶段执行满足连续 PRB 分配约束的比例公平边际增益贪心频谱分配，第二阶段执行总功率约束下的注水功率再分配。本章通过多维度仿真评估了算法在频谱效率、系统吞吐量及用户公平性方面的性能增益，并进一步讨论了该算法在 FlexSAN 架构下的算力预算边界，验证了通过架构解耦释放星载算力以支撑实时复杂调度的系统性收益。
+
+第五章为总结与展望。本章全面归纳了本文在可解耦再生卫星接入网架构与 D2C 干扰感知资源编排领域的主要研究结论，并结合超大规模星座组网、星间链路（ISLs）协同编排、以及电磁地图的在线更新与跨域数据融合等前沿方向，对未来可进一步拓展的研究课题进行了展望。
+
+\chapter{卫星接入网络架构与资源调度技术基础}
+\label{chap:ch2}
+
+面向 5G-Advanced 与 6G 空天地一体化演进，低轨卫星网络面临空间几何快时变与链路预算受限的双重挑战。与地面网络显著不同，LEO 卫星的高速运动引发了严重的多普勒频移与信道状态信息老化，而馈电链路的长传播时延则显著制约了功能切分架构下的控制面交互效率，迫使协议设计需在时效性与可靠性之间寻求新的平衡。
+
+本章旨在为后续章节的架构设计与资源编排算法构建一致的技术底座：首先，在梳理 3GPP/ITU-R 标准体系的基础上，对星地几何、传播时延与 NTN 大尺度信道进行统一建模，并将其与 PRB 级 SINR 接口对齐；随后，围绕 SAN 架构从载荷形态到功能分割的演进脉络，分析 Split 0 与 Split 2 在 NTN 约束下的协议适用边界，并抽象 F1 往返时延与事务放大效应；进一步地，面向快时变与长闭环时延并存的环境，建立 NR 调度机制、CSI 老化判据及电磁地图驱动的干扰建模方法；最后，给出基于 OpenAirInterface (OAI) 的端到端原型验证平台与调度器扩展接口设计，为第 3 章与第 4 章的实验验证提供统一的实现基线。
+
+% =====================================================
+\section{星地链路传播特性与信道建模}
+\label{sec:ch2_geo_channel}
+
+LEO 非地面网络（NTN）中，星地链路的关键差异主要体现在两方面：其一，\emph{空间几何随时间快速变化}，导致斜距、可见性与传播时延呈显著时变；其二，\emph{链路预算高度敏感}，自由空间损耗、阴影/杂波、雨衰以及大气气体吸收等大尺度项共同决定可达接收功率与可用调制编码等级。为支撑后续章节对端到端时延、干扰与调度机制的统一建模，本节对任意用户 $u\in\mathcal{U}$、离散调度时隙 $t\in\mathcal{T}$，给出可复用的星地几何与 NTN 信道（大尺度）表达，并将其与后续 PRB 级 $\gamma_{u,k}(t)$ 的接口预先对齐。
+
+% -----------------------------
+\subsection{空间几何演化与传播时延}
+\label{subsec:ch2_geo_geometry_delay}
+
+考虑地心坐标系（如 ECEF/ECI）下的卫星位置向量 $\mathbf{r}_s(t)$ 与用户位置向量 $\mathbf{r}_u(t)$。星地服务链路（service link）的几何斜距可统一写为
+\begin{equation}
+d_{u,s}(t)=\left\lVert \mathbf{r}_s(t)-\mathbf{r}_u(t)\right\rVert,\qquad
+T_{\mathrm{prop}}^{\mathrm{SL}}(u,t)=\frac{d_{u,s}(t)}{c},
+\label{eq:ch2_slant_range}
+\end{equation}
+其中 $c$ 为光速。式\eqref{eq:ch2_slant_range}以向量范数形式给出斜距与传播时延的统一接口，便于后续在不同模块中复用同一套几何定义。若进一步引入用户当地坐标系（ENU）下的仰角 $\theta_{u,s}(t)$，则链路可见性可由
+\begin{equation}
+\theta_{u,s}(t)\ge \theta_{\min}
+\label{eq:ch2_visibility}
+\end{equation}
+判定，其中 $\theta_{\min}$ 为系统设定的最小可见仰角（与遮挡、天线指向及链路预算裕量相关）。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_0_geo_coverage.pdf}
+  \caption{（必画）星地几何与覆盖示意图。图中应同时给出地心坐标系与局部 ENU 坐标系，标注卫星位置 $\mathbf{r}_s(t)$、UE 位置 $\mathbf{r}_u(t)$、斜距 $d_{u,s}(t)$、仰角 $\theta_{u,s}(t)$ 及可见性条件 $\theta_{u,s}(t)\ge \theta_{\min}$。该图用于强调传播时延 $T_{\mathrm{prop}}^{\mathrm{SL}}(u,t)$ 随 $t$ 时变。}
+  \label{fig:ch2_geo_coverage}
+\end{figure}
+
+由于 LEO 卫星沿轨高速运动，$d_{u,s}(t)$ 在一次过境期间通常呈“先减小后增大”的变化规律，从而使 $T_{\mathrm{prop}}^{\mathrm{SL}}(u,t)$ 随时间显著波动。该时变传播时延不仅决定业务数据时延的物理下界，也将进入控制闭环的生效时标（例如 Split 2 中跨星地的信令事务），因此需要以曲线方式给出其数量级与变化速率，为后续时延与信令建模提供直观支撑。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_0_prop_delay_curve.pdf}
+  \caption{（必画）传播时延随时间变化曲线。横轴为 $t$，纵轴为 $T_{\mathrm{prop}}^{\mathrm{SL}}(u,t)=d_{u,s}(t)/c$；可在同图叠加 Split 2 额外控制闭环时延作为对比，以展示“传播下界 + 跨馈电链路事务”带来的时标抬升。}
+  \label{fig:ch2_prop_delay_curve}
+\end{figure}
+
+% -----------------------------
+\subsection{链路预算与大尺度衰落}
+\label{subsec:ch2_geo_link_budget}
+
+\paragraph{路径损耗}
+3GPP TR 38.811 将 NTN 服务链路的大尺度路径损耗建模为自由空间损耗（FSPL）、阴影衰落（shadow fading）与杂波损耗（clutter loss）的叠加形式，可写为（dB 域）
+\begin{equation}
+PL_u(t),[\mathrm{dB}]
+=
+FSPL\big(d_{u,s}(t),f_{\mathrm{c}}\big)
++
+SF_u(t)
++
+CL\big(\alpha,f_{\mathrm{c}}\big),
+\qquad
+SF_u(t)\sim\mathcal{N}(0,\sigma_{\mathrm{SF}}^2),
+\label{eq:ch2_pl_38811}
+\end{equation}
+其中 $f_{\mathrm{c}}$ 为载波频率，$\alpha$ 表示环境类别（如城/郊/乡等）并决定杂波损耗的统计特性。自由空间损耗常用表达为
+\begin{equation}
+FSPL(d,f_{\mathrm{c}})=20\log_{10}\!\left(\frac{4\pi d f_{\mathrm{c}}}{c}\right),
+\label{eq:ch2_fspl}
+\end{equation}
+式\eqref{eq:ch2_pl_38811}作为\emph{服务链路大尺度项}，将在后续 PRB 级信道增益 $g_{u,k}(t)$ 与 SINR $\gamma_{u,k}(t)$ 的定义中被统一调用。
+
+\paragraph{雨衰}
+在地空链路中，降雨引入的附加衰减通常按超越概率 $p\%$ 预测。ITU-R P.618 的核心结构是先计算比衰减 $\gamma_R$，再乘以有效路径长度得到雨衰：
+\begin{equation}
+\gamma_R,[\mathrm{dB/km}] = k(f_{\mathrm{c}},\mathrm{pol})\,R^{\alpha},
+\label{eq:ch2_rain_specific}
+\end{equation}
+\begin{equation}
+A_{\mathrm{rain}}(p),[\mathrm{dB}] = \gamma_R \cdot L_E,
+\qquad
+L_E=L_R\cdot r_p\cdot v_p,
+\label{eq:ch2_rain_atten}
+\end{equation}
+其中 $R$ 为降雨率（mm/h），$k(\cdot),\alpha$ 与频率及极化相关；$L_R$ 为雨区斜路径长度，$r_p,v_p$ 为 P.618 标准流程给出的水平/垂直方向路径修正系数。该建模机制对应链路预算中“雨衰”大尺度扣减项，决定 Ka/Ku 等频段 NTN 覆盖与可用性边界。
+
+\paragraph{气体吸收}
+ITU-R P.676 将大气气体吸收分为氧气与水汽两部分的比衰减，并沿传播路径积分得到总衰减：
+\begin{equation}
+\gamma_g(f)=\gamma_o(f)+\gamma_w(f),
+\label{eq:ch2_gas_specific}
+\end{equation}
+\begin{equation}
+A_{\mathrm{gas}}(u,t),[\mathrm{dB}]
+=
+\int_{\text{path}} \gamma_g(f_{\mathrm{c}},\mathbf{s})\,\mathrm{d}s
+\;\approx\;
+\frac{\gamma_g(f_{\mathrm{c}})\,h_{\mathrm{eq}}}{\sin \theta_{u,s}(t)}.
+\label{eq:ch2_gas_atten}
+\end{equation}
+式\eqref{eq:ch2_gas_atten}给出工程上常用的等效形式：仰角越低，等效穿越大气路径越长，气体吸收越显著。实际仿真中应在参数表中明确采用的标准大气假设或 $(T,P,\rho)$（温度、气压、水汽密度）设置，以保证结果可复现。
+
+\paragraph{接收功率与后续 SINR 的统一接口}
+将上述大尺度项纳入 dB 域链路预算，可得到用户 $u$ 的接收功率（RSS）表达
+\begin{equation}
+P_{\mathrm{rx},u}(t),[\mathrm{dBm}]
+=
+P_{\mathrm{tx}}[\mathrm{dBm}]
++G_{\mathrm{tx}}[\mathrm{dBi}]
++G_{\mathrm{rx}}[\mathrm{dBi}]
+-PL_u(t)[\mathrm{dB}]
+-A_{\mathrm{rain}}(p)[\mathrm{dB}]
+-A_{\mathrm{gas}}(u,t)[\mathrm{dB}]
+-L_{\mathrm{misc}}[\mathrm{dB}],
+\label{eq:ch2_rss}
+\end{equation}
+其中 $P_{\mathrm{tx}}$ 为发射功率，$G_{\mathrm{tx}},G_{\mathrm{rx}}$ 为天线增益，$L_{\mathrm{misc}}$ 汇总指向误差、极化失配、实现损耗等其他扣减项。为与后续 PRB 级 SINR 建模对齐，可定义服务链路的大尺度\emph{功率增益}（线性域）
+\begin{equation}
+g_{u,k}(t)
+=
+10^{\frac{G_{\mathrm{tx}}+G_{\mathrm{rx}}-PL_u(t)-A_{\mathrm{rain}}(p)-A_{\mathrm{gas}}(u,t)-L_{\mathrm{misc}}}{10}},
+\label{eq:ch2_gain_linear}
+\end{equation}
+使得在 PRB $k\in\mathcal{K}$ 上的接收功率可与调度功率 $p_k(t)$ 直接对接（即接收功率 $\propto p_k(t)g_{u,k}(t)$）。该接口将在后续 $\gamma_{u,k}(t)$ 定义中被统一使用，从而实现几何、链路预算与调度层速率估计的一致衔接。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_0_link_budget.pdf}
+  \caption{（必画）NTN 链路预算分解框图（dB 域“加减法流水线”）。图中应明确：$P_{\mathrm{tx}}$ 与天线增益为加项，路径损耗 $PL_u(t)$、雨衰 $A_{\mathrm{rain}}(p)$（ITU-R P.618）与气体吸收 $A_{\mathrm{gas}}(u,t)$（ITU-R P.676）为扣减项，并给出最终 $P_{\mathrm{rx},u}(t)$ 的形成路径。}
+  \label{fig:ch2_link_budget}
+\end{figure}
+
+% -----------------------------
+\subsection{多普勒频移与信道时变性}
+\label{subsec:ch2_geo_doppler_coherence}
+
+LEO 卫星相对地面高速运动会引入显著多普勒频移。依据 TR 38.811 对非地面场景多普勒的计算方法，可采用一阶近似
+\begin{equation}
+f_D(u,t)\approx \frac{v_{\mathrm{rel}}(u,t)}{c}\,f_{\mathrm{c}},
+\label{eq:ch2_doppler}
+\end{equation}
+其中 $v_{\mathrm{rel}}(u,t)$ 为视线方向相对速度分量。TR 38.811 对典型 LEO 场景给出了多普勒的数量级总结（例如高度约 600\,km、$f_{\mathrm{c}}\approx2$\,GHz 时，最大多普勒可达数十 kHz 量级）。在反馈与调度讨论中，相干时间可用常见经验上界近似为
+\begin{equation}
+T_{\mathrm{coh}}(u,t)\approx \frac{0.423}{f_{D,\max}(u,t)}.
+\label{eq:ch2_coherence}
+\end{equation}
+需要强调的是：在近视距主导的 NTN 场景中，多普勒频移本身具有一定可预测性并可被补偿，但其数量级仍会显著压缩“测量—上报—决策—执行”闭环可利用的有效时间窗口；尤其当闭环跨越星地馈电链路时，反馈信息老化风险将被进一步放大。上述时标矛盾将在后续 CSI 老化判据中得到定量化表达。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_0_doppler_coherence.pdf}
+  \caption{（必画）多普勒与信道相干时间示意。图中可绘制 $f_D(u,t)$ 随时间或仰角变化的曲线，并叠加 $T_{\mathrm{coh}}(u,t)$ 与控制闭环生效时延 $T_{\mathrm{loop}}$ 的对比，用于突出 $T_{\mathrm{loop}}\gg T_{\mathrm{coh}}$ 时反馈老化的结构性风险。}
+  \label{fig:ch2_doppler_coherence}
+\end{figure}
+
+% =====================================================
+\section{卫星接入网架构演进与功能分割机制}
+\label{sec:ch2_arch}
+
+在 3GPP NG-RAN 体系下，NTN 通过将 NR 空口延伸至卫星承载的接入节点，实现对地面蜂窝覆盖的补充与增强。与传统地面 RAN 的主要差异在于：卫星接入网络（Satellite Access Network, SAN）同时包含用户业务链路（service link）与馈电链路（feeder link），且链路传播时延与拓扑关系随轨道运动时变。更关键的是，当功能分割使得控制面闭环需要跨越 feeder link 时，馈电链路的传播下界会从“回传代价”转化为“控制事务的确定性组成”，进而改变接入、重配置与移动性过程的时延尺度与可管理性边界。
+
+% -----------------------------
+\subsection{网络拓扑与链路类型}
+\label{subsec:ch2_arch_position}
+
+SAN 的接入与汇聚路径可分为两类关键链路：
+\begin{itemize}
+  \item \textbf{service link：}UE 与卫星侧接入节点之间的 NR-Uu 空口链路，对应第\ref{sec:ch2_geo_channel}节建立的几何与大尺度信道模型；
+  \item \textbf{feeder link：}卫星与地面网关/地面集中单元之间的星地链路，用于承载控制面与用户面的汇聚回传。在 Split 2 形态下，F1-C/F1-U 将通过 feeder link 承载，从而使控制与事务时延直接受其影响。
+\end{itemize}
+
+为与后续端到端时延与排队建模保持一致，可将用户 $u$ 的端到端时延分解为
+\begin{equation}
+T_{u}^{\mathrm{e2e}}(t)
+=
+T_{u}^{\mathrm{SL}}(t)
++
+T^{\mathrm{FL}}(t)
++
+T_{u}^{\mathrm{proc}}(t)
++
+T_{u}^{\mathrm{queue}}(t)
++
+T_{u}^{\mathrm{sig}}(t),
+\label{eq:ch2_e2e_delay}
+\end{equation}
+其中 $T_{u}^{\mathrm{SL}}(t)$ 为 service link 上的传输/传播贡献，$T^{\mathrm{FL}}(t)$ 为 feeder link 的单/双向传输与传播贡献，$T_{u}^{\mathrm{proc}}(t)$ 为星载与地面节点的协议/基带处理时延，$T_{u}^{\mathrm{queue}}(t)$ 为资源共享导致的排队等待时延。$T_{u}^{\mathrm{sig}}(t)$ 用于专门刻画 \emph{Split 2 中与 F1 相关的信令事务开销}：当控制事务需要跨 feeder link 完成多轮交互时，该项将成为端到端流程的关键确定性代价。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_1_ntn_san_overview.pdf}
+  \caption{NTN/SAN 体系与链路类型示意。service link 提供 UE 接入；feeder link 承载星地汇聚与互联。在 Split 2 形态下，F1-C/F1-U 逻辑上跨越 feeder link，使控制事务时延直接受其传播下界影响。}
+  \label{fig:ch2_ntn_overview}
+\end{figure}
+
+% -----------------------------
+\subsection{透明载荷与再生载荷}
+\label{subsec:ch2_arch_transparent_regen}
+
+3GPP 将卫星载荷按信号处理与协议功能驻留位置区分为透明载荷与再生载荷。透明载荷通常仅执行射频转发（频率变换、放大与转发），不在星上完成 NR 基带解调解码与高层协议处理；其优势在于星上复杂度与功耗压力较低，但代价是更多接入控制与上下文管理依赖地面侧处理，关键控制交互更容易跨 feeder link 往返，进而放大式\eqref{eq:ch2_e2e_delay}中的 $T_{u}^{\mathrm{sig}}(t)$。再生载荷具备信号再生能力，可在星上执行不同深度的 NG-RAN 功能，使部分控制闭环与调度决策可在星上本地完成，从而降低对 feeder link 的事务依赖，但同时增加星载算力、功耗与软件栈复杂度。
+
+\begin{figure}[t]
+  \centering
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/ch2/fig2_2a_bent_pipe.pdf}
+    \caption{透明载荷}
+    \label{fig:ch2_bent_pipe}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/ch2/fig2_2b_regenerative.pdf}
+    \caption{再生载荷}
+    \label{fig:ch2_regenerative}
+  \end{subfigure}
+  \caption{透明载荷与再生载荷对比。透明载荷主要转发射频信号；再生载荷在星上执行不同深度的 NR 基带与协议处理，从而改变控制交互对 feeder link 的依赖程度。}
+  \label{fig:ch2_transparent_vs_regen}
+\end{figure}
+
+% -----------------------------
+\subsection{Split 0 与 Split 2 架构特性分析}
+\label{subsec:ch2_arch_split_boundary}
+
+在 NG-RAN 中，gNB 可按集中单元（gNB-CU）与分布式单元（gNB-DU）划分，并通过 F1 接口互联。由于 NTN 场景的 feeder link 存在显著传播时延与不确定性，\emph{与快速闭环强耦合的低层分割}在工程上难以满足时延/抖动约束，因此实践中可部署形态通常收敛到两类代表性选项：Split 0 与 Split 2。为与后续章节决策变量保持一致，本文以 $g\in\{0,1\}$ 表示分割选项，其中 $g=0$ 对应 Split 0，$g=1$ 对应 Split 2。
+
+Split 0 将 CU 与 DU 功能整体驻留星上，使多数控制过程可在星上闭环完成，feeder link 主要承担与 5GC 的互联回传，从而使 $T_{u}^{\mathrm{sig}}(t)$ 近似可忽略；Split 2 将 DU 驻留星上、CU 驻留地面，RRC/PDCP 等高层控制与承载管理位于 CU，RLC/MAC/PHY 位于 DU，因此大量“UE--DU--CU--DU--UE”的控制路径需要经由 F1 跨 feeder link 完成，$T_{u}^{\mathrm{sig}}(t)$ 成为决定流程时延的关键项。上述差异决定了两类分割在“星载算力/功耗预算”与“控制事务时延/信令开销”之间存在结构性取舍，后续将通过 F1 往返与事务模型进一步量化这一取舍。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_3_split_options_stack.pdf}
+  \caption{（必画）Split 0 vs Split 2 协议栈驻留图。图中应明确标注 RRC/PDCP/RLC/MAC/PHY 的驻留位置：Split 0 为 CU+DU 全上星；Split 2 为 DU 上星、CU 在地面，并在旁边说明“控制面闭环是否跨 feeder link（F1-C）”。}
+  \label{fig:ch2_split_stack}
+\end{figure}
+
+\subsubsection{Split 0 与 Split 2 的典型 SAN 形态}
+\label{subsec:ch2_arch_split0_split2}
+
+结合前述可行性边界，Split 0 与 Split 2 的典型 SAN 形态如图\ref{fig:ch2_split0_split2}所示。Split 0 的优势在于控制事务不依赖星地往返，但需要更高的星载算力与功耗预算；Split 2 的优势是降低星载协议栈驻留深度并保留 DU 侧对调度与 HARQ 等过程的本地化执行能力，但 CU/DU 的控制面与承载建立需要通过 F1-C/F1-U 跨 feeder link 完成交互，因此会把 feeder link 的传播时延引入多轮控制事务完成路径。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{figures/ch2/fig2_4_split0_split2_arch.pdf}
+  \caption{Split 0 与 Split 2 典型 SAN 形态对比。Split 0 将 gNB 功能整体驻留星上；Split 2 将 DU 驻留星上、CU 驻留地面，并通过 F1 接口跨 feeder link 协同。图中应明确 Split 2 时 F1-C/F1-U 的承载路径跨越 feeder link。}
+  \label{fig:ch2_split0_split2}
+\end{figure}
+
+\subsubsection{F1 往返时延与事务模型}
+\label{subsec:ch2_f1_transaction}
+
+在 Split 2 中，F1 接口承载 CU/DU 协同所需的控制面与用户面交互，其中控制面以 F1AP（F1-C）为核心。对 NTN 场景，F1 信令代价的关键在于：\emph{每一次请求/响应类过程至少需要一次跨 feeder link 的往返}。因此，本节固定采用如下往返时延表达：
+\begin{equation}
+T_{\mathrm{F1}}^{\mathrm{RTT}}
+\approx
+2T_{\mathrm{FL}}^{\mathrm{prop}}
++
+T_{\mathrm{CU}}^{\mathrm{proc}}
++
+T_{\mathrm{DU}}^{\mathrm{proc}}
++
+T_{\mathrm{FL}}^{\mathrm{queue}},
+\label{eq:ch2_f1_rtt}
+\end{equation}
+其中 $T_{\mathrm{FL}}^{\mathrm{prop}}$ 为 feeder link 单向传播时延，$T_{\mathrm{CU}}^{\mathrm{proc}}$ 与 $T_{\mathrm{DU}}^{\mathrm{proc}}$ 为 CU/DU 处理时延，$T_{\mathrm{FL}}^{\mathrm{queue}}$ 为 feeder link 承载侧排队与调度时延。
+
+若一次控制事务需要 $N_{\mathrm{rt}}$ 次必要往返，则其完成时间可抽象为
+\begin{equation}
+T_{\mathrm{txn}}
+\approx
+N_{\mathrm{rt}}\cdot T_{\mathrm{F1}}^{\mathrm{RTT}} + T_{\mathrm{local}},
+\label{eq:ch2_f1_txn}
+\end{equation}
+其中 $T_{\mathrm{local}}$ 汇总消息编解码、状态机更新与本地调度等待等一次性开销。该抽象的直接含义是：当 $T_{\mathrm{FL}}^{\mathrm{prop}}$ 占主导时，事务时延将随 $N_{\mathrm{rt}}$ 线性放大。例如，\texttt{UE CONTEXT SETUP REQUEST/RESPONSE} 至少对应一次往返（$N_{\mathrm{rt}}=1$），\texttt{UE CONTEXT RELEASE COMMAND/COMPLETE} 同样至少对应一次往返（$N_{\mathrm{rt}}=1$）；在频繁移动性触发的场景中，这类“1 RTT 级”事务会被反复触发，从而显著抬升 $T_{u}^{\mathrm{sig}}(t)$。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch2/fig2_5_f1_signaling_timeline.pdf}
+  \caption{（必画）F1 事务往返时延结构图。图中应按“请求$\rightarrow$传播$\rightarrow$处理$\rightarrow$响应$\rightarrow$传播$\rightarrow$处理”的时序标注 $T_{\mathrm{F1}}^{\mathrm{RTT}}$ 的组成，并突出跨 feeder link 的传播项是确定性下界，队列项引入额外抖动。}
+  \label{fig:ch2_f1_timeline}
+\end{figure}
+
+\subsubsection{Split 2 下 inter-gNB-DU 移动性信令与跨馈电链路开销}
+\label{subsec:ch2_handover_signaling}
+
+在 NG-RAN 架构（TS 38.401）下，inter-gNB-DU（inter-DU）移动性/切换过程可采用 conditional mobility 机制实现。对于 Split 2，RRC 位于 CU，DU 负责空口承载与调度执行，因此同一条移动性控制链路会自然分裂为两类信令通路：其一为 \emph{service link 上的 UE$\leftrightarrow$DU 的 RRC 交互}；其二为 \emph{跨 feeder link 的 DU$\leftrightarrow$CU 的 F1AP 交互}。下面按标准消息名给出最关键的步骤划分（消息名称与过程依据 TS 38.401/TS 38.473）：
+
+\begin{itemize}
+  \item \textbf{仅经 service link（UE$\leftrightarrow$DU，不经过 feeder link）}：
+  \begin{enumerate}
+    \item \texttt{MeasurementReport}（UE$\rightarrow$Source gNB-DU）
+    \item \texttt{RRCReconfiguration}（Source gNB-DU$\rightarrow$UE）
+    \item \texttt{RRCReconfigurationComplete}（UE$\rightarrow$Source gNB-DU）
+    \item \texttt{Random Access Procedure}（UE$\rightarrow$Target/Candidate gNB-DU）
+  \end{enumerate}
+
+  \item \textbf{必须跨 feeder link 的 F1AP / F1-C（DU$\leftrightarrow$CU）}：
+  \begin{enumerate}
+    \item \texttt{UL RRC MESSAGE TRANSFER (MeasurementReport)}（Source gNB-DU$\rightarrow$gNB-CU）
+    \item \texttt{UE CONTEXT SETUP REQUEST (Conditional Inter-DU Mobility Information)}（gNB-CU$\rightarrow$Candidate/Target gNB-DU）
+    \item \texttt{UE CONTEXT SETUP RESPONSE (Requested Target Cell ID)}（Candidate/Target gNB-DU$\rightarrow$gNB-CU）
+    \item \texttt{DL RRC MESSAGE TRANSFER (RRCReconfiguration)}（gNB-CU$\rightarrow$Source gNB-DU）
+    \item \texttt{UL RRC MESSAGE TRANSFER (RRCReconfigurationComplete)}（Source gNB-DU$\rightarrow$gNB-CU）
+    \item \texttt{UE CONTEXT RELEASE COMMAND}（gNB-CU$\rightarrow$Source gNB-DU）
+    \item \texttt{UE CONTEXT RELEASE COMPLETE}（Source gNB-DU$\rightarrow$gNB-CU）
+  \end{enumerate}
+\end{itemize}
+
+其中，\texttt{UE CONTEXT SETUP REQUEST/RESPONSE} 与 \texttt{UE CONTEXT RELEASE COMMAND/COMPLETE} 均属于请求/响应类过程，至少引入一次 $T_{\mathrm{F1}}^{\mathrm{RTT}}$，并将馈电链路传播下界直接纳入移动性完成时延。TS 38.473 进一步规定：若 \texttt{UE CONTEXT RELEASE COMMAND} 携带 \texttt{RRC-Container}，DU 需要通过指定 SRB 将该 RRC 容器转发至 UE；同时 \texttt{UE CONTEXT SETUP REQUEST} 可包含 \texttt{Conditional Inter-DU Mobility Information} IE，用于目标侧资源预分配与条件切换信息下发。这些标准化机制意味着：在 Split 2 中，移动性控制的关键步骤无法“本地化绕过 F1”，从而使 $T_{u}^{\mathrm{sig}}(t)$ 在 NTN 中具有结构性下界。
+
+此外，即便是 intra-gNB-DU 的小区间移动，TS 38.401 也指出其由 TS 38.473 的 \texttt{UE Context Modification (gNB-CU initiated)} 过程支撑，并涉及承载/隧道参数更新等交互。因此，只要采用 Split 2，CU$\leftrightarrow$DU 的 F1AP 交互就难以被完全消除，feeder link 的时延影响具有普遍性。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_6_inter_du_mobility_sequence.pdf}
+  \caption{（必画）Split 2 下 inter-gNB-DU（inter-DU）移动性/切换时序图（按 TS 38.401 消息名标注）。图中应使用颜色/虚线明确区分：哪些消息跨 feeder link（F1AP：UL/DL RRC MESSAGE TRANSFER、UE CONTEXT SETUP、UE CONTEXT RELEASE 等），哪些仅走 service link（MeasurementReport、RRCReconfiguration、Random Access 等）。}
+  \label{fig:ch2_inter_du_sequence}
+\end{figure}
+
+% -----------------------------
+\subsection{星载处理与排队时延}
+\label{subsec:ch2_sat_queue_energy}
+
+对再生载荷而言，Split 选项会直接改变星载处理负载与排队时延。为在系统层面刻画该影响，可将星载处理到达率抽象为
+\begin{equation}
+\lambda_{\mathrm{Sat}}(t)=\sum_{u\in\mathcal{U}} \sum_{g\in\{0,1\}} x_u^g(t)\, C_g\big(u,t,w_u(t)\big),
+\label{eq:ch2_lambda_sat}
+\end{equation}
+其中 $x_u^g(t)$ 表示用户 $u$ 在时隙 $t$ 采用分割选项 $g$ 的选择变量，$w_u(t)$ 表示与该用户处理复杂度相关的无线配置（如带宽占用、MCS 等），$C_g(\cdot)$ 给出在选项 $g$ 下的单位时间计算需求 proxy（例如以 GOPS 计）。若将星载处理抽象为 M/M/1 队列，服务率为 $\mu_{\mathrm{Sat}}$，则排队时延可写为
+\begin{equation}
+T_{u}^{\mathrm{queue}}(t)\approx \frac{1}{\mu_{\mathrm{Sat}}-\lambda_{\mathrm{Sat}}(t)}.
+\label{eq:ch2_queue_mm1}
+\end{equation}
+进一步地，为与后续能耗对比保持一致，可采用线性 proxy 给出星载能耗
+\begin{equation}
+E_{\mathrm{Sat}}(t)=\kappa \cdot \lambda_{\mathrm{Sat}}(t),
+\label{eq:ch2_energy_proxy}
+\end{equation}
+其中 $\kappa$ 为计算负载到功耗的比例系数。该抽象不追求器件级精确，但能稳定刻画“更多功能上星（更小的 $g$）$\Rightarrow$ 更低信令开销但更高星载负载”的结构性权衡，并为第 3 章的架构选择与排队时延分析提供可操作的数学接口。
+
+% =====================================================
+\section{面向时变环境的资源编排与干扰建模}
+\label{sec:ch2_sched_interf}
+
+卫星接入网络（SAN）中的无线资源管理仍以 NR 的时频栅格与链路自适应机制为基础，但其有效性受到两类“时标错配”因素显著影响：其一，LEO 场景下多普勒频移与时延漂移使信道状态随时间快速演化；其二，当系统采用 Split 2 时，部分控制闭环需要跨越馈电链路（feeder link），导致“测量—上报—决策—执行”的闭环生效时延显著增长（见式\eqref{eq:ch2_f1_rtt}）。因此，本节从接口一致性的角度给出后续章节所需的统一刻画：首先定义 NR 调度的时频资源与 PRB 级 SINR，并给出 CSI 老化判据；随后将干扰环境抽象为电磁地图张量，使外部干扰可被调度器以“查表+插值”的方式低复杂度调用；最后给出 PF 与注水两类经典优化工具，作为后续联合编排算法的理论基底。
+
+% -----------------------------
+\subsection{NR 时频资源与 CSI 老化判据}
+\label{subsec:ch2_nr_grid_amc}
+
+\paragraph{NR 时频资源栅格与速率估计}
+NR 资源分配在离散调度时隙 $t\in\mathcal{T}$ 上进行，频域以物理资源块（PRB）集合 $\mathcal{K}$ 刻画。每个 PRB 对应带宽 $B_k$（通常为子载波间隔与 PRB 子载波数决定），调度器在每个时隙内决定 PRB 的用户分配与功率/调制编码配置。对任意用户 $u\in\mathcal{U}$ 与 PRB $k\in\mathcal{K}$，其瞬时可达速率估计可写为
+\begin{equation}
+\Delta R_{u,k}(t)=B_k\log_2\!\bigl(1+\gamma_{u,k}(t)\bigr),
+\label{eq:ch2_rate_prb}
+\end{equation}
+其中 $\gamma_{u,k}(t)$ 为 PRB 级 SINR（见下文式\eqref{eq:ch2_sinr}）。式\eqref{eq:ch2_rate_prb}建立了“调度输入（SINR）—速率估计—资源选择”的基础映射，将在后续 PF 度量与功率分配中被直接调用。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_7_nr_timefreq_grid.pdf}
+  \caption{（必画）NR 时频资源栅格示意图。图中应展示 slot/符号/PRB 的层级关系，并标注：调度决策在离散时隙 $t$ 上进行，频域资源以 $\mathcal{K}$ 表示；每个 PRB 带宽为 $B_k$。}
+  \label{fig:ch2_nr_grid}
+\end{figure}
+
+\paragraph{AMC 闭环机制与 HARQ/OLLA 兼容性}
+链路自适应（AMC）通常基于 UE 上报的 CSI/CQI 将目标 BLER 约束映射为调制编码方案（MCS）。在工程实现中，该闭环往往与 HARQ 重传机制以及外环链路自适应（OLLA）共同工作：HARQ 利用 ACK/NACK 反馈修正短期错误；OLLA 通过调节有效 MCS 偏移，使长期 BLER 收敛到目标值。本文后续章节提出的“外部注入（External Injection）”并不改变 HARQ/OLLA 的协议逻辑，而是替换或旁路调度器用于\emph{速率估计与 MCS 选择}的 CSI 输入，从而实现“兼容 NR 闭环但弱化 CSI 老化影响”的工程落地路径。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_8_amc_harq_olla.pdf}
+  \caption{（必画）AMC 闭环流程与 HARQ/OLLA 兼容点示意。图中应体现：CSI/CQI（闭环输入）$\rightarrow$ MCS 选择 $\rightarrow$ 调度与传输 $\rightarrow$ HARQ ACK/NACK（短期纠错）与 OLLA（长期 BLER 校准）。后续章节的 External Injection 将在“CSI/CQI 输入到调度器”的位置插入 $\hat{\gamma}_{u,k}(t)$。}
+  \label{fig:ch2_amc_flow}
+\end{figure}
+
+\paragraph{PRB 级 SINR 与链路预算接口}
+为与后续干扰建模与调度算法保持一致，本文统一采用如下 PRB 级 SINR 表达：
+\begin{equation}
+\gamma_{u,k}(t)=
+\frac{p_k(t)\,g_{u,k}(t)}
+{N_0 B_k + I_{u,k}(t)} ,
+\label{eq:ch2_sinr}
+\end{equation}
+其中 $p_k(t)$ 表示时隙 $t$ 在 PRB $k$ 上的发射功率（当 PRB $k$ 被分配给用户 $u$ 时，该功率对应于 $u$ 的下行资源），$N_0$ 为噪声谱密度，$I_{u,k}(t)$ 为用户 $u$ 在 PRB $k$ 上的外部干扰功率。信道功率增益 $g_{u,k}(t)$ 与第\ref{sec:ch2_geo_channel}节的大尺度链路预算一致，可由式\eqref{eq:ch2_gain_linear}所示的路径损耗、雨衰（ITU-R P.618）与气体吸收（ITU-R P.676）等项换算得到，并可在需要时进一步叠加小尺度/波束增益等因素。
+
+\paragraph{反馈闭环时延与 CSI 老化判据}
+LEO NTN 的“快时变信道”与“长闭环时延”会共同导致 CSI/CQI 老化：UE 在时刻 $t_0$ 测量信道并上报，但调度器真正依据该信息生效的时刻往往为 $t_0+T_{\mathrm{loop}}$。为统一刻画该闭环生效时间尺度，定义
+\begin{equation}
+T_{\mathrm{loop}}
+=
+T_{\mathrm{UL}}^{\mathrm{SL}}
++
+T_{\mathrm{proc}}^{\mathrm{DU/CU}}
++
+T_{\mathrm{DL}}^{\mathrm{SL}}
++
+\mathbf{1}_{\{g=1\}}\cdot T_{\mathrm{F1}}^{\mathrm{RTT}},
+\label{eq:ch2_tloop}
+\end{equation}
+其中 $T_{\mathrm{UL}}^{\mathrm{SL}}$ 与 $T_{\mathrm{DL}}^{\mathrm{SL}}$ 分别表示 service link 上行/下行方向与 CSI 上报、调度结果下发相关的生效时延项，$T_{\mathrm{proc}}^{\mathrm{DU/CU}}$ 汇总 DU/CU 侧处理与排队造成的时间开销；当系统采用 Split 2（即 $g=1$）时，闭环中额外包含一次 F1 往返时延 $T_{\mathrm{F1}}^{\mathrm{RTT}}$（见式\eqref{eq:ch2_f1_rtt}），其传播下界由 feeder link 决定。
+
+另一方面，信道相干时间可用第\ref{subsec:ch2_geo_doppler_coherence}节给出的经验式近似：
+\begin{equation}
+T_{\mathrm{coh}}(u,t)\approx \frac{0.423}{f_{D,\max}(u,t)}.
+\label{eq:ch2_tcoh_ref}
+\end{equation}
+3GPP TR 38.811 给出了非地面（LEO）场景多普勒频移的计算方法与典型数量级总结，表明在常见 LEO 高度与 GHz 载波频段下，多普勒可达数十 kHz 量级，从而使 $T_{\mathrm{coh}}$ 显著压缩\cite{3gpp.38.811}。结合式\eqref{eq:ch2_tloop}，本文采用如下老化失效判据作为后续“旁路/外部注入”机制的触发依据：
+\begin{equation}
+T_{\mathrm{loop}} \gg T_{\mathrm{coh}}(u,t)
+\;\Rightarrow\;
+\text{CSI/CQI aging，基于反馈的调度有效性显著下降}.
+\label{eq:ch2_aging_criterion}
+\end{equation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_9_feedback_aging_timeline.pdf}
+  \caption{（必画）反馈老化时序图。图中应标注：UE 在 $t_0$ 测量 CSI，上报到 DU 的时刻 $t_0+\Delta$，调度器生效的时刻 $t_0+T_{\mathrm{loop}}$；并在同图对比 $T_{\mathrm{loop}}$ 与 $T_{\mathrm{coh}}(u,t)$，突出当 $T_{\mathrm{loop}}\gg T_{\mathrm{coh}}$ 时 CQI/CSI 失效。}
+  \label{fig:ch2_feedback_aging}
+\end{figure}
+
+除多普勒外，TR 38.811 亦讨论了 non-GEO 场景的 delay drift 可预测性与 TA 更新等机制\cite{3gpp.38.811}。在本文的系统建模中，这些结论的关键意义在于：即便部分时延漂移可被预测与补偿，只要闭环生效时标显著大于信道/干扰统计变化时标，基于瞬时反馈的精细调度仍将面临结构性失效风险，因此需要引入面向预测与鲁棒性的调度输入机制（见第\ref{sec:ch2_oai}节的 External Injection 设计）。
+
+% -----------------------------
+\subsection{基于电磁地图的干扰场建模}
+\label{subsec:ch2_interf_map}
+
+卫星同频复用、波束重用与外部系统共存会导致干扰呈现空间相关与频域选择性。为将外部干扰从复杂电磁环境中抽象为调度器可调用的“状态量”，定义 PRB 级干扰场为
+\begin{equation}
+I(x,y,k)\triangleq \text{地理位置}(x,y)\text{处在 PRB }k\text{ 上的外部干扰功率},
+\label{eq:ch2_interf_field}
+\end{equation}
+并将其离散化为三维电磁地图张量
+\begin{equation}
+\mathcal{M}_I\in\mathbb{R}^{N_x\times N_y\times |\mathcal{K}|},
+\qquad
+\mathcal{M}_I[x,y,k]=I(x,y,k).
+\label{eq:ch2_map_tensor}
+\end{equation}
+对用户 $u$ 在时隙 $t$ 的位置 $(x_u(t),y_u(t))$，PRB 级干扰功率通过查表插值得到：
+\begin{equation}
+I_{u,k}(t)=\mathrm{Interp}\Big(\mathcal{M}_I;\,x_u(t),y_u(t),k\Big).
+\label{eq:ch2_interf_interp}
+\end{equation}
+
+该建模的工程含义在于：在一个调度周期内，调度器无需在线进行复杂干扰叠加计算，而是基于 $\mathcal{M}_I$ 获得 $I_{u,k}(t)$ 并代入式\eqref{eq:ch2_sinr}完成速率估计，从而在不牺牲 PRB 级精细度的前提下显著降低在线复杂度。后续章节将以此为基础，将“电磁地图预测”作为调度输入并构造外部注入的闭环（见第\ref{sec:ch2_oai}节）。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_10_interference_map_tensor.pdf}
+  \caption{（必画）星地同频干扰场与电磁地图结构示意。图中应展示二维地理平面 $(x,y)$ 以及第三维 PRB 堆叠形成的张量结构，并标注：调度周期内通过“查表+插值”由 $\mathcal{M}_I$ 得到 $I_{u,k}(t)$。}
+  \label{fig:ch2_interf_map}
+\end{figure}
+
+\subsubsection{比例公平与注水：调度优化的理论工具}
+\label{subsec:ch2_pf_waterfilling}
+
+多用户调度常以“吞吐与公平”的折中为目标。比例公平（PF）可表述为最大化长期平均速率的对数和：
+\begin{equation}
+\max \sum_{u\in\mathcal{U}}\log\big(\bar R_u(t)\big),
+\label{eq:ch2_pf_obj}
+\end{equation}
+其中 $\bar R_u(t)$ 表示用户 $u$ 的历史平均吞吐（可由指数滑动平均递推得到）。为构造可在线实现的边际选择指标，定义 PF 边际效用为
+\begin{equation}
+\Delta U(u,k)=\frac{\Delta R_{u,k}(t)}{\bar R_u(t)^{\alpha}},
+\label{eq:ch2_pf_metric}
+\end{equation}
+其中 $\alpha$ 为公平性控制参数（$\alpha=1$ 对应经典 PF）。式\eqref{eq:ch2_pf_metric}在后续章节将与“电磁地图预测的 $\hat{\gamma}_{u,k}(t)$”结合，形成可工程落地的调度度量。
+
+在功率分配层面，若将频域子信道等效增益记为 $H_k$，在总功率约束 $\sum_{k\in\mathcal{K}}p_k\le P_{\mathrm{tot}}$ 下的注水解可写为
+\begin{equation}
+p_k^\star=\left[\frac{1}{\lambda}-\frac{1}{H_k}\right]^+,
+\qquad
+\sum_{k\in\mathcal{K}}p_k^\star\le P_{\mathrm{tot}},
+\label{eq:ch2_waterfilling}
+\end{equation}
+其中 $\lambda$ 为水位（KKT 乘子），$[\cdot]^+=\max(\cdot,0)$。在本文中，注水主要作为“频域资源与功率联合分配”的理论基石，用于解释后续章节算法中的功率约束与边际收益结构；具体算法流程与实现细节留待第 4 章展开。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_11_pf_waterfilling_intuition.pdf}
+  \caption{（必画）PF 与注水的直观示意。左图：PF 的边际增益随历史吞吐 $\bar R_u(t)$ 增大而衰减，体现“兼顾边缘用户”的选择偏好；右图：注水水位 $\lambda$ 与不同子信道底噪 $1/H_k$ 的关系，展示 $p_k^\star$ 的形成机理。}
+  \label{fig:ch2_pf_waterfilling}
+\end{figure}
+
+% =====================================================
+\section{端到端原型验证平台设计}
+\label{sec:ch2_oai}
+
+为验证第 3 章的“时延/能耗/排队”建模与第 4 章的“干扰/容量/调度”机制，本文需要一个同时满足两项要求的原型平台：\textbf{(i)} 支持 Split 0 与 Split 2 两类 SAN 形态，并能在不破坏协议合规的前提下复现实验所需的 F1 往返时延与事务放大效应；\textbf{(ii)} 支持在调度器内部插入外部预测输入（如电磁地图预测的 $\hat{\gamma}_{u,k}(t)$），或在闭环失效时旁路 CQI，以构建可重复、可对照的工程验证闭环。为此，本文采用基于 OAI（OpenAirInterface）实现的 NR 端到端原型，结合链路时延仿真与调度器扩展点设计，形成后续章节的实验支撑环境。
+
+% -----------------------------
+\subsection{平台架构与时延仿真机制}
+\label{subsec:ch2_oai_topology}
+
+\paragraph{端到端原型拓扑与链路抽象}
+原型拓扑包含三类关键实体：用户侧 UE（可为 OAI NR UE 或商用 UE）、接入侧 gNB（可配置为 Split 0 的单体 gNB，或 Split 2 的 gNB-CU/gNB-DU 组合）、以及 5GC（用于承载注册与用户面转发）。在 Split 2 形态下，CU 与 DU 之间的 F1-C/F1-U 逻辑接口在网络层承载于一条可控的链路之上，该链路在原型中被用来仿真“F1 over feeder link”的传播与排队代价，从而复现第\ref{sec:ch2_arch}节所述的事务时延结构（式\eqref{eq:ch2_f1_rtt}、\eqref{eq:ch2_f1_txn}）。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_12_oai_e2e_topology.pdf}
+  \caption{（必画）OAI 端到端原型拓扑图。图中应标注：UE、gNB（Split 0 或 CU/DU）、5GC；并明确在 Split 2 时 F1 接口链路上引入时延仿真模块（基于 Linux traffic control 的 netem），用于模拟 feeder link 导致的额外传播与排队代价。}
+  \label{fig:ch2_oai_topology}
+\end{figure}
+
+\paragraph{馈电链路时延仿真与 F1 RTT 复现}
+为保证实验可复现性，本文将“馈电链路时延仿真”抽象为对 F1 承载链路引入的确定性附加时延。定义仿真后的馈电链路单向时延为
+\begin{equation}
+T_{\mathrm{FL}}^{\mathrm{emu}} = T_{\mathrm{FL}}^{\mathrm{base}} + \Delta T_{\mathrm{netem}},
+\label{eq:ch2_fl_emu}
+\end{equation}
+其中 $T_{\mathrm{FL}}^{\mathrm{base}}$ 表示平台中 CU/DU 间基础网络时延，$\Delta T_{\mathrm{netem}}$ 为人为注入的附加时延。由式\eqref{eq:ch2_f1_rtt}可知，在处理与排队项近似不变时，F1 往返时延可近似表示为
+\begin{equation}
+T_{\mathrm{F1}}^{\mathrm{RTT,emu}}\approx T_{\mathrm{F1}}^{\mathrm{RTT,base}}+2\Delta T_{\mathrm{netem}} .
+\label{eq:ch2_f1_rtt_emu}
+\end{equation}
+该定义使第 3 章对“F1 RTT 的确定性增加”与“多次 F1 交互导致事务时延线性放大”的测量结果能够与第\ref{sec:ch2_arch}节的标准流程证据保持一致：本文仿真的是 Split 2 架构中 F1 跨 feeder link 的物理事实，而非改变协议流程本身。
+
+\paragraph{OAI 软件架构与协议任务交互}
+OAI 的 NR 实现遵循 NG-RAN 的协议栈分层：RRC/PDCP/RLC/MAC/PHY 等功能模块通过任务（task）与消息队列协同运行。对于 Split 2，CU/DU 的功能驻留关系与第\ref{subsec:ch2_arch_split_boundary}节一致：CU 侧承载 RRC/PDCP 等高层控制与承载管理，DU 侧承载 RLC/MAC/PHY 并面向空口执行调度与物理层配置。F1AP（控制面）与 F1-U（用户面）作为逻辑接口连接 CU 与 DU，并通过适配层将“F1 消息事件”映射为 RRC/MAC 的回调与状态机推进，从而在不破坏 3GPP 标准过程（TS 38.401、TS 38.473）的前提下完成上下文建立、RRC 容器转发与释放等事务\cite{3gpp.38.401,3gpp.38.473}。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_13_oai_software_arch.pdf}
+  \caption{（必画）OAI 软件架构与任务/模块交互图。图中应包含 RRC/PDCP/RLC/MAC/PHY 模块，标注 CU/DU 分布关系，并展示 F1AP（F1-C）与 F1-U 的逻辑通道及其与 RRC/MAC 的交互方向。}
+  \label{fig:ch2_oai_arch}
+\end{figure}
+
+\subsubsection{OAI 内部 nFAPI 消息流转与调度执行链}
+\label{subsec:ch2_oai_nfapi}
+
+为将调度决策与物理层执行解耦，OAI 在 MAC 与 PHY 之间采用 nFAPI（NFAPI 的 NR 扩展）消息进行配置与触发。其核心思想是将“调度器的配置输出”（如 DL/UL 资源配置、DCI/控制信息、HI 等）封装为 P7 类消息，由 PHY 在给定时隙边界解析并执行，从而形成“配置面 $\rightarrow$ 执行面”的清晰数据通路。对本文而言，该结构的工程价值在于：\textbf{调度器扩展点天然位于 MAC 侧}，外部注入的 $\hat{\gamma}_{u,k}(t)$ 只需改变 MAC 调度器内部的速率估计与 PRB 分配逻辑，即可通过既有 nFAPI 通路驱动物理层按标准方式执行，无需修改 PHY 或空口协议消息格式。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_14_nfapi_message_flow.pdf}
+  \caption{（必画）OAI 内部 nFAPI 消息流转图。图中应展示：MAC Scheduler 输出 DL/UL 配置 $\rightarrow$ nFAPI（P7 消息）封装与传递 $\rightarrow$ PHY 解析并执行；并用示例标注消息类别（如 DL/UL 配置、DCI/HI 等），体现“配置面—执行面”分离。}
+  \label{fig:ch2_nfapi_flow}
+\end{figure}
+
+\subsubsection{F1AP 在 OAI 中的任务流转与回调机制}
+\label{subsec:ch2_oai_f1ap_flow}
+
+在 Split 2 原型中，F1AP 过程（例如 \texttt{UL/DL RRC MESSAGE TRANSFER}、\texttt{UE CONTEXT SETUP}、\texttt{UE CONTEXT RELEASE}）承担 CU/DU 间的控制面协同。其任务流可抽象为：CU 侧 F1AP 任务负责生成与发送控制消息并驱动 CU 侧状态机；DU 侧 F1AP 任务负责接收、解析与响应，并通过回调将 RRC 容器与上下文配置传递给 DU 侧 RLC/MAC 或上送至空口。该抽象与第\ref{subsec:ch2_f1_transaction}节的事务模型对应：每一类请求/响应过程对应至少一次 $T_{\mathrm{F1}}^{\mathrm{RTT}}$，当在原型中引入 $\Delta T_{\mathrm{netem}}$ 时，其完成时延将按式\eqref{eq:ch2_f1_rtt_emu}被确定性抬升。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_15_f1ap_task_flow.pdf}
+  \caption{（必画）F1AP 在 OAI 中的任务流转图。图中应标注 CU 侧与 DU 侧的 F1AP 任务（task），以及它们与 RRC/MAC 的回调关系；并在图中区分 F1-C（控制面）与 F1-U（用户面）数据通路。}
+  \label{fig:ch2_f1ap_flow}
+\end{figure}
+
+% -----------------------------
+\subsection{调度器扩展与外部注入接口}
+\label{subsec:ch2_oai_scheduler_ext}
+
+基于第\ref{subsec:ch2_nr_grid_amc}节的老化判据（式\eqref{eq:ch2_aging_criterion}），当 $T_{\mathrm{loop}}$ 显著大于 $T_{\mathrm{coh}}(u,t)$ 时，依赖 UE 反馈 CSI 的精细调度会面临结构性失效风险。为在原型平台上验证后续章节提出的鲁棒调度机制，本文在不改变 3GPP 协议流程的前提下，设计两类调度器内部扩展点，以形成“可控退化基线”与“先验驱动增强策略”的对照评估框架。
+
+\paragraph{External Injection：注入电磁地图预测的调度输入}
+定义外部模块在每个调度周期输出的预测 SINR 为
+\begin{equation}
+\hat{\gamma}_{u,k}(t)=\text{RadioMapPredict}(u,k,t),
+\label{eq:ch2_hatgamma}
+\end{equation}
+并规定调度器用于速率估计与 PF 度量计算的“调度用 SINR”为
+\begin{equation}
+\gamma^{\mathrm{sched}}_{u,k}(t)=
+\begin{cases}
+\hat{\gamma}_{u,k}(t), & \text{External Injection enabled},\\
+\gamma^{\mathrm{UE}}_{u,k}(t-T_{\mathrm{loop}}), & \text{closed-loop CSI}.
+\end{cases}
+\label{eq:ch2_gamma_sched}
+\end{equation}
+其中 $\gamma^{\mathrm{UE}}_{u,k}(\cdot)$ 表示由 UE 反馈并在 DU/CU 侧可见的 CSI/SINR 等效量。由此可得到基于预测的速率估计
+\begin{equation}
+\hat{R}_{u,k}(t)=B_k\log_2\!\bigl(1+\hat{\gamma}_{u,k}(t)\bigr),
+\label{eq:ch2_hatR}
+\end{equation}
+并可直接替换式\eqref{eq:ch2_pf_metric}中的 $\Delta R_{u,k}(t)$，从而将第\ref{subsec:ch2_interf_map}节的电磁地图张量与 PF 调度度量在工程上闭环打通。
+
+\paragraph{Bypassing：屏蔽失效 CQI 的鲁棒策略}
+当检测到老化条件满足（式\eqref{eq:ch2_aging_criterion}）时，调度器可在内部对用于 MCS 选择的 CQI 做固定或钳制处理，例如
+\begin{equation}
+\mathrm{CQI}^{\mathrm{used}}_{u}(t)=
+\min\!\Big(\max\big(\mathrm{CQI}^{\mathrm{UE}}_{u}(t),\mathrm{CQI}_{\min}\big),\mathrm{CQI}_{\max}\Big),
+\label{eq:ch2_cqi_clamp}
+\end{equation}
+或采用固定 MCS 并依赖 HARQ/OLLA 提供鲁棒性。需要强调的是：该策略仅改变调度器内部的速率估计与 MCS 选择逻辑，不改变 UE 上报流程与 F1/RRC 信令过程，因此不会破坏协议合规性；其目的在于为后续章节提供“闭环失效时的可控退化基线”，便于与 External Injection 的增益进行对照评估。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch2/fig2_16_scheduler_extension_points.pdf}
+  \caption{（必画）调度器扩展点示意图。图中应展示两条输入链：传统闭环（UE CQI/CSI $\rightarrow$ Scheduler）与外部注入（电磁地图预测 $\hat{\gamma}_{u,k}(t)$ $\rightarrow$ External Injection $\rightarrow$ Scheduler）；并展示 Bypassing 分支：当检测到 $T_{\mathrm{loop}}\gg T_{\mathrm{coh}}$ 时，屏蔽/固定 CQI 更新或钳制 $\mathrm{CQI}^{\mathrm{used}}_{u}(t)$。}
+  \label{fig:ch2_sched_ext}
+\end{figure}
+
+% =====================================================
+\section{本章小结}
+本章面向手机直连卫星的卫星接入网络与资源调度问题开展基础性研究与系统化梳理。分析了 5G/6G 非地面网络演进背景下卫星接入网架构解耦与高效资源编排的必要性，围绕低轨星地链路“快时变几何、受限链路预算与显著多普勒效应”等关键约束，总结并建立了空间几何与传播时延模型、基于 3GPP TR 38.811 与 ITU-R P.618/P.676 的链路预算及大尺度衰落建模方法，并将其统一为可与 PRB 级调度直接对接的 SINR 接口，为后续算法设计提供可复用的物理层与链路层建模基础。
+
+进一步地，本章对 SAN 拓扑结构及 service link/feeder link 的链路类型进行了归纳，分析了透明载荷与再生载荷、Split 0 与 Split 2 形态下协议功能驻留边界及其对控制事务时延的影响，构建了 F1 往返时延与事务放大模型，并给出了星载处理负载、排队时延与能耗的抽象刻画；同时，针对 NTN 场景下 CSI/CQI 易老化的问题，提出了闭环生效时延与相干时间的判据，并以电磁地图张量形式建立了 PRB 级干扰场建模方法。最后，本章构建了基于 OAI 的端到端原型验证平台，通过链路时延仿真复现 F1 over feeder link 的时延特性，并设计调度器 External Injection 与 Bypassing 扩展接口，为后续章节在真实协议栈环境下验证 FlexSAN 架构机制与电磁地图引导资源编排算法的可行性与有效性奠定了实验基础。
+
+\chapter{面向手机直连卫星的可解耦接入网络架构与在线资源编排}
+\label{chap:ch3}
+
+本章基于第\ref{chap:ch2}章构建的 OpenAirInterface (OAI) 端到端原型平台，面向手机直连卫星（Direct-to-Cell, D2C）场景下的再生式卫星接入网（Regenerative SAN），系统研究\emph{可解耦接入架构}与\emph{在线资源编排}的协同设计问题。本章从原型测量出发建立可解释的参数化系统模型，并在 Lyapunov 漂移加罚（Drift-plus-Penalty）框架下推导得到一类可在线实施的贪心编排策略 \textbf{L-TAGO（Lyapunov-guided Traffic-Aware Greedy Orchestration）}，从而在“时延体验—星载开销—架构稳定性”之间形成可复现、可推导的闭环论证链条。
+
+% =====================================================
+\section{引言}
+\label{sec:ch3_intro}
+
+手机直连卫星（D2C）将普通蜂窝终端直接接入低轨（LEO）星座，使卫星接入网（SAN）从“补盲覆盖”走向“面向公众的广覆盖移动接入”。然而，D2C 场景下 SAN 的核心矛盾在于：\textbf{业务需求给出的 QoS 约束具有差异化与快时变特征，而星载资源（算力、功耗、软件栈复杂度）却是强约束且难以扩容的}。当系统采用再生式载荷并在卫星上部署 gNB 时，虽然可以降低控制事务对馈电链路的依赖，获得更低的端到端时延，但星载算力开销显著上升；当系统采用功能切分并将 CU 卸载至地面（如 Split 2 / on-board gNB-DU）时，虽然能够降低星载开销，却会因 F1 接口跨馈电链路的控制事务交互引入确定性时延抬升，且在高动态移动性与频繁切换条件下该开销会被事务放大。
+
+更具挑战的是，SAN 的系统动态不仅来自无线信道波动，还来自\emph{星座几何与切换（handover）引发的外部扰动}：LEO 卫星高速运动导致 UE 在不同卫星/波束之间频繁切换，切换过程会触发上下文建立/释放等信令事务，同时带来短时算力突发需求（例如上下文处理与重配置）。这类突发需求的强度随时间变化，但并非编排算法可控变量；在线编排必须在每个时隙仅依据当前可观测状态做出鲁棒决策，从而在扰动条件下维持队列稳定与 QoS 可控。
+
+为应对上述挑战，本章提出并论证 FlexSAN 的核心思路：\textbf{将再生式载荷在物理上可解耦、在逻辑上可重构，使每个 UE 可按需选择 on-board gNB（Split 0）或 on-board gNB-DU（Split 2），并在在线编排中同时考虑（i）端到端时延，（ii）星载计算开销（OPEX proxy），以及（iii）架构切换稳定性。}本章的技术路线为：\emph{基于 OAI 原型测量}量化静态架构的开销—时延权衡并完成关键参数标定，\emph{建立基于事务的 F1 时延模型}并显式建模架构重构开销，进而\emph{在 Lyapunov 框架下推导在线策略 L-TAGO}，最后通过仿真对比离线最优（looking-ahead optimal / MPC）、DRL（PPO）、工业界迟滞阈值策略（Hysteresis）等强基线验证优势。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch3/fig3_1_flexsan_constellation_overview.pdf}
+  \caption{（必画）FlexSAN 在 LEO 星座 D2C 场景下的逻辑视图。图中应包含：LEO 卫星及其覆盖足迹、service link（UE$\leftrightarrow$卫星）、feeder link（卫星$\leftrightarrow$地面网关/地面 CU 池）、星上可重构载荷（支持 Split 0 的 on-board gNB 与 Split 2 的 on-board gNB-DU 两种形态）、以及位于星上的轻量编排器（Orchestrator）。应明确：编排器在每个时隙根据 UE 需求与当前资源状态，为每个 UE 选择架构（$g\in\{0,1\}$）、决定准入（$y_u(t)$）并分配带宽（$w_u(t)$）；星间/星地切换作为外部扰动影响可见用户集合与事务触发频率。}
+  \label{fig:ch3_flexsan_overview}
+\end{figure}
+
+如图\ref{fig:ch3_flexsan_overview}所示，FlexSAN 的“可解耦”体现在：Split 2 通过 F1 将 CU 功能卸载至地面，使星上仅保留 DU；而“可重构”体现在：系统允许运行过程中按用户粒度切换 Split 选项，从而在不同负载与不同 QoS 需求下实现动态权衡。接下来，本章将以原型测量结果为证据链起点，逐步完成模型构建与算法推导。
+
+% =====================================================
+\section{再生架构能效特性的实验性测量}
+\label{sec:ch3_measurement}
+
+第\ref{chap:ch2}章给出了 OAI 端到端原型平台的搭建方法、时延仿真机制与调度器扩展点。本节基于该平台，对\textbf{两类再生式静态架构}（on-board gNB vs. on-board gNB-DU）在\textbf{CPU/内存/时延}维度进行量化对比，并进一步揭示“负载升高导致排队时延非线性放大”的关键现象。该现象导出一个系统性结论：\textbf{不存在一种静态架构能够在所有负载区间同时最优}，从而为 FlexSAN 的动态重构与后续 L-TAGO 在线编排提供实证动机与参数标定依据。
+
+\subsection{测量平台与方法}
+\label{subsec:ch3_measurement_setup}
+
+原型系统采用 OAI 实现的 NR 端到端链路，工作于 3GPP NTN 频段（Band 256），载波频率 2200\,MHz、带宽 10\,MHz，并通过链路时延注入模拟典型 LEO 传播条件（高度约 359.7\,km 的等效斜距变化）。实验运行于一台商用笔记本平台（2.7\,GHz CPU、24\,GB RAM），其中：
+\begin{itemize}
+  \item \textbf{时延仿真：}通过 Linux \texttt{tc/netem} 在 CU--DU 承载链路上注入附加时延，复现 Split 2 中 F1 over feeder link 的传播下界与抖动（第\ref{subsec:ch2_oai_topology}节）。
+  \item \textbf{CPU/内存监测：}通过 \texttt{pidstat}（sysstat 工具集）采样 OAI 进程的 CPU 使用率与内存常驻集（RSS），形成可复现实验资源剖面。
+  \item \textbf{业务注入：}通过 \texttt{iperf3} 产生不同 UE 并发规模与不同业务速率下的持续流量，观测端到端 RTT 以及系统排队效应。
+\end{itemize}
+
+两类静态架构分别为：
+\begin{itemize}
+  \item \textbf{On-board gNB（Split 0，记为 $g=0$）：}CU+DU 全部驻留星上（或星上等效计算节点），F1 不跨馈电链路，时延优势明显但星载负载更高；
+  \item \textbf{On-board gNB-DU（Split 2，记为 $g=1$）：}DU 驻留星上、CU 卸载地面，F1 控制事务跨馈电链路，星载负载更低但存在显著的 F1 事务时延。
+\end{itemize}
+
+\subsection{静态架构的 CPU/内存/时延量化权衡}
+\label{subsec:ch3_measurement_tradeoff}
+
+表\ref{tab:ch3_oai_tradeoff}汇总了轻载（单 UE、低并发）条件下两类静态架构的典型测量结果。可以观察到：on-board gNB 在端到端时延上具有显著优势（约 61.4\,ms），而 on-board gNB-DU 在星载 CPU 占用上更为经济（约降低 20\%），但因 F1 接口跨馈电链路的控制事务交互引入了显著的确定性时延抬升（端到端约 145.1\,ms）。两者差异体现了“QoS—OPEX”的结构性取舍：\textbf{选择 gNB 可获得更低时延但需要更高星载算力；选择 gNB-DU 可降低星载开销但必须承担不可忽略的 F1 事务时延。}
+
+\begin{table}[t]
+  \centering
+  \caption{（必画）OAI 原型系统下两类再生式静态架构的资源开销与时延对比（轻载/单 UE）。}
+  \label{tab:ch3_oai_tradeoff}
+  \begin{minipage}{0.96\linewidth}
+    \renewcommand{\arraystretch}{1.15}
+    \setlength{\tabcolsep}{8pt}
+    \begin{tabular*}{\linewidth}{@{\hskip 8pt}l@{\extracolsep{\fill}}c@{\extracolsep{\fill}}c@{\extracolsep{\fill}}c@{\hskip 8pt}}
+      \toprule
+      \textbf{架构（Split）} &
+      \textbf{端到端时延/RTT（ms）} &
+      \textbf{星载 CPU 占用} &
+      \textbf{星载内存 RSS（GB）} \\
+      \midrule
+      On-board gNB ($g=0$)  & 61.4  & 1.00（归一化） & $M_0$ \\
+      On-board gNB-DU ($g=1$) & 145.1 & 0.80（约降低 20\%） & $M_1$ \\
+      \bottomrule
+    \end{tabular*}
+    \vspace{2pt}
+
+    \footnotesize
+    \noindent\textbf{说明：}端到端时延与 CPU 差异来自本文基于 OAI 原型的统计测量；内存 RSS 可按同一流程通过 \texttt{pidstat -r} 获取。由于内存占用对 OAI 版本、编译选项与日志级别较敏感，本文初稿以 $M_0,M_1$ 作为占位符，最终稿将以复现实测均值替换，并用于 SWaP-C 讨论（后续优化模型以 CPU/GOPS 为主）。\\
+  \end{minipage}
+\end{table}
+
+为便于直观对比，图\ref{fig:ch3_cpu_latency}建议绘制两类架构在轻载条件下的端到端时延与 CPU 使用率柱状对比。该图的工程含义是：\textbf{F1 事务时延构成 gNB-DU 架构的确定性时延“地板”，而 CU 卸载带来的 CPU 节省构成其 OPEX 优势的主要来源。}因此，若采用静态部署，系统很难同时兼顾“低时延能力”与“低星载开销”。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{figures/ch3/fig3_2_cpu_latency_bar.pdf}
+  \caption{（必画）OAI 原型实测：两类静态架构的端到端时延与 CPU 占用对比。图中建议采用并列子图：(a) 端到端时延（或 RTT）对比：on-board gNB 约 61.4\,ms，on-board gNB-DU 约 145.1\,ms；(b) 星载侧 CPU 占用对比：on-board gNB-DU 相比 on-board gNB 约降低 20\%。该图用于建立“低时延$\Leftrightarrow$高算力、低算力$\Leftrightarrow$高事务时延”的实证依据，并为后续模型中 $T_{\mathrm{F1}}$（或 $K_{\mathrm{trans}}$ 等时延系数）的取值提供物理标定。}
+  \label{fig:ch3_cpu_latency}
+\end{figure}
+
+\subsection{负载升高下的排队效应：静态架构的动态失效}
+\label{subsec:ch3_measurement_queueing}
+
+仅有“轻载静态权衡”并不足以刻画 D2C SAN 的真实困难。更关键的现象来自负载升高时的\textbf{排队效应非线性放大}：即便选择名义上“低时延”的 on-board gNB 架构，当并发 UE 增加导致星载协议栈与基带处理的计算到达率逼近算力容量时，用户感知 RTT 也会急剧上升。原型测量表明：当并发 UE 从 1 增至 6 时，即便单 UE 业务速率保持不变，平均 RTT 也会从约 60--120\,ms 急剧增至 500\,ms 以上。这说明在高负载区间，\textbf{排队等待而非传播下界成为主导时延来源}，静态架构选择会出现“动态失效”。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch3/fig3_3_rtt_vs_uecount.pdf}
+  \caption{（必画）OAI 原型实测：负载升高导致 RTT 非线性恶化。横轴为并发 UE 数，纵轴为平均 RTT；建议在图中标注：单 UE 时 RTT 约 60--120\,ms，6 UE 时 RTT 超过 500\,ms。该图用于证明：静态架构在动态负载下会因星载排队效应导致 QoS 崩塌，从而引出需要“按用户粒度可重构”的 FlexSAN 以及后续基于队列稳定性的在线编排方法。}
+  \label{fig:ch3_rtt_escalation}
+\end{figure}
+
+由图\ref{fig:ch3_rtt_escalation}可得出两点直接且重要的结论：
+\begin{enumerate}
+  \item \textbf{不存在任何一种静态架构能在全负载区间保持最优。}轻载时 gNB-DU 可节省算力但存在确定性事务时延；高载时 gNB 也会因排队时延而失去“低时延”优势。
+  \item \textbf{系统必须在运行时根据负载与 QoS 差异化需求进行动态重构。}尤其在 D2C 潮汐/突发业务下，架构重构与资源编排需要形成在线闭环，而非一次性离线规划。
+\end{enumerate}
+这些实证结论将作为本章后续建模与算法推导的起点：我们将通过\emph{基于事务的 F1 时延模型}形式化“确定性事务时延与事务放大”，并通过\emph{队列建模}形式化“高载排队放大”，最终在 Lyapunov 框架中以“队列稳定性 + 性能代价”统一刻画，从而推导在线策略 L-TAGO。
+
+% =====================================================
+\section{系统模型与问题描述}
+\label{sec:ch3_model}
+
+本节在第\ref{chap:ch2}章统一建模接口基础上，面向 LEO 星座 D2C 场景建立 FlexSAN 系统模型，并显式纳入：（i）基于事务的 F1 时延模型，（ii）架构重构开销（Switching Cost），以及（iii）将切换（handover）作为外部环境扰动导致的算力突发需求，而非优化变量。
+
+\subsection{网络与时隙模型：LEO 星座与外部扰动}
+\label{subsec:ch3_network_model}
+
+考虑一个 LEO 星座在离散时隙 $t\in\mathcal{T}$ 上为地面用户集合 $\mathcal{U}(t)$ 提供 D2C 接入服务。为突出“架构与编排”的核心矛盾，本章采用单卫星视角：在任意时隙 $t$，分析服务卫星 $s(t)$ 覆盖范围内的用户集合 $\mathcal{U}(t)$；多卫星情形可通过对每颗卫星运行同构编排器并在切换点进行上下文转移扩展（切换点作为外部扰动处理）。
+
+对任意用户 $u\in\mathcal{U}(t)$，给定其差异化服务需求：
+\begin{equation}
+\Big(T_u^{\max},\ R_u^{\min}\Big),
+\end{equation}
+分别表示最大可容忍端到端时延与最小业务速率。
+
+\paragraph{外部扰动：星间/波束切换导致的算力突发}
+LEO 环境下切换（handover）频繁发生。本文将其建模为一个\emph{外部环境扰动}：
+\begin{equation}
+a_{\mathrm{ho}}(t)\ge 0,
+\end{equation}
+表示在时隙 $t$ 由切换事件触发的额外星载处理负载（例如上下文处理、状态机推进、重配置等带来的突发算力消耗）。强调两点：
+\begin{itemize}
+  \item $a_{\mathrm{ho}}(t)$ 由轨道几何、可见性与用户移动性决定，属于外生输入，可由系统观测或预测（但不是决策变量）；
+  \item 在线编排需在 $a_{\mathrm{ho}}(t)$ 波动下保持队列稳定与 QoS 可控。
+\end{itemize}
+
+\subsection{决策变量与资源约束}
+\label{subsec:ch3_decision_variables}
+
+FlexSAN 在每个时隙 $t$ 需要做出如下决策：
+\begin{itemize}
+  \item \textbf{准入变量：}$y_u(t)\in\{0,1\}$，表示是否为用户 $u$ 提供服务；
+  \item \textbf{架构选择：}$x_u^g(t)\in\{0,1\}$，$g\in\{0,1\}$，其中 $g=0$ 表示 on-board gNB（Split 0），$g=1$ 表示 on-board gNB-DU（Split 2）；
+  \item \textbf{带宽分配：}$w_u(t)\ge 0$，表示分配给用户 $u$ 的频谱带宽。
+\end{itemize}
+每个被接入用户在一个时隙内只能选择一种架构，满足
+\begin{equation}
+\sum_{g\in\{0,1\}}x_u^g(t)=y_u(t),\quad \forall u\in\mathcal{U}(t).
+\label{eq:ch3_assoc}
+\end{equation}
+
+系统总带宽约束为
+\begin{equation}
+\sum_{u\in\mathcal{U}(t)} w_u(t)\le B_s.
+\label{eq:ch3_bw}
+\end{equation}
+
+\subsection{计算开销模型：OPEX proxy 与实测标定}
+\label{subsec:ch3_compute_cost}
+
+星载计算开销是运营者 OPEX 的直接 proxy。借鉴 vRAN/功能切分领域常用的 GOPS 量化方法\cite{6771075,9107209}，定义当用户 $u$ 采用架构 $g$ 且分配带宽为 $w_u(t)$ 时，在时隙 $t$ 产生的星载计算负载为
+\begin{equation}
+C_g\big(u,t,w_u(t)\big).
+\label{eq:ch3_Cg_def}
+\end{equation}
+该量刻画“协议栈哪些处理函数驻留星上”所带来的计算代价。Split 0 对应星上执行更完整的处理函数集合，因而 $C_0$ 通常高于 $C_1$。结合第\ref{subsec:ch3_measurement_tradeoff}节原型测量，轻载下 gNB-DU 相比 gNB 的 CPU 占用约下降 20\%，因此在同等无线配置下可采用如下量级标定关系：
+\begin{equation}
+C_1(u,t,w)\approx (1-\delta)\,C_0(u,t,w),\qquad \delta\approx 0.2.
+\label{eq:ch3_cost_ratio}
+\end{equation}
+式\eqref{eq:ch3_cost_ratio}用于提供与原型测量一致的参数尺度；在仿真层面亦可按文献\cite{6771075,9107209}给出更细粒度的函数级 GOPS 统计，从而替换为更精细的 $C_g(\cdot)$ 形式。
+
+系统在时隙 $t$ 的总星载计算到达率（负载）定义为
+\begin{equation}
+\lambda_{\mathrm{sat}}(t)
+=
+\sum_{u\in\mathcal{U}(t)}\sum_{g\in\{0,1\}}x_u^g(t)\,C_g\big(u,t,w_u(t)\big)
+\;+\;a_{\mathrm{ho}}(t).
+\label{eq:ch3_lambda}
+\end{equation}
+
+\subsection{通信与处理时延模型：基于事务的 F1 建模}
+\label{subsec:ch3_delay_model}
+
+本章将端到端时延拆解为三类关键项：\textbf{传输时延}、\textbf{星载排队/处理时延}、以及\textbf{Split 2 特有的 F1 事务时延}；并在此基础上引入\textbf{架构重构扰动/惩罚}以抑制乒乓。
+
+\subsubsection*{（1）传输时延}
+对任意被接入用户 $y_u(t)=1$，其 service link 上的传输时延由传播与传输两部分组成：
+\begin{equation}
+t_{u}^{\mathrm{trans}}(t)
+=
+\frac{d_{u,s}(t)}{c}+\frac{S_p}{R_u(t)} ,
+\label{eq:ch3_trans_delay}
+\end{equation}
+其中 $d_{u,s}(t)$ 为斜距，$S_p$ 为包大小，$R_u(t)$ 为可达速率。采用带宽与 SNR 的经典近似：
+\begin{equation}
+R_u(t)=w_u(t)\log_2\!\bigl(1+\xi_u(t)\bigr),
+\label{eq:ch3_rate}
+\end{equation}
+并满足速率需求约束
+\begin{equation}
+y_u(t)\,R_u(t)\ge y_u(t)\,R_u^{\min}.
+\label{eq:ch3_rate_constraint}
+\end{equation}
+据此可定义满足速率下界的最小带宽
+\begin{equation}
+w_u^{\min}(t)=\frac{R_u^{\min}}{\log_2(1+\xi_u(t))}.
+\label{eq:ch3_wmin}
+\end{equation}
+在后续在线算法中，$w_u^{\min}(t)$ 将作为“最小可行分配”的快速计算入口，用于降低单时隙求解复杂度。
+
+\subsubsection*{（2）星载排队/处理时延}
+将星载处理单元抽象为单服务台队列，其服务能力由星载算力容量刻画。为刻画图\ref{fig:ch3_rtt_escalation}所揭示的非线性排队效应，本章采用 M/M/1 近似：
+\begin{equation}
+t^{\mathrm{queue}}(t)\approx \frac{1}{\mu_{\mathrm{sat}}-\lambda_{\mathrm{sat}}(t)},
+\label{eq:ch3_queue_mm1}
+\end{equation}
+其中 $\mu_{\mathrm{sat}}$ 表示星载处理能力上界（可由 $C_{\mathrm{sat}}^{\mathrm{cap}}$ 归一到时隙尺度）。式\eqref{eq:ch3_queue_mm1}捕捉了“负载逼近容量时排队时延发散”的结构性现象，从而解释静态 on-board gNB 在高并发下也会出现 RTT 崩塌（图\ref{fig:ch3_rtt_escalation}）。
+
+\subsubsection*{（3）基于事务（transaction-based）的 F1 时延模型}
+Split 2（$g=1$）的关键差异在于：CU/DU 通过 F1 接口协同，而 F1AP 控制事务需要跨 feeder link 往返交互。为刻画“切换频率上升带来的事务放大”，本章采用\textbf{基于事务}的建模：将一次业务/控制过程抽象为若干类 F1AP 事务 $\tau\in\mathcal{Z}$ 的组合，每类事务由若干次请求/响应往返组成。
+
+定义馈电链路上的一次 F1 往返时延为（见第\ref{subsec:ch2_f1_transaction}节）
+\begin{equation}
+T_{\mathrm{F1}}^{\mathrm{RTT}}
+\approx
+2T_{\mathrm{FL}}^{\mathrm{prop}}
++
+T_{\mathrm{CU}}^{\mathrm{proc}}
++
+T_{\mathrm{DU}}^{\mathrm{proc}}
++
+T_{\mathrm{FL}}^{\mathrm{queue}}.
+\label{eq:ch3_f1_rtt}
+\end{equation}
+原型测量给出：在轻载单 UE 下，Split 2 相对 Split 0 的端到端时延抬升约为 $145.1-61.4=83.7$\,ms，这为 $T_{\mathrm{F1}}^{\mathrm{RTT}}$ 的数量级提供了标定依据。
+
+对任意事务类型 $\tau$，记其必要往返次数为 $N_{\mathrm{rt}}(\tau)$，本地一次性处理开销为 $T_{\mathrm{local}}(\tau)$，则事务时延为
+\begin{equation}
+T_{\mathrm{txn}}(\tau)
+=
+N_{\mathrm{rt}}(\tau)\,T_{\mathrm{F1}}^{\mathrm{RTT}}+T_{\mathrm{local}}(\tau).
+\label{eq:ch3_txn_delay}
+\end{equation}
+进一步地，对用户 $u$ 在时隙 $t$，令 $\mathcal{Z}_u(t)\subseteq \mathcal{Z}$ 表示在该时隙被触发的事务集合（例如接入、承载建立、切换相关上下文建立/释放、重配置等），则 Split 2 引入的总 F1 事务时延为
+\begin{equation}
+t_{u}^{\mathrm{F1}}(t)
+=
+\sum_{\tau\in\mathcal{Z}_u(t)} T_{\mathrm{txn}}(\tau).
+\label{eq:ch3_f1_total}
+\end{equation}
+式\eqref{eq:ch3_f1_total}将“信令交互次数”与“事务时延累加”显式绑定，从而使事务放大效应可被形式化描述，而非被单一 RTT 粗略吞并。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch3/fig3_4_f1ap_transaction_sequence.pdf}
+  \caption{（必画）F1AP 协议交互的事务化时序与时延构成图。图中应以消息时序方式绘制 CU 与 DU 之间典型事务（例如 \texttt{UE CONTEXT SETUP REQUEST/RESPONSE}、\texttt{UE CONTEXT RELEASE COMMAND/COMPLETE}、\texttt{UL/DL RRC MESSAGE TRANSFER} 等），并用括号标注每一类事务所需的往返次数 $N_{\mathrm{rt}}(\tau)$。同时在时间轴上分解 $T_{\mathrm{F1}}^{\mathrm{RTT}}$ 的组成：传播（$2T_{\mathrm{FL}}^{\mathrm{prop}}$）、处理（$T_{\mathrm{CU}}^{\mathrm{proc}}+T_{\mathrm{DU}}^{\mathrm{proc}}$）、排队（$T_{\mathrm{FL}}^{\mathrm{queue}}$）。该图用于支撑式\eqref{eq:ch3_txn_delay}--\eqref{eq:ch3_f1_total}的“事务放大”建模逻辑。}
+  \label{fig:ch3_f1_transaction_seq}
+\end{figure}
+
+\subsubsection*{（4）架构重构开销：扰动时延与切换惩罚}
+FlexSAN 允许运行过程中按用户粒度切换 Split 选项。工程上，切换意味着 VNF 实例化/销毁、状态迁移、上下文同步以及可能的额外 F1/RRC 交互，因而会产生：
+\begin{itemize}
+  \item \textbf{服务扰动时延：}切换发生的时隙可能引入额外时延；
+  \item \textbf{乒乓风险：}若缺少抑制机制，可能出现在两种架构间频繁来回切换。
+\end{itemize}
+
+为此，本章以“是否发生切换”为基本计数单位，定义用户 $u$ 在时隙 $t$ 的切换指示量
+\begin{equation}
+s_u(t)\triangleq \frac{1}{2}\sum_{g\in\{0,1\}}\big|x_u^g(t)-x_u^g(t-1)\big|,
+\qquad s_u(t)\in\{0,1\}.
+\label{eq:ch3_switch_indicator}
+\end{equation}
+其中，若用户从 $g=0$ 切到 $g=1$（或反之），则 $s_u(t)=1$；若架构保持不变，则 $s_u(t)=0$。
+
+对应地，从两层引入切换代价：
+\begin{enumerate}
+  \item 在时延表达中加入切换扰动项
+  \begin{equation}
+  t_{u}^{\mathrm{sw}}(t)= s_u(t)\cdot T_{\mathrm{sw}},
+  \label{eq:ch3_switch_delay}
+  \end{equation}
+  其中 $T_{\mathrm{sw}}$ 为一次架构切换带来的等效服务扰动时间（可由实现评估或原型测量给出）。
+  \item 在目标函数中显式加入切换惩罚（Switching Cost）
+  \begin{equation}
+  \beta \sum_{u\in\mathcal{U}(t)} s_u(t),
+  \label{eq:ch3_switch_penalty}
+  \end{equation}
+  其中 $\beta>0$ 为稳定性权重：$\beta$ 越大，越倾向于减少切换次数，从而抑制乒乓。
+\end{enumerate}
+
+\subsection{端到端时延与 QoS 约束}
+\label{subsec:ch3_e2e_qos}
+
+综合上述分量，用户 $u$ 在时隙 $t$ 的端到端时延可写为
+\begin{equation}
+t_u(t)
+=
+t_{u}^{\mathrm{trans}}(t)
++t^{\mathrm{queue}}(t)
++\sum_{g\in\{0,1\}}x_u^g(t)\cdot \Big(\mathbf{1}_{\{g=1\}}\,t_{u}^{\mathrm{F1}}(t)\Big)
++t_{u}^{\mathrm{sw}}(t).
+\label{eq:ch3_e2e}
+\end{equation}
+对被接入用户需满足时延约束
+\begin{equation}
+y_u(t)\,t_u(t)\le y_u(t)\,T_u^{\max}.
+\label{eq:ch3_delay_constraint}
+\end{equation}
+需要指出的是，在高动态环境中将式\eqref{eq:ch3_delay_constraint}作为\emph{严格瞬时约束}会显著增加在线求解难度。为获得可实施的在线算法，下一节将在 Lyapunov 框架下将其转化为\emph{时间平均意义下的可控约束}：通过虚拟队列稳定性保证长期违约不累积，并在每个时隙求解一个可分解的贪心决策。
+
+\subsection{优化目标：时延--开销权衡与切换稳定性}
+\label{subsec:ch3_objective}
+
+本文关心三类系统目标：
+\begin{itemize}
+  \item \textbf{OPEX：}星载计算开销 $\sum x_u^g C_g(\cdot)$；
+  \item \textbf{QoS：}端到端时延 $t_u(t)$ 与准入规模；
+  \item \textbf{稳定性：}切换次数（乒乓抑制）。
+\end{itemize}
+
+将其统一为一个长期平均优化目标（以“最小化”为例）：
+\begin{equation}
+\min
+\ \overline{J}
+=
+\limsup_{T\to\infty}\frac{1}{T}\sum_{t=0}^{T-1}
+\Bigg[
+\omega_C \sum_{u}\sum_{g}x_u^g(t)\,C_g\big(u,t,w_u(t)\big)
+-\omega_A\sum_{u}y_u(t)
++\beta\sum_{u} s_u(t)
+\Bigg],
+\label{eq:ch3_longterm_obj}
+\end{equation}
+其中 $\omega_C,\omega_A\ge 0$ 为权重，$\omega_A$ 可理解为“接入一个用户的效用”。QoS（时延与速率）通过约束或虚拟队列体现。目标函数\eqref{eq:ch3_longterm_obj}的含义是：\textbf{在满足用户服务需求的前提下，尽可能用低开销架构接入更多用户，同时抑制不必要的架构切换。}
+
+% =====================================================
+\section{基于 Lyapunov 优化的在线资源编排算法：L-TAGO}
+\label{sec:ch3_lyapunov}
+
+本节提出本文的在线资源编排方法 \textbf{L-TAGO}。其核心思想是：\textbf{用虚拟队列刻画 QoS 约束与系统稳定性，通过最小化漂移上界导出单时隙确定性贪心决策。}由此，在线编排不依赖“手工阈值/经验规则”，而是由统一的随机优化推导自然给出，并且能够通过参数 $V$ 与 $\beta$ 显式调节“性能—稳定性”的权衡。
+
+\subsection{虚拟队列设计与 Lyapunov 函数}
+\label{subsec:ch3_virtual_queue}
+
+\paragraph{（1）计算负载队列（物理队列/稳定性代理）}
+为刻画星载排队与稳定性，定义星载计算队列（以“计算工作量”计）为 $Q(t)\ge 0$，其演化为
+\begin{equation}
+Q(t+1)=\Big[Q(t)-\mu_{\mathrm{sat}}\Big]^+ + \lambda_{\mathrm{sat}}(t),
+\label{eq:ch3_Q_update}
+\end{equation}
+其中 $\mu_{\mathrm{sat}}$ 为单位时隙可处理的计算能力，$\lambda_{\mathrm{sat}}(t)$ 由式\eqref{eq:ch3_lambda}给出。$Q(t)$ 的长期水平与式\eqref{eq:ch3_queue_mm1}中的排队时延同向相关：当 $Q(t)$ 长期偏大意味着系统长期处于高负载区间，用户时延将显著劣化。
+
+\paragraph{（2）时延约束虚拟队列}
+为将瞬时约束式\eqref{eq:ch3_delay_constraint}转化为可在线处理的长期约束，定义每个用户的时延虚拟队列 $Z_u(t)\ge 0$：
+\begin{equation}
+Z_u(t+1)=\Big[Z_u(t)+y_u(t)\big(t_u(t)-T_u^{\max}\big)\Big]^+.
+\label{eq:ch3_Z_update}
+\end{equation}
+若 $Z_u(t)$ 稳定（均值有界），则可保证用户的时延违约不会长期累积，从而在时间平均意义下满足 QoS。
+
+\paragraph{Lyapunov 函数}
+选择二次 Lyapunov 函数：
+\begin{equation}
+L(t)=\frac{1}{2}\Big(Q(t)^2+\sum_{u\in\mathcal{U}(t)} Z_u(t)^2\Big).
+\label{eq:ch3_Lyapunov}
+\end{equation}
+其漂移定义为
+\begin{equation}
+\Delta(t)=\mathbb{E}\big[L(t+1)-L(t)\mid \Theta(t)\big],
+\label{eq:ch3_drift}
+\end{equation}
+其中 $\Theta(t)\triangleq\{Q(t),Z_u(t),\forall u\}$ 为系统状态。
+
+\subsection{漂移加罚（Drift-plus-Penalty）推导}
+\label{subsec:ch3_drift_plus_penalty}
+
+定义每时隙代价（Penalty）为
+\begin{equation}
+P(t)=
+\omega_C \sum_{u}\sum_{g}x_u^g(t)\,C_g\big(u,t,w_u(t)\big)
+-\omega_A\sum_{u}y_u(t)
++\beta\sum_{u} s_u(t).
+\label{eq:ch3_penalty}
+\end{equation}
+
+Lyapunov 优化最小化漂移加罚
+\begin{equation}
+\Delta_V(t)\triangleq \Delta(t)+V\,\mathbb{E}\big[P(t)\mid \Theta(t)\big],
+\label{eq:ch3_dpp}
+\end{equation}
+其中 $V>0$ 为权衡参数：$V$ 越大越偏向优化长期代价（OPEX/准入/切换），$V$ 越小越偏向抑制队列增长（稳定性/QoS）。
+
+\paragraph{上界推导要点}
+利用常用不等式 $( [x]^+ )^2 \le x^2$ 与
+\begin{equation}
+\big([Q-\mu]^+ + \lambda\big)^2
+\le Q^2+\mu^2+\lambda^2+2Q(\lambda-\mu),
+\label{eq:ch3_queue_square_ineq}
+\end{equation}
+可得存在常数 $B>0$ 使得
+\begin{align}
+\Delta_V(t)
+\le
+B
+&+ Q(t)\,\mathbb{E}\big[\lambda_{\mathrm{sat}}(t)-\mu_{\mathrm{sat}}\mid \Theta(t)\big]
++ \sum_{u} Z_u(t)\,\mathbb{E}\big[y_u(t)\big(t_u(t)-T_u^{\max}\big)\mid \Theta(t)\big]
+\nonumber\\
+&+ V\,\mathbb{E}\big[P(t)\mid \Theta(t)\big].
+\label{eq:ch3_dpp_upper}
+\end{align}
+
+由于 $B$、$-\mu_{\mathrm{sat}}$ 与 $-Z_u(t)T_u^{\max}$ 在时隙 $t$ 已知且与决策无关，最小化右端上界可转化为每时隙的确定性优化（以当前观测替代条件期望）：
+\begin{align}
+\min_{\mathbf{x}(t),\mathbf{y}(t),\mathbf{w}(t)}\ 
+& Q(t)\,\lambda_{\mathrm{sat}}(t)
++\sum_{u} Z_u(t)\,y_u(t)\,t_u(t)
+\nonumber\\
+&+V\Bigg[
+\omega_C \sum_{u}\sum_{g}x_u^g(t)\,C_g\big(u,t,w_u(t)\big)
+-\omega_A\sum_{u}y_u(t)
++\beta\sum_{u} s_u(t)
+\Bigg]
+\label{eq:ch3_slot_problem}\\
+\text{s.t.}\quad
+& \eqref{eq:ch3_assoc},\ \eqref{eq:ch3_bw},\ \eqref{eq:ch3_rate_constraint},\ x_u^g(t)\in\{0,1\},\ y_u(t)\in\{0,1\},\ w_u(t)\ge 0.
+\nonumber
+\end{align}
+
+式\eqref{eq:ch3_slot_problem}给出 L-TAGO 的“推导起点”：\textbf{每个时隙只需基于当前队列状态 $Q(t),Z_u(t)$ 与当前用户需求/链路状态，求解一个漂移上界最小化问题。}下文将进一步将其转化为可在线实施的贪心求解。
+
+\subsection{贪心策略生成：L-TAGO 单时隙求解}
+\label{subsec:ch3_greedy}
+
+直接求解式\eqref{eq:ch3_slot_problem}仍是混合整数问题。为获得实时可行性，本章采用两点不改变核心推导方向的工程化处理：
+\begin{enumerate}
+  \item 对每个用户先给出满足速率约束的最小带宽 $w_u^{\min}(t)$（式\eqref{eq:ch3_wmin}），将带宽决策从连续空间压缩到可快速计算的候选（后续可在剩余带宽上做局部微调，但主决策以 $w_u^{\min}$ 为基准）；
+  \item 将“选择哪些用户接入 + 为其选择架构”转化为一个由漂移权重驱动的排序与打包问题：漂移项自然给出了资源紧张程度的动态权重，从而实现无需手工阈值的自适应权衡。
+\end{enumerate}
+
+\paragraph{每用户的漂移加罚增量（marginal drift-plus-penalty）}
+对用户 $u$，若接入并选择架构 $g$（即 $y_u=1,x_u^g=1,w_u=w_u^{\min}$），其对式\eqref{eq:ch3_slot_problem}目标的主要增量可写为
+\begin{align}
+\Phi_u^g(t)
+\triangleq\ &
+Q(t)\,C_g\big(u,t,w_u^{\min}(t)\big)
++ Z_u(t)\,t_u^g(t)
+\nonumber\\
+&+V\Big[
+\omega_C C_g\big(u,t,w_u^{\min}(t)\big)-\omega_A
++\beta\, s_u^g(t)
+\Big],
+\label{eq:ch3_phi}
+\end{align}
+其中 $t_u^g(t)$ 表示在架构 $g$ 下由式\eqref{eq:ch3_e2e}给出的端到端时延（包含事务时延与切换扰动），而
+\begin{equation}
+s_u^g(t)\triangleq \frac12\sum_{\tilde g\in\{0,1\}}\big|\mathbbm{1}_{\{\tilde g=g\}}-x_u^{\tilde g}(t-1)\big|
+=
+1-x_u^{g}(t-1)
+\label{eq:ch3_switch_indicator_given_g}
+\end{equation}
+表示“若当前选择 $g$，是否相对上一时隙发生切换”。若拒绝该用户（$y_u=0$），可视为增量为 0。于是用户的最优架构选择为
+\begin{equation}
+g_u^\star(t)=\arg\min_{g\in\{0,1\}}\ \Phi_u^g(t),
+\qquad
+\Phi_u^\star(t)=\min_{g\in\{0,1\}}\ \Phi_u^g(t).
+\label{eq:ch3_best_g}
+\end{equation}
+
+\paragraph{贪心准入与资源打包}
+在满足带宽约束式\eqref{eq:ch3_bw}下，L-TAGO 采用如下贪心准入：
+\begin{itemize}
+  \item 计算所有用户的 $\Phi_u^\star(t)$ 与 $w_u^{\min}(t)$；
+  \item 将用户按 $\Phi_u^\star(t)$ 从小到大排序（越小表示在当前队列状态下“越值得接入”）；
+  \item 依次尝试接入用户，累计带宽不超过 $B_s$，并执行其对应的架构 $g_u^\star(t)$。
+\end{itemize}
+
+直观上，当系统资源紧张（$Q(t)$ 或部分 $Z_u(t)$ 较大）时，式\eqref{eq:ch3_phi}会强化“减少计算到达率、降低违约风险”的倾向；当系统轻载（队列较小）时，$V$ 项主导，算法更偏向选择低 OPEX 的架构并尽可能接入更多用户。这种自适应来自 Lyapunov 推导而非阈值经验，因此具有可解释性与可复现性。
+
+\begin{algorithm}[t]
+\caption{L-TAGO：Lyapunov 引导的在线贪心资源编排}
+\label{alg:ch3_ltago}
+\begin{algorithmic}[1]
+\Require 当前时隙用户集合 $\mathcal{U}(t)$，队列状态 $Q(t),\{Z_u(t)\}$，上一时隙架构 $\{x_u(t-1)\}$，系统带宽 $B_s$
+\Ensure 准入 $\{y_u(t)\}$，架构选择 $\{x_u^g(t)\}$，带宽分配 $\{w_u(t)\}$
+\ForAll{$u\in\mathcal{U}(t)$}
+  \State 计算 $w_u^{\min}(t)$（式\eqref{eq:ch3_wmin}）
+  \For{$g\in\{0,1\}$}
+     \State 计算 $t_u^g(t)$ 与 $s_u^g(t)$（式\eqref{eq:ch3_e2e}、\eqref{eq:ch3_switch_indicator_given_g}）
+     \State 计算 $\Phi_u^g(t)$（式\eqref{eq:ch3_phi}）
+  \EndFor
+  \State $g_u^\star(t)\gets \arg\min_g \Phi_u^g(t)$，$\Phi_u^\star(t)\gets \min_g \Phi_u^g(t)$
+\EndFor
+\State 将用户按 $\Phi_u^\star(t)$ 升序排序，得到序列 $\pi(t)$
+\State 初始化：$B_{\mathrm{used}}\gets 0$，并令所有 $y_u(t)\gets 0$
+\For{按序遍历 $u=\pi_1(t),\pi_2(t),\ldots$}
+  \If{$B_{\mathrm{used}}+w_u^{\min}(t)\le B_s$}
+     \State 接入：$y_u(t)\gets 1$，$w_u(t)\gets w_u^{\min}(t)$
+     \State 架构：设置 $x_u^{g_u^\star(t)}(t)\gets 1$，其余为 0
+     \State $B_{\mathrm{used}}\gets B_{\mathrm{used}}+w_u^{\min}(t)$
+  \EndIf
+\EndFor
+\State \Return $\{y_u(t)\},\{x_u^g(t)\},\{w_u(t)\}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{复杂度与稳定性分析}
+\label{subsec:ch3_analysis}
+
+\paragraph{复杂度}
+算法\ref{alg:ch3_ltago}的主要计算量来自：对每个用户计算两种架构的增量代价（$O(N)$）以及对 $\Phi_u^\star(t)$ 排序（$O(N\log N)$）。因此单时隙复杂度为
+\begin{equation}
+O(N\log N),\qquad N=|\mathcal{U}(t)|.
+\end{equation}
+其代价由排序主导，易于满足百毫秒及更细粒度时隙下的在线运行要求。
+
+\paragraph{稳定性与性能界（结论形式）}
+Lyapunov 优化的经典结果表明：在满足可行性条件（存在某策略能使队列稳定）的前提下，采用漂移加罚最小化的在线策略可实现如下权衡（参见 \cite{neely2010stochastic} 的一般结论）：
+\begin{itemize}
+  \item 平均代价 $\overline{J}$ 与最优代价 $J^\star$ 的差距满足 $O(1/V)$；
+  \item 队列平均长度（从而违约风险与排队时延尺度）为 $O(V)$。
+\end{itemize}
+因此 $V$ 提供了清晰且可解释的“性能—稳定性”调节杆：\textbf{$V$ 越大越接近最优代价但队列更大（时延风险更高），$V$ 越小队列更紧但代价可能更高。}同时，切换惩罚权重 $\beta$ 直接控制架构稳定性；$\beta$ 的引入等价于对 $x(t)$ 的总变差（Total Variation）进行正则化，从目标函数层面抑制乒乓。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch3/fig3_5_lyapunov_flowchart.pdf}
+  \caption{（必画）L-TAGO 的 Lyapunov 决策流程图。图中应展示：输入（当前队列 $Q(t),Z_u(t)$、链路状态 $\xi_u(t)$、外部扰动 $a_{\mathrm{ho}}(t)$、上一时隙架构 $x(t-1)$）$\rightarrow$ 计算 $w_u^{\min}(t)$ 与 $\Phi_u^g(t)$ $\rightarrow$ 得到 $g_u^\star(t)$ 与 $\Phi_u^\star(t)$ $\rightarrow$ 按 $\Phi_u^\star(t)$ 排序并贪心打包满足带宽约束 $\rightarrow$ 输出 $\{y_u(t),x_u^g(t),w_u(t)\}$ $\rightarrow$ 更新队列（式\eqref{eq:ch3_Q_update}、\eqref{eq:ch3_Z_update}）。该图用于强调“每时隙仅基于当前状态的在线贪心”，以及其由漂移上界最小化推导而来。}
+  \label{fig:ch3_ltago_flow}
+\end{figure}
+
+% =====================================================
+\section{仿真实验与分析}
+\label{sec:ch3_eval}
+
+本节围绕 FlexSAN 架构与 L-TAGO 在线编排算法进行仿真评估。为保证可对照与可复现，仿真参数与模型接口与前述原型标定保持一致；同时，按照“强基线”要求，引入离线最优/预测控制（MPC）、DRL（PPO）与工业迟滞阈值（Hysteresis）等对比方法，并重点评估：（i）时延--开销权衡，（ii）高负载下准入能力，（iii）切换次数与稳定性。
+
+\subsection{实验设置}
+\label{subsec:ch3_eval_setup}
+
+\paragraph{星座与链路参数}
+采用单星过境窗口（5 分钟）的仿真，时间粒度为 100\,ms。卫星轨道参数可由公开 TLE 数据生成（例如可使用 STARLINK-11671 的 TLE 作为一组复现实例）；系统工作于 2\,GHz S 频段，总带宽 20\,MHz。用户在地面以均匀分布生成，半径 25\,km。传播时延随斜距变化（参见第\ref{subsec:ch2_geo_geometry_delay}节的接口形式）。
+
+\paragraph{算力与事务参数}
+卫星计算容量设为 $C_{\mathrm{sat}}^{\mathrm{cap}}=32000$ GOPS。Split 2 的 F1 往返时延 $T_{\mathrm{F1}}^{\mathrm{RTT}}$ 依据原型测量数量级设为 80--100\,ms，并可按式\eqref{eq:ch3_f1_rtt}分解。事务往返次数 $N_{\mathrm{rt}}(\tau)$ 按图\ref{fig:ch3_f1_transaction_seq}中的消息序列设定：例如上下文建立/释放各至少 1 RTT，切换相关过程可包含多次事务叠加。
+
+\paragraph{业务需求与流量模型}
+每个用户速率需求 $R_u^{\min}$ 在 0.5--2 Mbps 区间内均匀分布。最大时延容忍度采用三类 profile：
+\begin{itemize}
+  \item \textbf{STRICT：}70\% 用户要求 $\le 50$\,ms；
+  \item \textbf{MIXED：}$\le 50$/$\le 100$/$\le 200$\,ms 三档均匀；
+  \item \textbf{RELAXED：}70\% 用户容忍 $\le 200$\,ms。
+\end{itemize}
+并进一步构造三类典型动态流量：应急突发（Emergency）、事件驱动（Event-driven）与潮汐效应（Tidal），用于评估在线自适应能力。
+
+\subsection{对比基线（必须项）}
+\label{subsec:ch3_baselines}
+
+为避免“只与弱基线比”的偏差，本章设置三类强基线：
+
+\paragraph{（1）理论界限：Looking-ahead Optimal / MPC}
+\begin{itemize}
+  \item \textbf{Looking-ahead Optimal（离线最优）：}假设已知整个窗口内的用户需求、斜距与扰动序列，直接求解全局 MINLP（可用 Gurobi 求解）作为上界；
+  \item \textbf{MPC（Model Predictive Control）：}采用长度为 $H$ 的预测窗口，在每个时隙求解未来 $H$ 步优化并仅执行第一步，体现“有限前瞻 + 在线滚动”的可实现上界。
+\end{itemize}
+
+\paragraph{（2）SOTA：DRL（PPO）}
+采用 Proximal Policy Optimization (PPO) 作为代表性 DRL 基线。PPO 通过与环境交互训练策略网络，输出每时隙的准入/架构选择/资源分配动作。比较重点不仅在最终性能，还包括：
+\begin{itemize}
+  \item 训练样本与收敛速度（对业务潮汐/突发是否敏感）；
+  \item 在线推理开销与可解释性；
+  \item 对环境漂移（不同轨道/不同业务分布）是否需要再训练。
+\end{itemize}
+
+\paragraph{（3）工业界策略：带迟滞阈值（Hysteresis）的切换控制}
+构造迟滞阈值策略：根据系统负载指标（如 $\rho(t)=\lambda_{\mathrm{sat}}(t)/\mu_{\mathrm{sat}}$ 或 $Q(t)$）在两阈值 $\theta_{\mathrm{up}}>\theta_{\mathrm{down}}$ 之间切换，并加入最小驻留时间（dwell time）以抑制乒乓。该基线在工程系统的模式切换控制中具有代表性，但在卫星长事务时延与扰动放大环境下可能出现“反应迟钝或切换代价过高”。
+
+此外，为展示架构灵活性的价值，还需包含两类静态架构基线：
+\begin{itemize}
+  \item \textbf{O-gNB（静态 Split 0）：}所有用户均采用 on-board gNB；
+  \item \textbf{O-DU（静态 Split 2）：}所有用户均采用 on-board gNB-DU。
+\end{itemize}
+
+\subsection{性能评估与结果分析}
+\label{subsec:ch3_results}
+
+\paragraph{（1）时延分布：CDF 对比（强制图表）}
+图\ref{fig:ch3_cdf}要求绘制端到端时延的累积分布函数（CDF），对比 L-TAGO、离线最优/MPC、PPO、Hysteresis 以及两类静态架构。建议在 STRICT profile 与中高负载区间展示。预期现象包括：
+\begin{itemize}
+  \item 静态 O-DU 的 CDF 存在明显的“事务时延地板”（由 F1 事务决定），在严格时延约束下导致大量用户不可满足；
+  \item 静态 O-gNB 在高负载下尾部分布显著右移（排队主导），与图\ref{fig:ch3_rtt_escalation}的原型观测一致；
+  \item L-TAGO 通过按需分配用户到两类架构并结合切换惩罚抑制乒乓，可显著“左移 CDF”并压缩尾部。
+\end{itemize}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch3/fig3_6_delay_cdf.pdf}
+  \caption{（强制图表）端到端时延 CDF 对比。应至少包含：L-TAGO、Looking-ahead Optimal（或 MPC）、PPO、Hysteresis、静态 O-gNB、静态 O-DU。横轴为时延（ms），纵轴为 CDF。建议标注 50/90/95 分位点，并在图中说明 O-DU 的事务时延地板与 O-gNB 的高负载尾部扩展。该图用于从统计意义验证：FlexSAN 的动态架构能同时降低“确定性事务时延影响”和“高负载排队尾部风险”。}
+  \label{fig:ch3_cdf}
+\end{figure}
+
+\paragraph{（2）平均开销 vs. 流量密度（强制图表）}
+图\ref{fig:ch3_cost_vs_load}要求绘制随用户规模/流量密度变化的平均星载开销（CPU/GOPS 或归一化 OPEX proxy），并同时展示平均准入率或满足 QoS 的用户比例。原型标定与模型推导预示：在轻载区间，L-TAGO 倾向将更多宽松 QoS 用户放置于 gNB-DU 以节省星载开销；在重载区间，L-TAGO 会通过混合架构与准入控制抑制 $\lambda_{\mathrm{sat}}(t)$ 增长、避免排队发散，从而提升可服务用户规模。与此同时，可通过改变 $\beta$ 展示“稳定性--性能”的可调权衡。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch3/fig3_7_cost_vs_traffic_density.pdf}
+  \caption{（强制图表）平均开销与准入能力随流量密度变化的对比。建议采用双纵轴或上下子图：(a) 平均星载计算开销（归一化 CPU/GOPS），(b) 准入率/满足 QoS 的用户比例。对比方法至少包含：L-TAGO、Optimal/MPC、PPO、Hysteresis、静态 O-gNB、静态 O-DU。该图用于量化展示：在轻载区间 L-TAGO 倾向采用低 OPEX 的 gNB-DU，而在重载区间通过混合架构与准入控制避免静态架构的早饱和，从而提升系统承载能力。}
+  \label{fig:ch3_cost_vs_load}
+\end{figure}
+
+\paragraph{（3）切换次数与乒乓抑制：稳定性验证}
+为验证式\eqref{eq:ch3_switch_penalty}的作用，需要统计单位时间内的架构切换次数：
+\begin{equation}
+N_{\mathrm{sw}}=\sum_{t}\sum_{u} s_u(t).
+\end{equation}
+要求对比 L-TAGO（不同 $\beta$ 取值）与 Hysteresis 的切换次数，同时观察 QoS/开销变化。一般而言，$\beta$ 越大切换越少，但可能牺牲部分瞬时最优；Hysteresis 虽切换少，但在长事务时延环境下可能因“迟滞 + 反应迟钝”导致无法及时跟随负载潮汐，从而在准入与时延上落后于 L-TAGO。
+
+\paragraph{（4）与 DRL（PPO）的对比：训练成本与鲁棒性}
+PPO 的对比价值在于展示“学习策略”的性能潜力，同时也揭示其在工程落地上的成本与风险。对比时建议报告：
+\begin{itemize}
+  \item 训练回报随 episode 的收敛曲线；
+  \item 不同业务 profile/不同轨道条件下的迁移泛化（是否需要再训练）；
+  \item 在线推理时间（毫秒级调度窗口下的可行性）。
+\end{itemize}
+L-TAGO 的优势在于：\textbf{无需训练、从第一个时隙即输出可行决策，且可通过 $V,\beta$ 直接解释其稳定性与性能权衡。}
+
+\subsection{结果讨论}
+\label{subsec:ch3_discussion}
+
+结合上述指标，可从机制层面解释本章方法的优势：
+\begin{enumerate}
+  \item \textbf{相比静态架构：}L-TAGO 在轻载阶段将大部分宽松 QoS 用户放置于 gNB-DU 以节省星载开销；在高载阶段通过混合架构与准入控制降低 $\lambda_{\mathrm{sat}}(t)$、抑制排队发散，从而避免“名义低时延架构在高负载下也失效”的现象（与图\ref{fig:ch3_rtt_escalation}一致）。
+  \item \textbf{相比 Hysteresis：}迟滞阈值策略以固定阈值近似动态权衡，难以同时刻画（i）用户差异化 QoS，（ii）事务放大（F1 交互次数随扰动变化），以及（iii）算力突发扰动 $a_{\mathrm{ho}}(t)$。而 L-TAGO 的权衡由队列状态自适应决定，并通过 $\beta$ 在目标函数层面抑制乒乓，稳定性更可控。
+  \item \textbf{相比 PPO：}PPO 的策略质量依赖训练数据分布是否覆盖真实业务潮汐与轨道变化；环境漂移可能带来性能退化与再训练需求。L-TAGO 由漂移上界最小化推导，能够在环境变化时“即刻响应”，且无需额外训练与模型维护。
+  \item \textbf{相比离线最优/MPC：}离线最优提供上界但不具备实时性；MPC 虽降低复杂度但仍可能在高维离散决策下计算开销较大。L-TAGO 仅需排序与线性扫描，能满足百毫秒乃至更细粒度时隙的在线运行需求。
+\end{enumerate}
+
+% =====================================================
+\section{本章小结}
+\label{sec:ch3_summary}
+
+本章围绕“面向手机直连卫星的可解耦接入网络架构与在线资源编排”给出了从原型测量到系统建模再到在线算法推导的闭环论证。
+
+首先，基于第\ref{chap:ch2}章构建的 OAI 端到端原型平台，本章量化测得两类再生式静态架构（on-board gNB 与 on-board gNB-DU）在端到端时延与星载 CPU 开销上的显著差异：gNB 具备更低时延，而 gNB-DU 可显著节省星载算力但引入不可忽略的 F1 事务时延；更进一步，原型测量揭示高并发下 RTT 会因排队效应出现非线性恶化，证明“静态架构在动态环境下必然失效”，从而引出 FlexSAN 的必要性。
+
+其次，本章面向 LEO 星座 D2C 场景建立了统一系统模型：将切换（handover）建模为外部扰动引起的算力突发需求；将 Split 2 的 F1 时延从简单 RTT 抽象深化为基于事务的时延累加模型；并通过切换指示量 $s_u(t)$ 在时延与目标函数中显式纳入架构切换代价，以抑制乒乓并体现系统稳定性要求。
+
+最后，本章提出基于 Lyapunov 漂移加罚框架的在线资源编排算法 \textbf{L-TAGO}：通过计算队列与时延虚拟队列将“稳定性与 QoS”转化为可在线处理的队列稳定问题，并推导得到每时隙的贪心排序与打包决策策略。L-TAGO 每时隙仅依赖当前状态输出可行决策，复杂度为 $O(N\log N)$，并通过参数 $V$ 与 $\beta$ 提供清晰可解释的“性能—稳定性”权衡。仿真评估部分引入离线最优/MPC、DRL（PPO）与工业迟滞策略（Hysteresis）等强基线，并要求以 CDF 与开销曲线等形式验证 FlexSAN 在高动态、长事务时延环境下的优势。
+
+在下一章中，本文将进一步在 FlexSAN 架构底座上引入电磁地图先验信息，研究 PRB 粒度的干扰感知资源编排方法，并讨论架构解耦如何为高复杂度调度算法提供可持续的星载算力预算。
+
+
+\chapter{面向D2C的干扰感知资源编排方法}
+
+\section{引言}
+
+\section{问题建模与系统模型}
+
+\section{两阶段启发式资源编排算法设计}
+
+\section{仿真实验与性能评估}
+
+\section{本章小结}
+
+\chapter{总结与展望}
+
+\section{全文工作总结}
+
+\section{未来工作展望}
+
+% 附录部分
+\appendix
+
+\chapter{公式推导}
+
+% 后置部分包含参考文献、声明页（自动生成）等
+\backmatter
+
+% 打印参考文献列表
+\printbibliography
+
+\begin{acknowledgements}
+  致谢
+\end{acknowledgements}
+
+\end{document}
