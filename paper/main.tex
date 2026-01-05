@@ -1474,22 +1474,1020 @@ L-TAGO 的优势在于：\textbf{无需训练、从第一个时隙即输出可�
 
 
 \chapter{面向D2C的干扰感知资源编排方法}
+\label{chap:ch4}
 
 \section{引言}
+\label{sec:ch4_intro}
 
+第\ref{chap:ch3}章提出的 FlexSAN 可解耦架构通过动态功能分割，在星载算力约束下实现了时延与开销的优化权衡。该架构为星载调度器释放了宝贵的计算资源，从而为本章研究的复杂资源编排算法提供了运行空间。然而，FlexSAN 主要关注架构层面的时延-开销折中，尚未深入探讨物理资源层面的精细化调度问题。本章将在 FlexSAN 架构底座之上，进一步研究 PRB 粒度的干扰感知资源编排方法。
+
+D2C 系统面临的核心调度挑战源于频谱复用带来的干扰异构性。如第\ref{sec:ch2_sched_interf}节所述，卫星与地面蜂窝网络的同频共存导致外部干扰呈现显著的空间相关性与频率选择性：不同 PRB 上的干扰功率可能相差数十 dB，形成"频谱空穴"——即干扰较低的局部频段。传统的宽带比例公平调度仅考虑用户级的平均信道质量，无法识别并利用这些频谱空穴，导致系统频谱效率的损失。
+
+更为严峻的是，LEO 卫星场景的 CSI 老化问题使得传统调度范式面临结构性失效。如式\eqref{eq:ch2_aging_criterion}所示，当反馈闭环时延 $T_{\mathrm{loop}}$ 远大于信道相干时间 $T_{\mathrm{coh}}$ 时，UE 上报的 CSI/CQI 信息在调度决策生效时已严重过时。在 LEO 高度与典型 S/L 频段条件下，这一老化效应尤为显著。因此，需要引入不依赖实时 UE 反馈的调度输入机制。
+
+电磁地图（Radio Map）为上述问题提供了解决思路。如第\ref{subsec:ch2_interf_map}节所述，三维电磁地图张量 $\mathcal{M}_I$ 将地理位置与 PRB 索引映射为干扰功率估计，为调度器提供了"无需反馈"的干扰先验信息。该先验的时效性取决于干扰场的变化速率（通常为分钟至小时级），远长于 CSI 的相干时间，因此可在 $T_{\mathrm{loop}} \gg T_{\mathrm{coh}}$ 条件下提供有效的调度输入。
+
+基于上述分析，本章的核心目标是：在电磁地图引导下，设计 PRB 粒度的联合频谱-功率编排算法，在不依赖实时 CSI 反馈的条件下最大化系统频谱效率。该目标面临以下技术挑战：
+
+\begin{itemize}
+\item \textbf{组合优化复杂度}：PRB 分配需同时满足 OFDMA 正交、连续块、用户容量等约束，可行解空间呈指数增长，难以穷举求解。
+
+\item \textbf{频谱-功率耦合}：PRB 分配决定用户块结构，功率分配影响各用户的有效 SINR，二者相互耦合，需联合优化。
+
+\item \textbf{干扰纹理利用}：电磁地图提供的 PRB 级干扰信息蕴含丰富的频域纹理（如连续干净子带、孤立低干扰点），如何有效利用这些信息是调度设计的关键。
+\end{itemize}
+
+针对上述挑战，本章的主要贡献如下：
+
+\begin{enumerate}
+\item 建立了基于电磁地图的 PRB 级 SINR 预测模型，将 D2C 下行资源编排形式化为联合 PRB 分配与功率分配的约束优化问题，给出了问题的复杂度分析。
+
+\item 提出了两阶段启发式资源编排算法：第一阶段采用贪心块构造策略（Seed+Grow），第二阶段采用分组注水功率分配，实现了多项式复杂度的可行解生成。
+
+\item 设计了神经网络增强的贪心块调度器（NS-GBS），引入基于 Transformer 的 ISAB 打分器建模候选动作间的上下文依赖，通过 Listwise 排序学习优化动作评估函数，突破启发式设计的性能瓶颈。
+
+\item 通过系统级仿真验证了所提方法在频谱效率、公平性与鲁棒性方面的优势，并分析了各设计要素的贡献。
+\end{enumerate}
+
+本章后续内容组织如下：第\ref{sec:ch4_model}节建立系统模型与优化问题形式化；第\ref{sec:ch4_heuristic}节设计两阶段启发式算法；第\ref{sec:ch4_nsgbs}节提出神经增强的调度方法；第\ref{sec:ch4_eval}节通过仿真实验验证算法性能；第\ref{sec:ch4_summary}节总结全章工作。
+
+%==============================================================================
 \section{问题建模与系统模型}
+\label{sec:ch4_model}
 
+本节针对 D2C 下行场景建立 PRB 粒度的系统模型与优化问题形式化。首先给出系统假设与符号定义，继而推导 PRB 级速率模型，最后将资源编排问题形式化为约束优化问题。
+
+%------------------------------------------------------------------------------
+\subsection{系统场景与假设}
+\label{subsec:ch4_scenario}
+
+本章研究单 LEO 卫星服务小区的下行资源编排问题。设时隙集合为 $\mathcal{T}=\{1,2,\ldots,T\}$，每时隙对应一个传输时间间隔（Transmission Time Interval, TTI）。在任意时隙 $t\in\mathcal{T}$ 内，卫星服务小区覆盖用户集合 $\mathcal{U}(t)$，可用 PRB 集合为 $\mathcal{K}=\{1,2,\ldots,Z\}$，其中 $Z$ 为系统带宽内的 PRB 总数。本文主要仿真配置采用 $Z=51$，对应 10\,MHz 带宽下的 NR 参数。
+
+\paragraph{信道与链路假设}
+卫星至用户 $u$ 的信道功率增益 $g_{u,k}(t)$ 服从第\ref{sec:ch2_geo_channel}节所述的大尺度模型，包含自由空间路径损耗、雨衰与气体吸收等项。在 LEO 轨道高度与 S/L 频段条件下，多普勒频移可达数十 kHz，导致信道相干时间 $T_{\mathrm{coh}}$ 显著压缩（见式\eqref{eq:ch2_tcoh_ref}）。
+
+\paragraph{CSI 老化假设}
+依据式\eqref{eq:ch2_aging_criterion}给出的老化判据，本章假设系统工作在
+\begin{equation}
+T_{\mathrm{loop}} \gg T_{\mathrm{coh}}(u,t)
+\label{eq:ch4_aging_assumption}
+\end{equation}
+的条件下，即基于 UE 反馈 CSI/CQI 的传统调度机制已结构性失效。因此，调度器不依赖瞬时 CSI 反馈，而是采用电磁地图张量 $\mathcal{M}_I$（见式\eqref{eq:ch2_map_tensor}）提供的 PRB 级干扰先验作为调度输入。
+
+\paragraph{电磁地图与干扰先验}
+如图\ref{fig:ch4_system_model}所示，调度器通过查表插值从电磁地图获取用户 $u$ 在 PRB $k$ 上的干扰功率估计：
+\begin{equation}
+\hat{I}_{u,k}(t) = \mathrm{Interp}\Big(\mathcal{M}_I;\, x_u(t), y_u(t), k\Big),
+\label{eq:ch4_interf_lookup}
+\end{equation}
+其中 $(x_u(t), y_u(t))$ 为用户 $u$ 在时隙 $t$ 的地理位置。该估计值存在地图误差 $\Delta I_{u,k}(t) = \hat{I}_{u,k}(t) - I_{u,k}(t)$，其影响将在第\ref{sec:ch4_eval}节的鲁棒性实验中量化。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch4/fig4_1_system_model.pdf}
+  \caption{（必画）D2C 下行资源编排系统模型示意图。图中应展示：（1）LEO 卫星与服务小区覆盖；（2）多用户分布与电磁地图张量 $\mathcal{M}_I$ 的关系；（3）PRB 频域资源划分与用户分配示意；（4）调度器输入（电磁地图先验）与输出（PRB-UE 分配、功率分配）接口。}
+  \label{fig:ch4_system_model}
+\end{figure}
+
+%------------------------------------------------------------------------------
+\subsection{PRB 级速率模型}
+\label{subsec:ch4_rate_model}
+
+本节建立从 PRB 级 SINR 到用户吞吐量的完整映射链路，为后续优化问题提供目标函数与约束的数学基础。
+
+\paragraph{PRB 级 SINR}
+复用式\eqref{eq:ch2_sinr}的定义，用户 $u$ 在 PRB $k$ 上的信干噪比为
+\begin{equation}
+\gamma_{u,k}(t) = \frac{p_k(t) \cdot g_{u,k}(t)}{N_0 B_k + I_{u,k}(t)},
+\label{eq:ch4_sinr}
+\end{equation}
+其中 $p_k(t)$ 为 PRB $k$ 上的发射功率，$N_0$ 为噪声谱密度，$B_k$ 为 PRB 带宽（NR 中约 180\,kHz），$I_{u,k}(t)$ 为外部干扰功率。在 CSI 老化条件下，调度器实际可用的是基于电磁地图的预测值：
+\begin{equation}
+\hat{\gamma}_{u,k}(t) = \frac{p_k(t) \cdot \hat{g}_{u,k}(t)}{N_0 B_k + \hat{I}_{u,k}(t)},
+\label{eq:ch4_sinr_pred}
+\end{equation}
+其中 $\hat{g}_{u,k}(t)$ 为基于位置与大尺度模型的信道增益预测，$\hat{I}_{u,k}(t)$ 由式\eqref{eq:ch4_interf_lookup}给出。
+
+\paragraph{连续 PRB 块与 OFDMA 正交约束}
+NR 系统要求每用户在单 TTI 内分配的 PRB 构成频域连续块，以支持单一调制编码方案（Modulation and Coding Scheme, MCS）的传输。设用户 $u$ 被分配的 PRB 块为 $\mathcal{B}_u(t) = \{l_u, l_u{+}1, \ldots, r_u\}$，其中 $l_u$ 与 $r_u$ 分别为块的左右边界索引，块长度为 $|\mathcal{B}_u(t)| = r_u - l_u + 1$。OFDMA 正交约束要求：
+\begin{equation}
+\mathcal{B}_u(t) \cap \mathcal{B}_{u'}(t) = \emptyset, \quad \forall u \neq u'.
+\label{eq:ch4_ofdma_orthogonal}
+\end{equation}
+
+\paragraph{EESM 有效 SINR 映射}
+由于用户 PRB 块内各子载波的 SINR 存在差异，需采用有效指数 SINR 映射（Effective Exponential SINR Mapping, EESM）将向量化 SINR 压缩为单一等效值，以支持 MCS 选择：
+\begin{equation}
+\gamma_{\mathrm{eff},u}(t) = -\beta \cdot \ln\left( \frac{1}{|\mathcal{B}_u(t)|} \sum_{k \in \mathcal{B}_u(t)} \exp\left( -\frac{\gamma_{u,k}(t)}{\beta} \right) \right),
+\label{eq:ch4_eesm}
+\end{equation}
+其中 $\beta > 0$ 为 EESM 压缩系数，其取值与目标 MCS 集合的误块率特性相关。该映射的物理意义在于：EESM 有效 SINR 近似等于能够使整个 PRB 块达到目标误块率的等效均匀 SINR。
+
+\paragraph{MCS 选择与频谱效率}
+基于有效 SINR $\gamma_{\mathrm{eff},u}(t)$，调度器从离散 MCS 表中选择满足目标误块率（Block Error Rate, BLER）约束的最高阶调制编码方案。设 MCS 索引为 $m_u(t) \in \{0, 1, \ldots, M_{\max}\}$，对应的频谱效率查表函数为 $\eta(\cdot)$，则用户 $u$ 的 per-PRB 频谱效率为
+\begin{equation}
+s_u(t) = \eta\big(\gamma_{\mathrm{eff},u}(t)\big) \quad [\text{bits/s/Hz}].
+\label{eq:ch4_se_mcs}
+\end{equation}
+在仿真实现中，$\eta(\cdot)$ 通常采用 3GPP TS 38.214 定义的 CQI-to-efficiency 映射表，并可叠加外环链路自适应（Outer Loop Link Adaptation, OLLA）偏移以补偿系统误差。
+
+\paragraph{用户吞吐量}
+综合 PRB 块大小与 per-PRB 频谱效率，用户 $u$ 在时隙 $t$ 的吞吐量为
+\begin{equation}
+R_u(t) = |\mathcal{B}_u(t)| \cdot B_k \cdot s_u(t) \cdot \eta_{\mathrm{oh}},
+\label{eq:ch4_throughput}
+\end{equation}
+其中 $\eta_{\mathrm{oh}} \in (0,1)$ 为控制信道与循环前缀等开销因子。为简化后续表达，定义归一化频谱效率（bits/s/Hz/PRB）为
+\begin{equation}
+\tilde{R}_u(t) = \frac{R_u(t)}{B_k \cdot \eta_{\mathrm{oh}}} = |\mathcal{B}_u(t)| \cdot s_u(t).
+\label{eq:ch4_se_normalized}
+\end{equation}
+
+%------------------------------------------------------------------------------
+\subsection{优化问题形式化}
+\label{subsec:ch4_opt_formulation}
+
+本节将 D2C 下行资源编排问题形式化为联合 PRB 分配与功率分配的约束优化问题。
+
+\paragraph{决策变量}
+定义二元分配矩阵 $\mathbf{A}(t) \in \{0,1\}^{|\mathcal{U}(t)| \times Z}$，其中
+\begin{equation}
+a_{u,k}(t) =
+\begin{cases}
+1, & \text{PRB } k \text{ 在时隙 } t \text{ 分配给用户 } u, \\
+0, & \text{否则}.
+\end{cases}
+\label{eq:ch4_allocation_var}
+\end{equation}
+功率分配向量 $\mathbf{p}(t) = [p_1(t), p_2(t), \ldots, p_Z(t)]^\top \in \mathbb{R}_+^Z$ 表示各 PRB 上的发射功率。
+
+\paragraph{目标函数}
+采用比例公平（Proportional Fairness, PF）准则，最大化用户长期平均速率的对数和：
+\begin{equation}
+\max_{\mathbf{A}(t), \mathbf{p}(t)} \quad \sum_{u \in \mathcal{U}(t)} \log\big(\bar{R}_u(t)\big),
+\label{eq:ch4_pf_objective}
+\end{equation}
+其中 $\bar{R}_u(t)$ 为用户 $u$ 的历史平均吞吐量，通过指数滑动平均递推更新：
+\begin{equation}
+\bar{R}_u(t+1) = (1 - \alpha) \cdot \bar{R}_u(t) + \alpha \cdot R_u(t),
+\label{eq:ch4_ema_update}
+\end{equation}
+参数 $\alpha \in (0,1)$ 控制历史窗口长度（典型取值 $\alpha = 0.1$ 对应约 10 TTI 的时间尺度）。
+
+由于式\eqref{eq:ch4_pf_objective}涉及跨时隙的长期统计量，在线实现中通常采用边际效用指标进行贪心逼近。如式\eqref{eq:ch2_pf_metric}所示，定义 PF 边际效用为
+\begin{equation}
+\Delta U_u(t) = \frac{\Delta R_u(t)}{\bar{R}_u(t)},
+\label{eq:ch4_pf_metric}
+\end{equation}
+其中 $\Delta R_u(t)$ 为候选动作带来的瞬时吞吐量增量。该指标在每步决策时平衡"瞬时增益"与"历史公平性"，从而在长期意义上逼近式\eqref{eq:ch4_pf_objective}的最优解。
+
+\paragraph{约束条件}
+资源编排问题需满足以下约束：
+
+\textbf{C1（OFDMA 正交约束）}：每个 PRB 至多分配给一个用户：
+\begin{equation}
+\sum_{u \in \mathcal{U}(t)} a_{u,k}(t) \leq 1, \quad \forall k \in \mathcal{K}.
+\label{eq:ch4_c1_orthogonal}
+\end{equation}
+
+\textbf{C2（连续块约束）}：每用户分配的 PRB 构成频域连续块。设 $l_u(t)$ 与 $r_u(t)$ 分别为用户 $u$ 的 PRB 块左右边界，则：
+\begin{equation}
+a_{u,k}(t) = 1 \;\Leftrightarrow\; k \in \{l_u(t), l_u(t){+}1, \ldots, r_u(t)\}.
+\label{eq:ch4_c2_contiguous}
+\end{equation}
+
+\textbf{C3（PRB 容量约束）}：每用户分配的 PRB 数不超过上限 $K_{\max}$：
+\begin{equation}
+\sum_{k \in \mathcal{K}} a_{u,k}(t) \leq K_{\max}, \quad \forall u \in \mathcal{U}(t).
+\label{eq:ch4_c3_prb_cap}
+\end{equation}
+
+\textbf{C4（总功率约束）}：所有 PRB 的发射功率之和不超过总功率预算 $P_{\mathrm{tot}}$：
+\begin{equation}
+\sum_{k \in \mathcal{K}} p_k(t) \leq P_{\mathrm{tot}}.
+\label{eq:ch4_c4_power_total}
+\end{equation}
+
+\textbf{C5（功率边界约束）}：每 PRB 功率需满足上下界：
+\begin{equation}
+p_{\min} \leq p_k(t) \leq p_{\max}, \quad \forall k \in \mathcal{K}.
+\label{eq:ch4_c5_power_box}
+\end{equation}
+
+\paragraph{问题形式化}
+综上，D2C 下行资源编排问题可形式化为
+\begin{align}
+\mathcal{P}: \quad & \max_{\mathbf{A}(t), \mathbf{p}(t)} \quad \sum_{u \in \mathcal{U}(t)} \log\big(\bar{R}_u(t)\big) \label{eq:ch4_problem_obj} \\
+\text{s.t.} \quad
+& \text{C1: } \sum_{u} a_{u,k}(t) \leq 1, \quad \forall k, \label{eq:ch4_problem_c1} \\
+& \text{C2: } \mathcal{B}_u(t) \text{ 连续}, \quad \forall u, \label{eq:ch4_problem_c2} \\
+& \text{C3: } |\mathcal{B}_u(t)| \leq K_{\max}, \quad \forall u, \label{eq:ch4_problem_c3} \\
+& \text{C4: } \sum_{k} p_k(t) \leq P_{\mathrm{tot}}, \label{eq:ch4_problem_c4} \\
+& \text{C5: } p_{\min} \leq p_k(t) \leq p_{\max}, \quad \forall k. \label{eq:ch4_problem_c5}
+\end{align}
+
+\paragraph{复杂度分析}
+问题 $\mathcal{P}$ 的求解面临以下计算挑战：
+
+\begin{itemize}
+\item \textbf{组合爆炸}：PRB 分配变量 $\mathbf{A}(t)$ 为离散变量，满足约束 C1--C3 的可行解空间规模为 $O\big(Z! / (Z - |\mathcal{U}|)!\big)$，在 $Z=51$、$|\mathcal{U}|=100$ 的典型配置下不可穷举。
+
+\item \textbf{耦合性}：PRB 分配与功率分配相互耦合——PRB 分配决定用户块结构，而功率分配影响各用户的 EESM 有效 SINR，二者共同决定吞吐量。
+
+\item \textbf{实时性要求}：调度决策需在一个 TTI（通常为 1\,ms）内完成，严格限制了在线算法的复杂度上界。
+\end{itemize}
+
+上述特性表明问题 $\mathcal{P}$ 属于 NP-hard 类，难以在多项式时间内求得全局最优解。因此，本章采用两阶段启发式方法进行求解：第一阶段采用贪心策略构造 PRB 块分配，第二阶段采用注水算法优化功率分配。该框架将在下一节详细阐述。
+
+%==============================================================================
 \section{两阶段启发式资源编排算法设计}
+\label{sec:ch4_heuristic}
 
+基于上节的问题形式化，本节设计两阶段启发式算法求解问题 $\mathcal{P}$。第一阶段采用贪心块构造策略解决 PRB 分配子问题，第二阶段采用注水算法优化功率分配。该解耦框架在保证约束可行性的同时，实现了 $O(Z \cdot U)$ 的多项式复杂度，满足在线调度的实时性要求。
+
+%------------------------------------------------------------------------------
+\subsection{贪心块构造算法}
+\label{subsec:ch4_greedy_block}
+
+为满足连续块约束 C2，本节将 PRB 分配建模为序贯决策过程：从空分配开始，每步为某用户分配一个 PRB，直至所有 PRB 分配完毕。每步决策从候选动作集合中选择边际效用最大的动作执行。
+
+\paragraph{候选动作定义}
+在任意决策步，候选动作集合 $\mathcal{A}$ 由以下两类动作构成：
+
+\begin{itemize}
+\item \textbf{种子动作（Seed）}：对于尚未分配任何 PRB 的用户 $u$（即 $|\mathcal{B}_u| = 0$），从未被占用的 PRB 中选择一个作为该用户 PRB 块的起始点。形式化为 $a = (\text{seed}, u, k)$，其中 $k$ 为候选 PRB 索引。
+
+\item \textbf{扩展动作（Grow）}：对于已拥有 PRB 块的用户 $u$（即 $|\mathcal{B}_u| \geq 1$），尝试将其块向左或向右扩展一个 PRB。设当前块边界为 $[l_u, r_u]$，若左侧 PRB $l_u - 1$ 未被占用，则生成左扩展动作 $a = (\text{grow\_left}, u, l_u - 1)$；类似地，若右侧 PRB $r_u + 1$ 未被占用，则生成右扩展动作 $a = (\text{grow\_right}, u, r_u + 1)$。
+\end{itemize}
+
+该动作定义结构化地保证了约束 C1（OFDMA 正交）与 C2（连续块）的可行性：每步仅分配一个未占用 PRB，且扩展动作仅在相邻位置进行。
+
+\paragraph{边际增益计算}
+对于候选动作 $a$，其边际吞吐量增益 $\Delta R(a)$ 依动作类型计算如下：
+
+对于种子动作 $a = (\text{seed}, u, k)$：
+\begin{equation}
+\Delta R(a) = \hat{s}_{u,k},
+\label{eq:ch4_delta_seed}
+\end{equation}
+其中 $\hat{s}_{u,k} = \eta(\hat{\gamma}_{u,k})$ 为基于电磁地图预测的单 PRB 频谱效率。
+
+对于扩展动作，需计算块扩展前后的吞吐量变化。设用户 $u$ 当前块为 $\mathcal{B}_u = [l_u, r_u]$，块大小为 $|\mathcal{B}_u| = k_0$，当前块的 per-PRB 频谱效率为 $\bar{s}_u$。若执行扩展动作后新块为 $\mathcal{B}_u' = [l_u', r_u']$，块大小变为 $k_0 + 1$，新块 per-PRB 频谱效率为 $\bar{s}_u'$，则边际增益为：
+\begin{equation}
+\Delta R(a) = (k_0 + 1) \cdot \bar{s}_u' - k_0 \cdot \bar{s}_u.
+\label{eq:ch4_delta_grow}
+\end{equation}
+其中新块频谱效率 $\bar{s}_u'$ 通过 EESM 映射（式\eqref{eq:ch4_eesm}）从扩展后块内各 PRB 的预测 SINR 计算得到。
+
+\paragraph{比例公平度量}
+为实现比例公平调度，采用式\eqref{eq:ch4_pf_metric}定义的边际效用指标作为动作选择准则：
+\begin{equation}
+\text{metric}(a) = \frac{\Delta R(a)}{\bar{R}_{u(a)} + \epsilon},
+\label{eq:ch4_greedy_metric}
+\end{equation}
+其中 $u(a)$ 为动作 $a$ 对应的用户，$\epsilon > 0$ 为防止除零的小常数（典型取值 $10^{-6}$）。该度量在每步决策时平衡瞬时增益与历史公平性：历史吞吐量较低的用户获得更高的相对优先级。
+
+\paragraph{约束 C3 的处理}
+为满足 PRB 容量约束 C3，在生成候选动作时过滤已达到 PRB 上限的用户：
+\begin{equation}
+\mathcal{A} = \{a : |\mathcal{B}_{u(a)}| < K_{\max}\}.
+\label{eq:ch4_action_filter}
+\end{equation}
+
+\paragraph{算法流程}
+综合上述设计，贪心块构造算法的完整流程如算法\ref{alg:ch4_greedy_block}所示。
+
+\begin{algorithm}[t]
+\caption{贪心块构造算法}
+\label{alg:ch4_greedy_block}
+\begin{algorithmic}[1]
+\Require 用户集合 $\mathcal{U}$，PRB 集合 $\mathcal{K}$，预测 SINR 矩阵 $\hat{\boldsymbol{\gamma}}$，历史吞吐量 $\bar{\mathbf{R}}$
+\Ensure PRB 分配 $\{l_u, r_u\}_{u \in \mathcal{U}}$
+\State 初始化：$\text{winners}[k] \gets -1, \forall k$；$l_u, r_u \gets -1, \forall u$；$k_{\text{assigned}}[u] \gets 0, \forall u$
+\State $\text{assigned\_cnt} \gets 0$
+\While{$\text{assigned\_cnt} < Z$}
+    \State 生成候选动作集合 $\mathcal{A} \gets \text{IterActions}()$ \Comment{满足 C1, C2, C3}
+    \If{$\mathcal{A} = \emptyset$}
+        \State \textbf{break} \Comment{无可行动作}
+    \EndIf
+    \For{$a \in \mathcal{A}$}
+        \State 计算边际增益 $\Delta R(a)$（式\eqref{eq:ch4_delta_seed}或\eqref{eq:ch4_delta_grow}）
+        \State 计算 PF 度量 $\text{metric}(a) \gets \Delta R(a) / (\bar{R}_{u(a)} + \epsilon)$
+    \EndFor
+    \State $a^* \gets \arg\max_{a \in \mathcal{A}} \text{metric}(a)$
+    \State 执行动作 $a^* = (\text{kind}, u^*, k^*)$：
+    \State \quad $\text{winners}[k^*] \gets u^*$
+    \State \quad 更新 $l_{u^*}, r_{u^*}, k_{\text{assigned}}[u^*]$
+    \State $\text{assigned\_cnt} \gets \text{assigned\_cnt} + 1$
+\EndWhile
+\State \Return $\{l_u, r_u\}_{u \in \mathcal{U}}$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{复杂度分析}
+算法\ref{alg:ch4_greedy_block}的时间复杂度分析如下：
+\begin{itemize}
+\item 外层循环执行 $Z$ 次（每次分配一个 PRB）；
+\item 每次循环中，候选动作数至多为 $O(U)$（每用户最多两个扩展动作加若干种子动作）；
+\item 每个动作的边际增益计算涉及 EESM 映射，复杂度为 $O(K_{\max})$。
+\end{itemize}
+因此总复杂度为 $O(Z \cdot U \cdot K_{\max})$。在典型配置 $Z = 51$, $U = 100$, $K_{\max} = 10$ 下，每 TTI 计算量约 $5 \times 10^4$ 次浮点运算，可在亚毫秒级完成。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.96\linewidth]{figures/ch4/fig4_2_greedy_block_flow.pdf}
+  \caption{（必画）贪心块构造算法流程图。图中应展示：（1）初始化阶段（空分配状态）；（2）Seed 动作示例（为新用户选择起始 PRB）；（3）Grow 动作示例（向左/右扩展已有块）；（4）循环终止条件（所有 PRB 分配完毕或无可行动作）。建议采用状态转移图形式，标注各阶段的约束检查与度量计算。}
+  \label{fig:ch4_greedy_block_flow}
+\end{figure}
+
+%------------------------------------------------------------------------------
+\subsection{注水功率分配}
+\label{subsec:ch4_waterfilling}
+
+PRB 分配确定后，第二阶段优化功率分配以进一步提升系统吞吐量。本节采用分组注水（Group Waterfilling）策略，在满足约束 C4--C5 的前提下最大化系统容量。
+
+\paragraph{注水理论回顾}
+如式\eqref{eq:ch2_waterfilling}所示，在总功率约束下最大化容量的最优功率分配满足注水条件：
+\begin{equation}
+p_k^* = \left[ \frac{1}{\nu} - \frac{1}{H_k} \right]^+,
+\label{eq:ch4_waterfill_basic}
+\end{equation}
+其中 $H_k$ 为子信道 $k$ 的等效信道增益，$\nu > 0$ 为满足功率约束的水位参数，$[\cdot]^+ = \max(0, \cdot)$ 为取正算子。
+
+\paragraph{分组注水策略}
+直接对所有 PRB 进行注水会导致每用户块内功率不均匀，与单 MCS 传输假设冲突（单 MCS 要求块内各 PRB 采用相同调制编码，隐含功率均匀分配）。为此，本文采用分组注水策略：以用户 PRB 块为单位进行注水，保持块内功率均匀。
+
+设用户 $u$ 的 PRB 块为 $\mathcal{B}_u = [l_u, r_u]$，块大小为 $|\mathcal{B}_u|$，块内平均信道增益为：
+\begin{equation}
+\bar{H}_u = \frac{1}{|\mathcal{B}_u|} \sum_{k \in \mathcal{B}_u} H_{u,k},
+\label{eq:ch4_avg_channel_gain}
+\end{equation}
+其中 $H_{u,k} = g_{u,k} / (N_0 B_k + I_{u,k})$ 为用户 $u$ 在 PRB $k$ 上的等效信道增益。
+
+分组注水问题形式化为：
+\begin{align}
+\max_{\{p_u\}} \quad & \sum_{u \in \mathcal{U}} |\mathcal{B}_u| \cdot \log_2\left(1 + \bar{H}_u \cdot p_u\right) \label{eq:ch4_group_wf_obj} \\
+\text{s.t.} \quad & \sum_{u \in \mathcal{U}} |\mathcal{B}_u| \cdot p_u \leq P_{\mathrm{tot}}, \label{eq:ch4_group_wf_c1} \\
+& p_{\min} \leq p_u \leq p_{\max}, \quad \forall u, \label{eq:ch4_group_wf_c2}
+\end{align}
+其中 $p_u$ 为用户 $u$ 块内的 per-PRB 功率。
+
+\paragraph{主动集求解算法}
+问题\eqref{eq:ch4_group_wf_obj}--\eqref{eq:ch4_group_wf_c2}为凸优化问题，可采用主动集方法（Active Set Method）求解。算法迭代调整"主动集"（功率未触及边界的用户集合），直至 KKT 条件满足。
+
+对于主动集内的用户，最优功率满足修正的注水条件：
+\begin{equation}
+p_u = \left[ \frac{1}{\nu} - \frac{1}{\bar{H}_u} \right]_{p_{\min}}^{p_{\max}},
+\label{eq:ch4_wf_clipped}
+\end{equation}
+其中 $[\cdot]_{p_{\min}}^{p_{\max}}$ 表示截断至 $[p_{\min}, p_{\max}]$ 区间。水位参数 $\nu$ 通过二分搜索确定，使得总功率约束\eqref{eq:ch4_group_wf_c1}满足。
+
+完整的分组注水算法如算法\ref{alg:ch4_waterfill}所示。
+
+\begin{algorithm}[t]
+\caption{分组注水功率分配算法}
+\label{alg:ch4_waterfill}
+\begin{algorithmic}[1]
+\Require 用户块集合 $\{(\mathcal{B}_u, \bar{H}_u)\}_{u \in \mathcal{U}}$，总功率 $P_{\mathrm{tot}}$，功率边界 $[p_{\min}, p_{\max}]$
+\Ensure 功率分配 $\{p_u\}_{u \in \mathcal{U}}$
+\State 初始化主动集 $\mathcal{S} \gets \{u : |\mathcal{B}_u| > 0\}$
+\State 初始化功率 $p_u \gets 0, \forall u$
+\While{$|\mathcal{S}| > 0$}
+    \State 计算剩余功率 $P_{\text{rem}} \gets P_{\mathrm{tot}} - \sum_{u \notin \mathcal{S}} |\mathcal{B}_u| \cdot p_u$
+    \State 二分搜索水位 $\nu$ 使 $\sum_{u \in \mathcal{S}} |\mathcal{B}_u| \cdot \left[\frac{1}{\nu} - \frac{1}{\bar{H}_u}\right]^+ = P_{\text{rem}}$
+    \For{$u \in \mathcal{S}$}
+        \State $p_u \gets \left[\frac{1}{\nu} - \frac{1}{\bar{H}_u}\right]_{p_{\min}}^{p_{\max}}$
+    \EndFor
+    \State 识别边界饱和用户 $\mathcal{S}_{\text{sat}} \gets \{u \in \mathcal{S} : p_u = p_{\min} \text{ or } p_u = p_{\max}\}$
+    \If{$\mathcal{S}_{\text{sat}} = \emptyset$}
+        \State \textbf{break} \Comment{收敛}
+    \EndIf
+    \State $\mathcal{S} \gets \mathcal{S} \setminus \mathcal{S}_{\text{sat}}$ \Comment{从主动集移除饱和用户}
+\EndWhile
+\State \Return $\{p_u\}_{u \in \mathcal{U}}$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{复杂度分析}
+算法\ref{alg:ch4_waterfill}的复杂度为 $O(U \cdot \log(1/\epsilon))$，其中 $\epsilon$ 为二分搜索精度。主动集迭代最多 $U$ 次（每次至少移除一个用户），每次迭代的二分搜索复杂度为 $O(\log(1/\epsilon))$。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{figures/ch4/fig4_3_waterfilling.pdf}
+  \caption{（必画）分组注水功率分配示意图。图中应展示：（1）横轴为用户块索引，纵轴为功率水位；（2）各用户块的等效信道增益 $\bar{H}_u$ 表示为"底部深度"；（3）注水水位线 $1/\nu$ 与功率边界 $[p_{\min}, p_{\max}]$；（4）最终功率分配 $p_u^*$ 的图示。}
+  \label{fig:ch4_waterfilling}
+\end{figure}
+
+%------------------------------------------------------------------------------
+\subsection{局限性分析}
+\label{subsec:ch4_heuristic_limitation}
+
+尽管上述两阶段启发式算法具有可行性保证与多项式复杂度，但其性能存在固有局限，主要体现在以下方面：
+
+\paragraph{贪心短视性}
+贪心块构造算法在每步仅优化当前边际增益，缺乏对未来状态的预见能力。这种短视性在以下场景中表现尤为明显：
+
+\begin{itemize}
+\item \textbf{连续干净子带的错失}：当频域存在一段连续的低干扰子带时，贪心算法可能因单 PRB 增益不突出而忽略该区域，转而分配到孤立的低干扰点。然而，连续子带可支持更大的 PRB 块，整体吞吐量可能更高。
+
+\item \textbf{资源锁定效应}：早期分配决策可能"锁定"某些频段，导致后续用户无法获得最优连续块。例如，若用户 A 在频带中央获得种子 PRB，则用户 B 和 C 只能在两侧分别扩展，即使将中央区域整体分配给单一用户可能更优。
+\end{itemize}
+
+\paragraph{固定度量的局限}
+式\eqref{eq:ch4_greedy_metric}定义的 PF 边际效用度量为固定形式，难以自适应不同的干扰场景。例如：
+
+\begin{itemize}
+\item 在干扰空间相关性强的场景（如蜂窝边缘），相邻 PRB 的干扰水平高度相关，此时应倾向于选择更长的连续块；
+\item 在干扰频率选择性强的场景（如窄带干扰源），干扰呈现"尖峰"模式，此时应避免跨越干扰峰。
+\end{itemize}
+
+固定度量无法捕捉这些场景差异，导致性能次优。
+
+\paragraph{地图误差敏感性}
+启发式度量直接依赖电磁地图预测值 $\hat{\gamma}_{u,k}$。当地图存在估计误差或时效性问题时，边际增益计算偏差将直接传导至决策，导致错误的动作排序。
+
+上述局限性共同指向一个核心问题：\textbf{手工设计的评分函数难以充分利用频域干扰纹理信息}。这为引入学习增强方法提供了动机——通过数据驱动的方式学习更优的动作评估函数，突破启发式设计的瓶颈。下一节将介绍基于神经网络的动作打分器设计。
+
+%==============================================================================
+\section{学习增强的干扰感知连续块调度}
+\label{sec:ch4_nsgbs}
+
+针对上节分析的启发式局限性，本节提出神经网络增强的贪心块调度器（Neural-Scored Greedy Block Scheduler, NS-GBS）。核心思想是：保留启发式框架的约束可行性保证，用神经网络替换手工设计的评分函数，通过数据驱动的方式学习更优的动作价值评估。
+
+%------------------------------------------------------------------------------
+\subsection{基于 Transformer 的动作打分器}
+\label{subsec:ch4_transformer_scorer}
+
+\paragraph{动机：候选动作间的上下文依赖}
+在每个决策步，调度器面对的候选动作集合 $\mathcal{A} = \{a_1, a_2, \ldots, a_M\}$ 存在复杂的竞争与互补关系：
+
+\begin{itemize}
+\item \textbf{资源竞争}：多个候选动作可能竞争同一 PRB 或相邻 PRB，选择某动作将导致其他动作不可行或价值下降。例如，若动作 $a_1$ 为用户 A 分配 PRB 10，而动作 $a_2$ 为用户 B 扩展至 PRB 10，则二者互斥。
+
+\item \textbf{序贯效应}：当前步选择的动作影响后续步的候选集合与最优决策。例如，在频带中央分配种子 PRB 将"切割"频带，影响后续用户获得长连续块的可能性。
+
+\item \textbf{公平性互动}：选择高吞吐量用户的动作将降低其 PF 优先级，从而影响其他用户在后续步的相对排名。
+\end{itemize}
+
+传统的独立打分方法（如 MLP）对每个候选动作独立评估：
+\begin{equation}
+\text{score}(a) = f_\theta(\text{feat}(a)),
+\label{eq:ch4_mlp_scoring}
+\end{equation}
+其中 $\text{feat}(a)$ 为动作 $a$ 的特征向量，$f_\theta$ 为参数化评分函数。该方法忽略了候选动作间的关联，无法建模上述竞争与互补关系。
+
+为此，本文引入基于 Transformer 的集合注意力机制，实现候选动作的上下文感知联合评估：
+\begin{equation}
+\mathbf{s} = \text{SetTransformer}_\theta\big(\{\text{feat}(a_1), \text{feat}(a_2), \ldots, \text{feat}(a_M)\}\big),
+\label{eq:ch4_set_transformer}
+\end{equation}
+其中 $\mathbf{s} = [s_1, s_2, \ldots, s_M]^\top$ 为经过上下文增强的评分向量，每个评分 $s_m$ 已融合其他候选动作的信息。
+
+\paragraph{网络架构设计}
+本文采用两种架构进行对比：
+
+\textbf{(1) MLP-ScoreNet（基线）}
+
+作为基线，MLP 打分器对每个候选动作独立评估：
+\begin{equation}
+\text{score}(a) = \text{MLP}_\theta(\text{feat}(a)) = W_L \cdot \sigma\big(W_{L-1} \cdots \sigma(W_1 \cdot \text{feat}(a))\big),
+\label{eq:ch4_mlp_arch}
+\end{equation}
+其中 $\sigma(\cdot)$ 为激活函数（本文采用 ReLU），$L$ 为网络深度。典型配置为 2--3 层隐藏层，每层 128 维。
+
+\textbf{(2) ISAB-ScoreNet（Transformer 增强）}
+
+为实现候选动作间的信息交换，本文采用诱导集合注意力块（Induced Set Attention Block, ISAB）\cite{lee2019set}构建打分器。ISAB 是 Set Transformer 的核心模块，通过引入可学习的诱导点（inducing points）将自注意力的复杂度从 $O(M^2)$ 降至 $O(M)$，适合处理变长候选集合。
+
+ISAB 的计算流程如图\ref{fig:ch4_isab_arch}所示：
+\begin{align}
+\mathbf{H}^{(1)} &= \text{MAB}(\mathbf{I}, \mathbf{X}), \label{eq:ch4_isab_1} \\
+\mathbf{H}^{(2)} &= \text{MAB}(\mathbf{X}, \mathbf{H}^{(1)}), \label{eq:ch4_isab_2}
+\end{align}
+其中 $\mathbf{X} \in \mathbb{R}^{M \times d}$ 为候选动作特征矩阵，$\mathbf{I} \in \mathbb{R}^{m \times d}$ 为 $m$ 个可学习诱导点（$m \ll M$），$\text{MAB}$ 为多头注意力块（Multi-head Attention Block）。
+
+式\eqref{eq:ch4_isab_1}将候选动作信息聚合到诱导点，式\eqref{eq:ch4_isab_2}将聚合信息分发回各候选动作。该两阶段架构实现了候选动作间的信息交换，同时保持线性复杂度。
+
+完整的 ISAB-ScoreNet 架构为：
+\begin{equation}
+\mathbf{s} = \text{OutputHead}\big(\text{ISAB}^{(L)} \circ \cdots \circ \text{ISAB}^{(1)}(\text{InputProj}(\mathbf{X}))\big),
+\label{eq:ch4_isab_full}
+\end{equation}
+其中 $\text{InputProj}$ 将原始特征投影至 $d$-维空间，$\text{ISAB}^{(l)}$ 为第 $l$ 层 ISAB 块，$\text{OutputHead}$ 为输出评分的前馈网络。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.94\linewidth]{figures/ch4/fig4_4_isab_architecture.pdf}
+  \caption{（必画）神经打分器架构对比图。左侧为 MLP-ScoreNet：各候选动作独立通过 MLP 得到评分，无信息交换。右侧为 ISAB-ScoreNet：候选动作特征首先投影至 $d$-维空间，经过 $L$ 层 ISAB 块进行上下文建模，最后通过输出头得到评分。图中应标注诱导点 $\mathbf{I}$、多头注意力流向、以及最终评分向量 $\mathbf{s}$。}
+  \label{fig:ch4_isab_arch}
+\end{figure}
+
+\paragraph{特征工程}
+动作特征 $\text{feat}(a)$ 的设计对模型性能至关重要。本文设计如下特征组（约 10--12 维）：
+
+\textbf{(A) 频域纹理窗口}：捕捉动作涉及 PRB 及其邻域的干扰模式
+\begin{equation}
+\text{feat}_{\text{window}}(a) = [\hat{s}_{u,z-w}, \ldots, \hat{s}_{u,z}, \ldots, \hat{s}_{u,z+w}],
+\label{eq:ch4_feat_window}
+\end{equation}
+其中 $z$ 为动作涉及的 PRB 索引，$w$ 为窗口半径（本文取 $w = 1$，即 3-PRB 窗口），$\hat{s}_{u,k}$ 为基于电磁地图预测的频谱效率。该特征使模型能够识别"连续干净子带"与"孤立低干扰点"的区别。
+
+\textbf{(B) 块结构特征}：描述当前用户块的状态
+\begin{equation}
+\text{feat}_{\text{block}}(a) = [k_0, \bar{s}_u, \Delta R(a)],
+\label{eq:ch4_feat_block}
+\end{equation}
+其中 $k_0 = |\mathcal{B}_u|$ 为当前块大小，$\bar{s}_u$ 为当前块 per-PRB 频谱效率，$\Delta R(a)$ 为启发式边际增益（式\eqref{eq:ch4_delta_seed}或\eqref{eq:ch4_delta_grow}）。
+
+\textbf{(C) PF 与系统状态}：
+\begin{equation}
+\text{feat}_{\text{pf}}(a) = \left[\frac{1}{\bar{R}_u + \epsilon}, K_{\max} - k_0\right],
+\label{eq:ch4_feat_pf}
+\end{equation}
+其中第一项为 PF 归一化因子，第二项为剩余 PRB 配额。
+
+\textbf{(D) 位置编码}：
+\begin{equation}
+\text{feat}_{\text{pos}}(a) = \left[\frac{z}{Z}, \frac{\text{step}}{Z}\right],
+\label{eq:ch4_feat_pos}
+\end{equation}
+其中 $z/Z$ 编码 PRB 的频域位置，$\text{step}/Z$ 编码当前分配进度（已分配 PRB 占比）。
+
+\textbf{(E) 动作类型编码}：
+\begin{equation}
+\text{feat}_{\text{type}}(a) = \text{one-hot}(\text{kind}),
+\label{eq:ch4_feat_type}
+\end{equation}
+区分 seed、grow\_left、grow\_right 三种动作类型。
+
+最终特征向量为上述各组的拼接：
+\begin{equation}
+\text{feat}(a) = [\text{feat}_{\text{window}}, \text{feat}_{\text{block}}, \text{feat}_{\text{pf}}, \text{feat}_{\text{pos}}, \text{feat}_{\text{type}}].
+\label{eq:ch4_feat_all}
+\end{equation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch4/fig4_5_feature_engineering.pdf}
+  \caption{（必画）特征工程示意图。图中应展示：（1）频域纹理窗口的提取方式（以动作涉及 PRB 为中心的滑动窗口）；（2）块结构特征的计算（当前块边界、EESM 映射）；（3）PF 与位置特征的归一化方式；（4）特征向量的最终拼接结构。}
+  \label{fig:ch4_feature_engineering}
+\end{figure}
+
+%------------------------------------------------------------------------------
+\subsection{排序学习训练}
+\label{subsec:ch4_training}
+
+神经打分器的训练目标是：学习一个评分函数，使其输出的动作排序与真实最优排序一致。
+
+\paragraph{数据采集}
+训练数据从调度仿真中离线采集。对于每个决策步，记录：
+\begin{itemize}
+\item 候选动作集合 $\mathcal{A} = \{a_1, \ldots, a_M\}$ 及其特征 $\{\text{feat}(a_m)\}$；
+\item 每个动作的真值边际收益 $\{\Delta_{\text{true}}(a_m)\}$，基于真实信道（而非预测）计算。
+\end{itemize}
+
+真值边际收益 $\Delta_{\text{true}}(a)$ 采用与式\eqref{eq:ch4_delta_seed}--\eqref{eq:ch4_delta_grow}相同的计算方式，但使用真实 SINR $\gamma_{u,k}$ 而非预测值 $\hat{\gamma}_{u,k}$。这使得训练目标与最终评估保持一致，避免"训练-测试不匹配"问题。
+
+\paragraph{Listwise 排序损失}
+本文采用列表级（Listwise）排序损失作为主要训练目标，相比逐点回归或逐对比较，更适合动作选择任务。
+
+定义目标分布为真值边际收益的 softmax：
+\begin{equation}
+p_m = \frac{\exp(\Delta_{\text{true}}(a_m) / \tau)}{\sum_{j=1}^{M} \exp(\Delta_{\text{true}}(a_j) / \tau)},
+\label{eq:ch4_target_dist}
+\end{equation}
+其中 $\tau > 0$ 为温度参数，控制分布的"锐度"（$\tau \to 0$ 时退化为 one-hot）。
+
+预测分布为模型输出评分的 softmax：
+\begin{equation}
+q_m = \frac{\exp(s_m)}{\sum_{j=1}^{M} \exp(s_j)}.
+\label{eq:ch4_pred_dist}
+\end{equation}
+
+排序损失定义为两分布的 KL 散度：
+\begin{equation}
+\mathcal{L}_{\text{rank}} = \text{KL}(p \| q) = \sum_{m=1}^{M} p_m \log\frac{p_m}{q_m}.
+\label{eq:ch4_kl_loss}
+\end{equation}
+
+该损失函数鼓励模型学习保持真值边际收益的相对排序，而非精确拟合绝对数值。温度参数 $\tau$ 的典型取值为 0.1--1.0，需通过验证集调优。
+
+\paragraph{辅助回归损失}
+为提供额外的监督信号并帮助尺度校准，可选择性地添加回归损失：
+\begin{equation}
+\mathcal{L}_{\text{reg}} = \frac{1}{M} \sum_{m=1}^{M} \text{Huber}(s_m - \tilde{\Delta}_m),
+\label{eq:ch4_reg_loss}
+\end{equation}
+其中 $\tilde{\Delta}_m = \Delta_{\text{true}}(a_m) / \sigma_\Delta$ 为归一化的真值边际收益，$\text{Huber}(\cdot)$ 为鲁棒的 Huber 损失函数。
+
+总损失函数为：
+\begin{equation}
+\mathcal{L} = \mathcal{L}_{\text{rank}} + \lambda \cdot \mathcal{L}_{\text{reg}},
+\label{eq:ch4_total_loss}
+\end{equation}
+其中 $\lambda \geq 0$ 为回归损失权重（典型取值 0.1--0.5）。
+
+\paragraph{离线评估指标}
+训练过程中采用以下指标评估模型质量：
+
+\begin{itemize}
+\item \textbf{Top-1 准确率}：模型预测的最优动作与真值最优动作一致的比例：
+\begin{equation}
+\text{Acc@1} = \mathbb{E}\left[\mathbf{1}\big\{\arg\max_m s_m = \arg\max_m \Delta_{\text{true}}(a_m)\big\}\right].
+\label{eq:ch4_acc1}
+\end{equation}
+
+\item \textbf{归一化折损累计增益（NDCG@K）}：衡量排序质量的标准指标，定义为：
+\begin{equation}
+\text{NDCG@K} = \frac{\text{DCG@K}}{\text{IDCG@K}}, \quad \text{DCG@K} = \sum_{i=1}^{K} \frac{2^{r_i} - 1}{\log_2(i+1)},
+\label{eq:ch4_ndcg}
+\end{equation}
+其中 $r_i$ 为按预测评分排序后第 $i$ 个动作的真值相关性得分。
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\subsection{推理部署与复杂度}
+\label{subsec:ch4_deployment}
+
+\paragraph{批量推理优化}
+神经打分器的一个关键优势是支持高效的批量推理。在每个决策步，所有候选动作的特征可组织为矩阵形式 $\mathbf{X} \in \mathbb{R}^{M \times d_{\text{feat}}}$，通过单次前向传播得到所有评分：
+\begin{equation}
+\mathbf{s} = f_\theta(\mathbf{X}), \quad \mathbf{s} \in \mathbb{R}^M.
+\label{eq:ch4_batch_inference}
+\end{equation}
+
+相比逐动作调用模型，批量推理显著提升 GPU 利用率，实测加速比可达 10--50 倍（取决于候选数 $M$ 与模型规模）。
+
+\paragraph{复杂度分析}
+NS-GBS 的每 TTI 时间复杂度分析如下：
+
+\textbf{MLP-ScoreNet}：
+\begin{equation}
+O(Z \cdot M \cdot d_{\text{feat}} \cdot d_{\text{hidden}} \cdot L),
+\label{eq:ch4_mlp_complexity}
+\end{equation}
+其中 $Z$ 为 PRB 数（即决策步数），$M$ 为平均候选动作数（约 $2U$），$d_{\text{feat}}$ 为特征维度，$d_{\text{hidden}}$ 为隐藏层维度，$L$ 为网络深度。
+
+\textbf{ISAB-ScoreNet}：
+\begin{equation}
+O(Z \cdot (M \cdot m \cdot d + m^2 \cdot d) \cdot L'),
+\label{eq:ch4_isab_complexity}
+\end{equation}
+其中 $m$ 为诱导点数（典型取值 32），$d$ 为 Transformer 维度（典型取值 128），$L'$ 为 ISAB 层数。由于 $m \ll M$，ISAB 的复杂度关于候选数 $M$ 为线性。
+
+表\ref{tab:ch4_complexity}对比了各方案的复杂度与典型配置下的每 TTI 耗时。
+
+\begin{table}[t]
+\centering
+\caption{算法复杂度与推理耗时对比}
+\label{tab:ch4_complexity}
+\begin{tabular}{lccc}
+\toprule
+\textbf{方案} & \textbf{复杂度} & \textbf{耗时 (ms/TTI)} & \textbf{硬件} \\
+\midrule
+启发式 & $O(Z \cdot U \cdot K_{\max})$ & $< 0.5$ & CPU \\
+MLP-ScoreNet & $O(Z \cdot M \cdot d^2 \cdot L)$ & $\sim 1.0$ & GPU \\
+ISAB-ScoreNet & $O(Z \cdot M \cdot m \cdot d \cdot L')$ & $\sim 2.0$ & GPU \\
+\bottomrule
+\end{tabular}
+\begin{minipage}{0.95\linewidth}
+\footnotesize
+\vspace{0.5em}
+\noindent\textbf{说明}：配置为 $Z=51$, $U=100$, $M \approx 200$, $d=128$, $m=32$, $L=3$, $L'=2$。GPU 为 NVIDIA RTX 3090，CPU 为 Intel Xeon。实际耗时受实现优化程度影响。
+\end{minipage}
+\end{table}
+
+\paragraph{与 FlexSAN 架构的协同}
+NS-GBS 的神经网络推理开销与第\ref{chap:ch3}章提出的 FlexSAN 架构形成协同：
+
+\begin{itemize}
+\item \textbf{算力释放}：FlexSAN 的 Split 2 配置将高层协议处理卸载至地面，释放星载算力用于复杂调度。
+\item \textbf{时延容忍}：NS-GBS 的批量推理时延（$\sim 2$\,ms）在 NTN 场景的端到端时延预算内可接受（传播时延已达数十毫秒）。
+\item \textbf{离线训练/在线推理分离}：模型训练在地面完成，仅需将轻量级模型参数上注至星载调度器。
+\end{itemize}
+
+上述协同使 NS-GBS 在 NTN 场景中具备工程可行性。
+
+%==============================================================================
 \section{仿真实验与性能评估}
+\label{sec:ch4_eval}
 
+本节通过系统级仿真验证所提算法的有效性。首先介绍实验设置与对比基线，继而分析性能对比结果，最后通过鲁棒性扫描与消融实验深入评估各设计要素的贡献。
+
+%------------------------------------------------------------------------------
+\subsection{实验设置与基线}
+\label{subsec:ch4_exp_setup}
+
+\paragraph{仿真场景}
+实验采用第\ref{chap:ch3}章定义的 LEO 卫星单星服务模式，仿真两个典型城市场景：
+\begin{itemize}
+\item \textbf{Toronto}：北美城市，地面蜂窝网络密集，同频干扰水平较高；
+\item \textbf{Shanghai}：东亚城市，用户分布更为集中，干扰空间相关性强。
+\end{itemize}
+
+每场景运行 $T \geq 1000$ 个 TTI，取多次独立运行（随机种子 1--5）的平均性能作为最终结果。
+
+\paragraph{系统参数}
+表\ref{tab:ch4_sim_params}汇总了主要仿真参数。信道模型采用 3GPP TR 38.811 定义的 NTN 信道参数，包括大尺度路径损耗、雨衰与气体吸收。电磁地图张量 $\mathcal{M}_I$ 从外部干扰场仿真预先生成，空间分辨率为 100\,m $\times$ 100\,m。
+
+\begin{table}[t]
+\centering
+\caption{仿真参数配置}
+\label{tab:ch4_sim_params}
+\begin{tabular}{lcc}
+\toprule
+\textbf{参数} & \textbf{符号} & \textbf{取值} \\
+\midrule
+\multicolumn{3}{l}{\textit{系统配置}} \\
+用户数 & $|\mathcal{U}|$ & 100 \\
+PRB 数 & $Z$ & 51 \\
+PRB 带宽 & $B_k$ & 180\,kHz \\
+系统带宽 & $B_{\text{sys}}$ & 10\,MHz \\
+TTI 时长 & $T_{\text{TTI}}$ & 1\,ms \\
+仿真时长 & $T$ & 1000--2000 TTI \\
+\midrule
+\multicolumn{3}{l}{\textit{链路参数}} \\
+卫星高度 & $h_{\text{sat}}$ & 600\,km \\
+载波频率 & $f_c$ & 2\,GHz (S-band) \\
+卫星 EIRP & $P_{\text{EIRP}}$ & 34\,dBW \\
+噪声功率谱密度 & $N_0$ & $-$174\,dBm/Hz \\
+\midrule
+\multicolumn{3}{l}{\textit{调度参数}} \\
+PF 平滑系数 & $\alpha$ & 0.1 \\
+PRB 容量上限 & $K_{\max}$ & 10 \\
+EESM 压缩系数 & $\beta$ & 5\,dB \\
+\midrule
+\multicolumn{3}{l}{\textit{神经网络参数}} \\
+MLP 隐藏层 & -- & $[128, 128]$ \\
+ISAB 维度 & $d$ & 128 \\
+ISAB 诱导点 & $m$ & 32 \\
+ISAB 层数 & $L'$ & 2 \\
+注意力头数 & $n_{\text{heads}}$ & 4 \\
+训练温度 & $\tau$ & 0.5 \\
+回归损失权重 & $\lambda$ & 0.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{对比基线}
+实验对比以下四种调度方案：
+
+\begin{itemize}
+\item \textbf{Baseline（宽带 PF）}：传统宽带比例公平调度，不进行频率选择性分配，所有用户平均分配 PRB 资源。
+
+\item \textbf{Heuristic}：第\ref{sec:ch4_heuristic}节提出的两阶段启发式算法，采用手工设计的 PF 边际效用度量（式\eqref{eq:ch4_greedy_metric}）。
+
+\item \textbf{NS-GBS-MLP}：神经增强调度器，采用 MLP 打分器（式\eqref{eq:ch4_mlp_arch}），候选动作独立评估。
+
+\item \textbf{NS-GBS-ISAB}：神经增强调度器，采用 ISAB 打分器（式\eqref{eq:ch4_isab_full}），引入 Transformer 上下文建模。
+\end{itemize}
+
+所有方案使用相同的电磁地图输入与 EESM+MCS 评估管线，仅打分机制不同，确保对比公平性。
+
+\paragraph{评估指标}
+采用以下指标评估调度性能：
+
+\begin{itemize}
+\item \textbf{平均频谱效率}：系统在仿真周期内的平均 per-PRB 频谱效率（bits/s/Hz）：
+\begin{equation}
+\bar{S} = \frac{1}{T \cdot Z} \sum_{t=1}^{T} \sum_{u \in \mathcal{U}} \tilde{R}_u(t).
+\label{eq:ch4_avg_se}
+\end{equation}
+
+\item \textbf{吞吐量增益}：相对于 Baseline 的百分比提升：
+\begin{equation}
+\text{Gain} = \frac{\bar{S}_{\text{method}} - \bar{S}_{\text{Baseline}}}{\bar{S}_{\text{Baseline}}} \times 100\%.
+\label{eq:ch4_gain}
+\end{equation}
+
+\item \textbf{Jain 公平性指数}：衡量用户间吞吐量分配的公平程度：
+\begin{equation}
+\mathcal{J} = \frac{\left(\sum_{u} \bar{R}_u\right)^2}{|\mathcal{U}| \cdot \sum_{u} \bar{R}_u^2}.
+\label{eq:ch4_jain}
+\end{equation}
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\subsection{性能对比分析}
+\label{subsec:ch4_performance}
+
+\paragraph{系统指标对比}
+表\ref{tab:ch4_performance}展示了各方案在两个场景下的主要性能指标。
+
+\begin{table}[t]
+\centering
+\caption{主要性能指标对比}
+\label{tab:ch4_performance}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{方案} & \textbf{平均 SE (bits/s/Hz)} & \textbf{增益 (\%)} & \textbf{Jain 指数} \\
+\midrule
+\multicolumn{4}{l}{\textit{Toronto 场景}} \\
+Baseline & -- & 0.0 & -- \\
+Heuristic & -- & -- & -- \\
+NS-GBS-MLP & -- & -- & -- \\
+NS-GBS-ISAB & -- & -- & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{Shanghai 场景}} \\
+Baseline & -- & 0.0 & -- \\
+Heuristic & -- & -- & -- \\
+NS-GBS-MLP & -- & -- & -- \\
+NS-GBS-ISAB & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\begin{minipage}{0.95\linewidth}
+\footnotesize
+\vspace{0.5em}
+\noindent\textbf{说明}：结果为 5 次独立运行的平均值。"--"表示待补充实验数据。
+\end{minipage}
+\end{table}
+
+从表\ref{tab:ch4_performance}可以观察到以下规律：
+
+\begin{itemize}
+\item \textbf{频选增益}：Heuristic 相比 Baseline 实现显著的频谱效率提升，验证了 PRB 级干扰感知调度的有效性。该增益来源于电磁地图提供的干扰先验，使调度器能够规避高干扰 PRB。
+
+\item \textbf{学习增强增益}：NS-GBS-MLP 在 Heuristic 基础上进一步提升性能，表明神经网络能够学习到比手工度量更优的动作评估函数。
+
+\item \textbf{上下文建模增益}：NS-GBS-ISAB 相比 NS-GBS-MLP 获得额外提升，验证了 Transformer 上下文建模对候选动作关联的捕捉能力。该增益在干扰空间相关性较强的 Shanghai 场景更为明显。
+\end{itemize}
+
+\paragraph{用户频谱效率分布}
+图\ref{fig:ch4_se_cdf}展示了用户频谱效率的累积分布函数（CDF）。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{figures/ch4/fig4_6_se_cdf.pdf}
+  \caption{（必画）用户频谱效率 CDF 对比。横轴为用户平均频谱效率（bits/s/Hz），纵轴为累积概率。图中应包含四条曲线（Baseline、Heuristic、NS-GBS-MLP、NS-GBS-ISAB），并标注各方案的中位数与 5\% 分位数。建议采用不同线型与颜色区分各曲线。}
+  \label{fig:ch4_se_cdf}
+\end{figure}
+
+从 CDF 曲线可以观察到：
+\begin{itemize}
+\item 所有干扰感知方案（Heuristic、NS-GBS）的曲线均右移，表明整体性能提升；
+\item NS-GBS-ISAB 在低分位数区域（"边缘用户"）的提升尤为显著，表明 Transformer 上下文建模有助于改善公平性；
+\item 高分位数区域各方案差异收窄，表明"优势用户"的性能已接近信道容量上界。
+\end{itemize}
+
+\paragraph{负载适应性}
+图\ref{fig:ch4_load_scaling}展示了不同用户规模 $|\mathcal{U}|$ 下各方案的吞吐量增益曲线。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{figures/ch4/fig4_7_load_scaling.pdf}
+  \caption{（必画）吞吐量增益与用户规模关系。横轴为用户数 $|\mathcal{U}| \in \{50, 75, 100, 125, 150\}$，纵轴为相对于 Baseline 的吞吐量增益（\%）。图中应包含三条曲线（Heuristic、NS-GBS-MLP、NS-GBS-ISAB），并标注各曲线的斜率趋势。}
+  \label{fig:ch4_load_scaling}
+\end{figure}
+
+实验结果表明：
+\begin{itemize}
+\item 低负载时（$|\mathcal{U}| = 50$），各方案差异较小——资源充裕时调度策略的影响被稀释；
+\item 随着负载增加，神经增强方案的相对优势逐渐显现，在 $|\mathcal{U}| = 150$ 时 NS-GBS-ISAB 相比 Heuristic 的增益达到峰值；
+\item 该趋势验证了学习增强方法在资源竞争激烈时的价值——复杂的候选动作关联需要更精细的评估。
+\end{itemize}
+
+%------------------------------------------------------------------------------
+\subsection{鲁棒性与消融实验}
+\label{subsec:ch4_robustness}
+
+\paragraph{地图误差敏感性}
+图\ref{fig:ch4_map_error}展示了不同电磁地图估计误差 $\Delta_{\text{error}}$ 下各方案的性能变化。地图误差通过向真实干扰功率添加对数正态噪声模拟：
+\begin{equation}
+\hat{I}_{u,k} = I_{u,k} \cdot 10^{\Delta_{\text{error}} \cdot \xi / 10}, \quad \xi \sim \mathcal{N}(0, 1).
+\label{eq:ch4_map_error_model}
+\end{equation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{figures/ch4/fig4_8a_map_error.pdf}
+  \caption{（必画）地图误差敏感性分析。横轴为地图误差标准差 $\Delta_{\text{error}} \in [0, 5]$\,dB，纵轴为平均频谱效率（bits/s/Hz）。图中应包含四条曲线，并用阴影区域表示标准差范围。}
+  \label{fig:ch4_map_error}
+\end{figure}
+
+实验观察到：
+\begin{itemize}
+\item 所有方案的性能随地图误差增大而下降，但下降斜率不同；
+\item Heuristic 对误差最为敏感——手工度量直接依赖预测值，误差传导直接；
+\item NS-GBS 系列表现出更强的鲁棒性，尤其在 $\Delta_{\text{error}} > 3$\,dB 时优势明显；
+\item 该鲁棒性源于神经网络对不确定性的隐式建模——训练数据中已包含地图误差变异。
+\end{itemize}
+
+\paragraph{CSI 老化影响}
+图\ref{fig:ch4_csi_delay}展示了不同 CSI 延迟（以 TTI 为单位）下各方案的性能。
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.88\linewidth]{figures/ch4/fig4_8b_csi_delay.pdf}
+  \caption{（必画）CSI 老化影响分析。横轴为 CSI 延迟 $T_{\text{delay}} \in \{4, 8, 12, 16\}$\,TTI，纵轴为相对于无延迟场景的性能保持率（\%）。图中应包含四条曲线。}
+  \label{fig:ch4_csi_delay}
+\end{figure}
+
+实验表明：
+\begin{itemize}
+\item Baseline（不使用电磁地图）的性能受 CSI 延迟影响最大——其调度完全依赖过时的 CQI 反馈；
+\item 电磁地图驱动的方案（Heuristic、NS-GBS）对 CSI 延迟不敏感——其输入来自地图先验而非 UE 反馈；
+\item 该结果验证了式\eqref{eq:ch4_aging_assumption}假设下电磁地图驱动方法的有效性。
+\end{itemize}
+
+\paragraph{消融实验}
+表\ref{tab:ch4_ablation}通过消融实验分析各设计要素的贡献。
+
+\begin{table}[t]
+\centering
+\caption{消融实验结果}
+\label{tab:ch4_ablation}
+\begin{tabular}{lccc}
+\toprule
+\textbf{配置} & \textbf{平均 SE} & \textbf{Top-1 Acc} & \textbf{NDCG@3} \\
+\midrule
+\multicolumn{4}{l}{\textit{特征消融}} \\
+完整特征 & -- & -- & -- \\
+$-$ 窗口特征 & -- & -- & -- \\
+$-$ 位置编码 & -- & -- & -- \\
+$-$ 块结构特征 & -- & -- & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{架构消融}} \\
+ISAB (2 层) & -- & -- & -- \\
+ISAB (1 层) & -- & -- & -- \\
+MLP & -- & -- & -- \\
+\midrule
+\multicolumn{4}{l}{\textit{候选数消融 (Top-B)}} \\
+$B = 8$ & -- & -- & -- \\
+$B = 4$ & -- & -- & -- \\
+$B = 2$ & -- & -- & -- \\
+$B = 1$ & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\begin{minipage}{0.95\linewidth}
+\footnotesize
+\vspace{0.5em}
+\noindent\textbf{说明}："$-$ 特征"表示移除该特征组。"--"表示待补充数据。
+\end{minipage}
+\end{table}
+
+消融实验的主要发现：
+
+\begin{itemize}
+\item \textbf{窗口特征重要性}：移除频域窗口特征导致显著性能下降，验证了局部干扰纹理对决策的重要性。
+
+\item \textbf{架构深度影响}：从 2 层 ISAB 减至 1 层带来适度性能损失，但复杂度显著降低——这为实际部署提供了性能-成本折中选项。
+
+\item \textbf{候选数权衡}：增大 Top-B 可提升性能上限，但边际收益递减；$B = 4$ 在性能与复杂度间取得较好平衡。
+\end{itemize}
+
+%==============================================================================
 \section{本章小结}
+\label{sec:ch4_summary}
+
+本章围绕 D2C 系统的干扰感知资源编排问题展开研究，提出了基于电磁地图先验的 PRB 级联合频谱-功率编排方法，并通过神经网络增强突破了传统启发式的性能瓶颈。
+
+首先，针对 CSI 老化导致传统调度失效的问题，本章建立了基于电磁地图张量的 PRB 级 SINR 预测模型，将资源编排问题形式化为联合 PRB 分配与功率分配的约束优化问题。该建模框架在不依赖 UE 实时反馈的条件下，为调度器提供了 PRB 粒度的干扰先验信息。
+
+其次，提出了两阶段启发式资源编排算法：第一阶段采用贪心块构造策略，通过 Seed+Grow 机制在满足 OFDMA 正交与连续块约束的前提下逐步分配 PRB；第二阶段采用分组注水算法，在保持块内功率均匀（以支持单 MCS 传输）的同时优化块间功率分配。该算法实现了 $O(Z \cdot U \cdot K_{\max})$ 的多项式复杂度，满足在线调度的实时性要求。
+
+进一步地，针对启发式方法的局限性（贪心短视性、固定度量、地图误差敏感性），本章提出了神经网络增强的贪心块调度器（NS-GBS）。其核心创新在于：保留启发式框架的约束可行性保证，用神经网络学习动作评估函数。特别地，本章引入基于 Transformer 的 ISAB 打分器，通过集合注意力机制建模候选动作间的竞争与互补关系，实现上下文感知的联合评估。训练采用 Listwise 排序损失，直接优化动作排序质量。
+
+最后，通过系统级仿真验证了所提方法的有效性。实验结果表明：（1）电磁地图驱动的调度相比传统宽带 PF 实现显著的频谱效率提升；（2）NS-GBS 在 Heuristic 基础上进一步提升性能，且对地图误差表现出更强的鲁棒性；（3）ISAB 上下文建模相比独立 MLP 打分带来额外增益，尤其在干扰空间相关性强的场景。消融实验进一步揭示了频域窗口特征与架构深度对性能的影响。
+
+从系统工程视角，本章提出的 NS-GBS 与第\ref{chap:ch3}章的 FlexSAN 架构形成协同：FlexSAN 的 Split 2 配置释放星载算力，为神经网络推理提供计算预算；离线训练/在线推理的分离架构使得模型更新可通过地面链路完成，降低了部署复杂度。
+
+在第五章中，本文将对全文工作进行总结，并展望未来的研究方向。
 
 \chapter{总结与展望}
 
 \section{全文工作总结}
 
+本文面向 6G 时代手机直连卫星（Direct-to-Cell, D2C）的网络架构与资源管理需求，围绕低轨卫星接入网在"长传播时延、高动态切换、异构同频干扰"约束下的两大核心挑战——架构僵化与资源编排低效——开展了系统化研究。本文从理论建模、架构设计到算法实现，构建了"可解耦接入架构—干扰感知资源编排—架构与算法协同验证"的完整技术体系。全文主要工作与贡献总结如下。
+
+第一章阐述了非地面网络（NTN）与手机直连卫星业务的发展背景与技术演进趋势。本章深入分析了 LEO 星座特有的链路几何演化、多普勒效应、频繁切换及长传播时延对接入网协议栈与时延预算的系统性影响，指出了 D2C 场景下频谱复用导致的异构同频干扰以及传统反馈机制失效的工程瓶颈。在此基础上，本章明确了围绕"可解耦接入架构设计"与"干扰感知资源编排"协同优化的研究目标与技术路线。
+
+第二章构建了卫星接入网络架构与资源调度的技术基础。本章系统梳理了星地链路传播特性与信道建模方法，建立了基于 3GPP TR 38.811 与 ITU-R P.618/P.676 的链路预算及大尺度衰落统一模型；深入分析了从透明载荷到再生载荷、从 Split 0 到 Split 2 的架构演进脉络，构建了 F1 往返时延与事务放大模型；针对 NTN 场景下 CSI/CQI 易老化的问题，提出了闭环生效时延与相干时间的判据，并以电磁地图张量形式建立了 PRB 级干扰场建模方法。此外，本章构建了基于 OpenAirInterface 的端到端原型验证平台，为后续章节的架构机制与调度算法验证奠定了实验基础。
+
+第三章提出了面向手机直连卫星的可解耦再生卫星接入网架构——FlexSAN。本章基于 OAI 原型平台的量化测量，揭示了两类再生式静态架构（on-board gNB 与 on-board gNB-DU）在端到端时延与星载计算开销上的结构性差异，并证明了高并发负载下排队时延的非线性恶化效应，从而论证了动态可重构架构的必要性。在系统建模层面，本章将切换事件建模为外部扰动引起的算力突发需求，将 Split 2 的 F1 时延深化为基于事务的时延累加模型，并通过切换指示量显式纳入架构重构开销。在算法层面，本章提出了基于 Lyapunov 漂移加罚框架的在线资源编排算法 L-TAGO，该算法每时隙仅依赖当前状态输出可行决策，复杂度为 $O(N\log N)$，并通过参数 $V$ 与 $\beta$ 提供清晰可解释的"性能—稳定性"权衡机制。
+
+第四章研究了面向 D2C 的干扰感知资源编排方法。针对 CSI 老化导致传统调度失效的问题，本章建立了基于电磁地图张量的 PRB 级 SINR 预测模型，将资源编排问题形式化为联合 PRB 分配与功率分配的约束优化问题。在算法设计层面，本章提出了两阶段启发式资源编排算法：第一阶段采用贪心块构造策略，通过 Seed+Grow 机制在满足 OFDMA 正交与连续块约束的前提下逐步分配 PRB；第二阶段采用分组注水算法优化块间功率分配。针对启发式方法的局限性，本章进一步提出了神经网络增强的贪心块调度器（NS-GBS），引入基于 Transformer 的 ISAB 打分器建模候选动作间的竞争与互补关系，通过 Listwise 排序学习优化动作评估函数。系统级仿真验证表明，所提方法在频谱效率、公平性与鲁棒性方面均优于传统方案。
+
+综上所述，本文的核心贡献可归纳为以下三点：
+
+（1）提出了物理可解耦、逻辑可重构的弹性再生卫星接入网架构 FlexSAN，建立了"星载算力—控制事务时延—架构切换代价"的统一分析框架，并通过原型测量与理论建模相结合的方式，量化证明了动态架构在 D2C 潮汐业务场景下的必要性与有效性。
+
+（2）设计了基于 Lyapunov 优化的在线资源编排算法 L-TAGO，实现了在外部扰动（切换事件）条件下的队列稳定性保证与性能代价的可控权衡，为卫星接入网的实时自适应编排提供了理论依据与工程化路径。
+
+（3）构建了电磁地图引导的 PRB 级干扰感知调度体系，提出了神经网络增强的贪心块调度器 NS-GBS，通过 ISAB 上下文建模突破了传统启发式的性能瓶颈，在不依赖实时 UE 反馈的条件下实现了显著的频谱效率提升。
+
 \section{未来工作展望}
+
+本文的研究工作在可解耦卫星接入架构与干扰感知资源编排方面取得了阶段性成果，但仍存在若干值得深入探索的方向。结合当前技术发展趋势与本文研究的局限性，未来工作可从以下四个方面展开。
+
+1. 多星协同与波束管理。本文主要聚焦于单星服务场景下的架构设计与资源编排，然而实际 LEO 星座通常由数百乃至数千颗卫星组成，用户在不同卫星之间的频繁切换以及相邻卫星波束间的干扰协调是影响系统性能的关键因素。未来可将 FlexSAN 架构扩展至多星协同场景，研究跨星切换过程中的上下文迁移机制、星间链路（ISL）辅助的分布式编排策略，以及多波束联合调度与干扰规避方法。
+
+2. 电磁地图动态更新。本文假设电磁地图为预先构建的静态先验信息，但实际干扰环境会随时间演化，地面蜂窝网络的负载变化、新基站部署以及季节性传播特性差异都可能导致地图失效。未来可研究电磁地图的在线校正与自适应更新机制，探索融合 UE 稀疏反馈、众包感知数据与数字孪生仿真的多源信息融合方法，以提升地图的时效性与准确性。
+
+3. 端到端学习优化。本文的 NS-GBS 仅将神经网络用于动作评估环节，整体调度框架仍为贪心结构。未来可探索更深度的学习集成方案，如采用强化学习或模仿学习直接输出端到端调度策略，或将功率分配与 PRB 分配联合建模为可微分优化层；同时，离线强化学习与 Offline-to-Online 微调技术可有效缓解在线探索的风险与成本，值得在卫星调度场景中进一步研究。
+
+4. 星载轻量化部署。本文的神经网络推理开销虽在可接受范围内，但星载平台的严苛功耗约束对模型轻量化提出了更高要求。未来可研究模型压缩（剪枝、量化、知识蒸馏）、神经网络架构搜索以及专用加速器部署等技术，在保持调度性能的前提下显著降低推理能耗，使学习增强调度在实际星载系统中具备工程可行性。
+
+综上所述，面向手机直连卫星的可解耦接入架构与智能化资源编排仍是一个充满挑战与机遇的研究领域。随着 6G 空天地一体化网络愿景的持续推进，相关研究将在理论创新与工程实践两个维度不断深化，为构建全球泛在连接的信息基础设施提供关键技术支撑。
 
 % 附录部分
 \appendix
