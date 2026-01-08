@@ -305,7 +305,9 @@ def main():
     parser.add_argument("--inducing", type=int, default=32)
     parser.add_argument("--ff-hidden", type=int, default=256)
     parser.add_argument("--dropout", type=float, default=0.0)
-    parser.add_argument("--tau", type=float, default=1.0)
+    parser.add_argument("--tau", type=float, default=0.2)
+    parser.add_argument("--tau-sweep", type=float, nargs="+", default=None,
+                        help="Run tau sweep experiment with multiple values (e.g., --tau-sweep 0.1 0.2 0.3)")
     parser.add_argument("--lambda-reg", type=float, default=0.1)
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=123)
@@ -316,8 +318,67 @@ def main():
     parser.add_argument("--no-add-step", action="store_true")
     parser.add_argument("--uncertainty", action="store_true")
     parser.add_argument("--use-nll", action="store_true")
+    parser.add_argument("--early-stop-patience", type=int, default=0,
+                        help="Early stopping patience (0 = disabled)")
+    parser.add_argument("--filter-gap-threshold", type=float, default=None,
+                        help="Filter samples with delta gap (Top1-Top2) below this threshold")
+    parser.add_argument("--save-best", action="store_true",
+                        help="Save best model based on validation loss (default: save last)")
     args = parser.parse_args()
 
+    # Handle tau sweep mode
+    if args.tau_sweep:
+        print(f"[Tau Sweep] Running experiments with tau = {args.tau_sweep}")
+        results = []
+        for tau in args.tau_sweep:
+            print(f"\n{'='*60}")
+            print(f"[Tau Sweep] tau = {tau}")
+            print(f"{'='*60}")
+            # Create a copy of args with the current tau
+            sweep_args = argparse.Namespace(**vars(args))
+            sweep_args.tau = tau
+            sweep_args.tau_sweep = None  # Prevent recursion
+            # Modify output path to include tau
+            base_out = Path(args.out)
+            sweep_args.out = str(base_out.parent / f"{base_out.stem}_tau{tau}{base_out.suffix}")
+            # Run training
+            best_val, best_acc, best_ndcg = train_model(sweep_args)
+            results.append({
+                "tau": tau,
+                "best_val_loss": best_val,
+                "best_val_acc": best_acc,
+                "best_val_ndcg": best_ndcg,
+                "model_path": sweep_args.out,
+            })
+
+        # Print summary
+        print(f"\n{'='*60}")
+        print("[Tau Sweep] Summary")
+        print(f"{'='*60}")
+        print(f"{'tau':>8} {'val_loss':>12} {'val_top1':>12} {'val_ndcg@5':>12}")
+        print("-" * 48)
+        best_result = None
+        for r in results:
+            print(f"{r['tau']:>8.3f} {r['best_val_loss']:>12.4f} {r['best_val_acc']:>12.3f} {r['best_val_ndcg']:>12.3f}")
+            if best_result is None or r['best_val_loss'] < best_result['best_val_loss']:
+                best_result = r
+        if best_result:
+            print(f"\nBest: tau={best_result['tau']:.3f} (val_loss={best_result['best_val_loss']:.4f})")
+            print(f"Model: {best_result['model_path']}")
+
+        # Save sweep results
+        sweep_results_path = Path(args.out).parent / "tau_sweep_results.json"
+        with open(sweep_results_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        print(f"\nSaved sweep results: {sweep_results_path}")
+        return
+
+    # Normal training mode
+    train_model(args)
+
+
+def train_model(args) -> tuple:
+    """Train model and return (best_val_loss, best_val_acc, best_val_ndcg)."""
     set_seed(args.seed)
 
     data = np.load(args.data, allow_pickle=True)
@@ -329,6 +390,27 @@ def main():
         raise SystemExit("Dataset missing required fields: actions/step.")
     if len(features) == 0:
         raise SystemExit("Empty dataset.")
+
+    # Filter low-discriminability samples if threshold is set
+    if args.filter_gap_threshold is not None and args.filter_gap_threshold > 0:
+        keep_mask = []
+        for d in deltas:
+            d_arr = np.asarray(d, dtype=float)
+            if d_arr.size < 2:
+                keep_mask.append(False)
+                continue
+            sorted_d = np.sort(d_arr)[::-1]
+            gap = sorted_d[0] - sorted_d[1]
+            keep_mask.append(gap >= args.filter_gap_threshold)
+        keep_mask = np.array(keep_mask)
+        n_before = len(features)
+        features = features[keep_mask]
+        deltas = deltas[keep_mask]
+        actions = actions[keep_mask]
+        steps = steps[keep_mask]
+        n_after = len(features)
+        print(f"[Filter] Removed {n_before - n_after} samples with gap < {args.filter_gap_threshold:.3f} "
+              f"({n_after}/{n_before} = {n_after/n_before*100:.1f}% remaining)")
 
     meta = load_meta(Path(args.data))
     prb_count = int(args.prb_count or meta.get("prb_count") or meta.get("config", {}).get("Z", 0) or 0)
@@ -395,6 +477,11 @@ def main():
     optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val = None
+    best_acc = 0.0
+    best_ndcg = 0.0
+    best_state = None
+    patience_counter = 0
+
     for epoch in range(1, args.epochs + 1):
         model.train()
         total_loss = 0.0
@@ -497,11 +584,30 @@ def main():
             )
             if best_val is None or val_loss < best_val:
                 best_val = val_loss
+                best_acc = val_acc
+                best_ndcg = val_ndcg
+                if args.save_best:
+                    best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    msg += " *"
+                patience_counter = 0
+            else:
+                patience_counter += 1
         print(msg)
+
+        # Early stopping check
+        if args.early_stop_patience > 0 and patience_counter >= args.early_stop_patience:
+            print(f"[Early Stop] No improvement for {patience_counter} epochs, stopping.")
+            break
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), out_path)
+
+    # Save best or last model
+    if args.save_best and best_state is not None:
+        torch.save(best_state, out_path)
+        print(f"[NS-GBS] Saved best model (val_loss={best_val:.4f})")
+    else:
+        torch.save(model.state_dict(), out_path)
 
     model_add_z = bool(meta_add_z or add_z)
     model_add_step = bool(meta_add_step or add_step)
@@ -531,6 +637,8 @@ def main():
         json.dump(meta_out, f, ensure_ascii=True, indent=2)
 
     print(f"[NS-GBS] saved model: {out_path}")
+
+    return best_val if best_val is not None else 0.0, best_acc, best_ndcg
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from tqdm import tqdm
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
@@ -95,66 +96,93 @@ def main():
     from main import run_once
 
     rows = []
-    for scenario in scenarios:
-        cfg_path = SCRIPT_DIR / SCENARIOS[scenario]
-        scenario_cfg = load_config_from_file(cfg_path)
-        for mode in modes:
-            for s in range(args.seed_start, args.seed_start + args.num_seeds):
-                cfg = base_cfg.copy()
-                cfg.update(scenario_cfg)
-                if args.T is not None:
-                    cfg["T"] = int(args.T)
-                if args.N_UE is not None:
-                    cfg["N_UE"] = int(args.N_UE)
-                cfg["seed"] = int(s)
-                cfg["show_progress"] = not args.no_progress
 
-                if mode == "heuristic":
-                    cfg["scheduler_kind"] = "heuristic"
-                    cfg["nsgbs_model_path"] = None
-                elif mode == "mlp":
-                    cfg["scheduler_kind"] = "nsgbs"
-                    cfg["nsgbs_model_path"] = str(model_mlp)
-                elif mode == "isab":
-                    cfg["scheduler_kind"] = "nsgbs"
-                    cfg["nsgbs_model_path"] = str(model_isab)
+    # Calculate total iterations for outer progress bar
+    total_runs = len(scenarios) * len(modes) * args.num_seeds
 
-                if args.collect_stats:
-                    cfg["nsgbs_collect_stats"] = True
-                    cfg["nsgbs_stats_out"] = {}
+    # Create outer progress bar (only if not disabled)
+    outer_pbar = tqdm(total=total_runs, desc="NS-GBS Benchmark", unit="run",
+                      disable=args.no_progress,
+                      bar_format='{l_bar}{bar:40}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
 
-                out = run_once(cfg)
-                stats = out.get("nsgbs_stats") if args.collect_stats else None
+    try:
+        for scenario in scenarios:
+            cfg_path = SCRIPT_DIR / SCENARIOS[scenario]
+            scenario_cfg = load_config_from_file(cfg_path)
+            for mode in modes:
+                for s in range(args.seed_start, args.seed_start + args.num_seeds):
+                    cfg = base_cfg.copy()
+                    cfg.update(scenario_cfg)
+                    if args.T is not None:
+                        cfg["T"] = int(args.T)
+                    if args.N_UE is not None:
+                        cfg["N_UE"] = int(args.N_UE)
+                    cfg["seed"] = int(s)
+                    cfg["show_progress"] = not args.no_progress
+                    cfg["progress_leave"] = False  # Don't persist inner progress bars
 
-                row = {
-                    "scenario": scenario,
-                    "mode": mode,
-                    "seed": int(s),
-                    "avg_se_radiomap": float(out.get("avg_se_radiomap", 0.0)),
-                    "avg_se_baseline_default": float(out.get("avg_se_baseline_default", 0.0)),
-                    "improvement_vs_default_pct": float(out.get("improvement_vs_default_pct", 0.0)),
-                }
-                if stats:
-                    steps = float(stats.get("steps", 0.0))
-                    actions_total = float(stats.get("actions_total", 0.0))
-                    score_calls = float(stats.get("score_calls", 0.0))
-                    score_time = float(stats.get("score_time_sec", 0.0))
-                    row.update({
-                        "steps": steps,
-                        "actions_total": actions_total,
-                        "avg_actions_per_step": (actions_total / steps) if steps > 0 else 0.0,
-                        "score_calls": score_calls,
-                        "score_time_sec": score_time,
-                        "avg_score_ms_per_call": (score_time * 1000.0 / score_calls) if score_calls > 0 else 0.0,
-                        "avg_score_ms_per_step": (score_time * 1000.0 / steps) if steps > 0 else 0.0,
-                    })
-                rows.append(row)
+                    if mode == "heuristic":
+                        cfg["scheduler_kind"] = "heuristic"
+                        cfg["nsgbs_model_path"] = None
+                    elif mode == "mlp":
+                        cfg["scheduler_kind"] = "nsgbs"
+                        cfg["nsgbs_model_path"] = str(model_mlp)
+                    elif mode == "isab":
+                        cfg["scheduler_kind"] = "nsgbs"
+                        cfg["nsgbs_model_path"] = str(model_isab)
 
-                print(
-                    f"{scenario} | {mode} | seed={s} "
-                    f"avg_se={row['avg_se_radiomap']:.4f} "
-                    f"gain={row['improvement_vs_default_pct']:+.2f}%"
-                )
+                    if args.collect_stats:
+                        cfg["nsgbs_collect_stats"] = True
+                        cfg["nsgbs_stats_out"] = {}
+
+                    # Update outer progress bar description
+                    outer_pbar.set_description(f"NS-GBS [{scenario}/{mode}/seed{s}]")
+
+                    # Print config diagnostics (once per scenario)
+                    if mode == modes[0] and s == args.seed_start:
+                        print(f"\n[Config] scenario={scenario}")
+                        print(f"[Config] T={cfg.get('T')}, N_UE={cfg.get('N_UE')}, seed_range=[{args.seed_start}, {args.seed_start + args.num_seeds - 1}]")
+                        print(f"[Config] enable_time_varying={cfg.get('enable_time_varying')}, enable_harq_full={cfg.get('enable_harq_full')}")
+
+                    out = run_once(cfg)
+                    stats = out.get("nsgbs_stats") if args.collect_stats else None
+
+                    row = {
+                        "scenario": scenario,
+                        "mode": mode,
+                        "seed": int(s),
+                        "avg_se_radiomap": float(out.get("avg_se_radiomap", 0.0)),
+                        "avg_se_baseline_default": float(out.get("avg_se_baseline_default", 0.0)),
+                        "improvement_vs_default_pct": float(out.get("improvement_vs_default_pct", 0.0)),
+                    }
+                    if stats:
+                        steps = float(stats.get("steps", 0.0))
+                        actions_total = float(stats.get("actions_total", 0.0))
+                        score_calls = float(stats.get("score_calls", 0.0))
+                        score_time = float(stats.get("score_time_sec", 0.0))
+                        row.update({
+                            "steps": steps,
+                            "actions_total": actions_total,
+                            "avg_actions_per_step": (actions_total / steps) if steps > 0 else 0.0,
+                            "score_calls": score_calls,
+                            "score_time_sec": score_time,
+                            "avg_score_ms_per_call": (score_time * 1000.0 / score_calls) if score_calls > 0 else 0.0,
+                            "avg_score_ms_per_step": (score_time * 1000.0 / steps) if steps > 0 else 0.0,
+                        })
+                    rows.append(row)
+
+                    # Update outer progress bar
+                    outer_pbar.update(1)
+                    outer_pbar.set_postfix(se=f"{row['avg_se_radiomap']:.4f}",
+                                           gain=f"{row['improvement_vs_default_pct']:+.2f}%")
+
+                    print(
+                        f"{scenario} | {mode} | seed={s} "
+                        f"avg_se={row['avg_se_radiomap']:.4f} "
+                        f"gain={row['improvement_vs_default_pct']:+.2f}%"
+                    )
+    finally:
+        outer_pbar.close()
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -609,7 +609,9 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     
     # Progress bar for TTI loop (only show if enabled in config)
     show_progress = bool(cfg.get("show_progress", True))
-    pbar_iter = tqdm(range(T), desc="Baseline", unit="TTI", disable=not show_progress, 
+    leave_bar = bool(cfg.get("progress_leave", True))
+    pbar_iter = tqdm(range(T), desc="Baseline", unit="TTI", disable=not show_progress,
+                     leave=leave_bar,
                      bar_format='{l_bar}{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
     for t_idx in pbar_iter:
         # Apply HARQ feedback and credit goodput if a full HARQ manager is used
@@ -840,7 +842,9 @@ def pf_schedule_radiomap_blocks(
 
     # Progress bar for TTI loop
     show_progress = bool(cfg.get("show_progress", True))
+    leave_bar = bool(cfg.get("progress_leave", True))
     pbar_iter = tqdm(range(T), desc="RadioMap", unit="TTI", disable=not show_progress,
+                     leave=leave_bar,
                      bar_format='{l_bar}{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
     for t_idx in pbar_iter:
         if harq_mgr is not None:
@@ -1074,15 +1078,15 @@ def pf_schedule_radiomap_blocks(
             win = window_vals(se_vec, int(z), dataset_window)
             k0 = int(k_assigned[ue])
             block_pred = float(block_se_pred[ue]) if k0 > 0 else 0.0
-            delta_pred = pred_delta_for_action(action)
-            pf_inv = 1.0 / float(Rbar[ue] + 1e-6)
+            # 移除 delta_pred（避免信息泄露），使用 log 压缩 pf 特征（解决尺度问题）
+            pf_log = -np.log(float(Rbar[ue]) + 1e-6)  # log 压缩，数值稳定
             retx_flag = 1.0 if (dataset_use_harq and retx_bonus_for_ue(ue) > 0.0) else 0.0
             if max_prbs_per_ue is None:
                 cap_rem = -1.0
             else:
                 cap_rem = float(int(max_prbs_per_ue) - k0)
             kind_id = float(kind_to_id.get(kind, 3))
-            tail = np.array([k0, block_pred, delta_pred, pf_inv, retx_flag, cap_rem, kind_id], dtype=float)
+            tail = np.array([k0, block_pred, pf_log, retx_flag, cap_rem, kind_id], dtype=float)
             extras = []
             if add_z_feat:
                 denom = float(Z - 1) if Z > 1 else 1.0
@@ -2262,7 +2266,9 @@ def run_constellation(config: Dict) -> Dict:
     # For optional per-UE throughput (debug): not recording HARQ here
     # Progress bar for constellation TTI loop
     show_progress = bool(config.get("show_progress", True))
+    leave_bar = bool(config.get("progress_leave", True))
     pbar_iter = tqdm(range(T), desc="Constellation", unit="TTI", disable=not show_progress,
+                     leave=leave_bar,
                      bar_format='{l_bar}{bar:30}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
     for t_idx in pbar_iter:
         if t_idx > 0 and enable_tv:
