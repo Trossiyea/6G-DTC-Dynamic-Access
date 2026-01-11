@@ -828,6 +828,7 @@ def pf_schedule_radiomap_blocks(
         stats_out = {}
         cfg["nsgbs_stats_out"] = stats_out
     stats = {"steps": 0, "actions_total": 0, "score_calls": 0, "score_time_sec": 0.0} if collect_stats else None
+    nsgbs_score_error_printed = False
 
     N_UE, Z = cap.shape
     rng = np.random.default_rng(0) if rng is None else rng
@@ -913,14 +914,18 @@ def pf_schedule_radiomap_blocks(
         ptr_per_ue = np.zeros(N_UE, dtype=int)
 
         def next_unassigned_best(ue: int) -> Optional[int]:
+            """
+            Return the best (highest predicted SE) PRB index for this UE that is still unassigned.
+            Important: do not advance past an unassigned PRB just by *enumerating* actions; only
+            skip PRBs that are already assigned (they will never become free again).
+            """
             ptr = int(ptr_per_ue[ue])
             ord_row = order_per_ue[ue]
-            while ptr < ord_row.size:
-                z = int(ord_row[ptr])
-                if winners[z] < 0:
-                    ptr_per_ue[ue] = ptr + 1
-                    return z
+            while ptr < ord_row.size and winners[int(ord_row[ptr])] >= 0:
                 ptr += 1
+            ptr_per_ue[ue] = ptr  # persistently skip only already-assigned PRBs
+            if ptr < ord_row.size:
+                return int(ord_row[ptr])
             return None
 
         def can_grow_left(ue: int) -> bool:
@@ -1078,15 +1083,18 @@ def pf_schedule_radiomap_blocks(
             win = window_vals(se_vec, int(z), dataset_window)
             k0 = int(k_assigned[ue])
             block_pred = float(block_se_pred[ue]) if k0 > 0 else 0.0
-            # 移除 delta_pred（避免信息泄露），使用 log 压缩 pf 特征（解决尺度问题）
-            pf_log = -np.log(float(Rbar[ue]) + 1e-6)  # log 压缩，数值稳定
+            expected_dim = int(cfg.get("nsgbs_feature_dim", 0) or 0)
+            # Backward compatible feature set selection:
+            # - legacy MLP models were trained with an explicit delta_pred and PF metric (delta/Rbar)
+            # - newer models (e.g., ISAB) use a log-compressed PF feature and omit delta_pred
+            delta_pred = float(pred_delta_for_action(action))
+            rbar = float(Rbar[ue])
             retx_flag = 1.0 if (dataset_use_harq and retx_bonus_for_ue(ue) > 0.0) else 0.0
             if max_prbs_per_ue is None:
                 cap_rem = -1.0
             else:
                 cap_rem = float(int(max_prbs_per_ue) - k0)
             kind_id = float(kind_to_id.get(kind, 3))
-            tail = np.array([k0, block_pred, pf_log, retx_flag, cap_rem, kind_id], dtype=float)
             extras = []
             if add_z_feat:
                 denom = float(Z - 1) if Z > 1 else 1.0
@@ -1094,9 +1102,22 @@ def pf_schedule_radiomap_blocks(
             if add_step_feat:
                 denom = float(Z) if Z > 0 else 1.0
                 extras.append(np.array([float(assigned_cnt) / denom], dtype=float))
+            extras_dim = len(extras)
+            legacy_dim = int(dataset_window) + 7 + extras_dim
+            use_legacy = (expected_dim == legacy_dim) if expected_dim else False
+            if use_legacy:
+                pf_metric = delta_pred / (rbar + 1e-6)
+                tail = np.array([k0, block_pred, delta_pred, pf_metric, retx_flag, cap_rem, kind_id], dtype=float)
+            else:
+                pf_log = -np.log(rbar + 1e-6)
+                tail = np.array([k0, block_pred, pf_log, retx_flag, cap_rem, kind_id], dtype=float)
             if extras:
-                return np.concatenate([win, tail] + extras)
-            return np.concatenate([win, tail])
+                feat = np.concatenate([win, tail] + extras)
+            else:
+                feat = np.concatenate([win, tail])
+            if expected_dim and feat.size != expected_dim:
+                raise ValueError(f"NS-GBS feature_dim mismatch: built {feat.size}, expected {expected_dim}")
+            return feat
 
         def delta_true_for_action(action, snr_true: np.ndarray) -> float:
             kind, ue, z = action
@@ -1242,7 +1263,15 @@ def pf_schedule_radiomap_blocks(
                         if scores.size == len(actions):
                             scores = np.where(np.isfinite(scores), scores, -1e9)
                             best_action = actions[int(np.argmax(scores))]
-                    except Exception:
+                    except Exception as exc:
+                        # If scoring fails (e.g., feature/model mismatch), fall back to pure heuristic
+                        # for the rest of the run to avoid mixing "topB seed" logic with heuristic scoring.
+                        if not nsgbs_score_error_printed:
+                            print(f"[NS-GBS] Scoring failed ({exc}); falling back to heuristic scoring.")
+                            nsgbs_score_error_printed = True
+                        use_nsgbs = False
+                        nsgbs_scorer = None
+                        actions = None
                         best_action = None
 
             if best_action is None:
@@ -1914,6 +1943,15 @@ def run_once(config: Dict) -> Dict:
         _rec_base_thr = bool(config.get("record_ue_thr", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("base", "both", "all"))
         assignments_base = [] if _rec_base else None
         ue_thr_base = [] if _rec_base_thr else None
+        # Fairness: keep the 3GPP-like baseline independent of NS-GBS/MLP/ISAB mode.
+        _cfg_base = dict(config)
+        _cfg_base["scheduler_kind"] = "heuristic"
+        _cfg_base["nsgbs_model_path"] = None
+        # Avoid polluting NS-GBS stats/datasets when computing the baseline.
+        _cfg_base["nsgbs_collect_stats"] = False
+        _cfg_base["nsgbs_stats_out"] = None
+        _cfg_base["nsgbs_collect_dataset"] = False
+        _cfg_base["nsgbs_dataset_out"] = None
         base_se_default = pf_schedule_radiomap_blocks(
                 cap, T, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -1939,7 +1977,7 @@ def run_once(config: Dict) -> Dict:
                 assignments_out=assignments_base,
                 record_ue_thr=_rec_base_thr,
                 ue_thr_out=ue_thr_base,
-                config=config,
+                config=_cfg_base,
             )
         
 
@@ -1993,6 +2031,14 @@ def run_once(config: Dict) -> Dict:
                 harq_stats_map = None
     else:
         # Baseline: contiguous-block PF using per-PRB metric
+        # Fairness: keep the 3GPP-like baseline independent of NS-GBS/MLP/ISAB mode.
+        _cfg_base = dict(config)
+        _cfg_base["scheduler_kind"] = "heuristic"
+        _cfg_base["nsgbs_model_path"] = None
+        _cfg_base["nsgbs_collect_stats"] = False
+        _cfg_base["nsgbs_stats_out"] = None
+        _cfg_base["nsgbs_collect_dataset"] = False
+        _cfg_base["nsgbs_dataset_out"] = None
         base_se_default = pf_schedule_radiomap_blocks(
             cap, T, beta=config["pf_beta"],
             snr_lin=snr_lin,
@@ -2012,7 +2058,7 @@ def run_once(config: Dict) -> Dict:
             P_ref_dbm=config.get("P_tx_dbm"),
             p_min_dbm=config.get("baseline_p_min_dbm", None),
             p_max_dbm=config.get("baseline_p_max_dbm", None),
-            config=config,
+            config=_cfg_base,
         )
         
         base_se_subband = None
@@ -2471,6 +2517,12 @@ def run_constellation(config: Dict) -> Dict:
 
             # Disable tail flush in streaming mode (we call per TTI)
             _cfg_base = dict(config); _cfg_base['harq_flush_tail'] = False
+            _cfg_base["scheduler_kind"] = "heuristic"
+            _cfg_base["nsgbs_model_path"] = None
+            _cfg_base["nsgbs_collect_stats"] = False
+            _cfg_base["nsgbs_stats_out"] = None
+            _cfg_base["nsgbs_collect_dataset"] = False
+            _cfg_base["nsgbs_dataset_out"] = None
             base = pf_schedule_radiomap_blocks(
                 cap, 1, beta=config["pf_beta"],
                 snr_lin=snr_lin,

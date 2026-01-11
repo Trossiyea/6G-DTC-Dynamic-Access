@@ -115,6 +115,17 @@ class HarqManagerFull:
         # Config for link adaptation
         self.cfg = dict(config)
         self.mode = "full"
+        # Deterministic RNG (avoid coupling across runs/modes via global np.random)
+        try:
+            seed = int(self.cfg.get("seed", 0) or 0)
+        except Exception:
+            seed = 0
+        # Optional offset so callers can decorrelate streams if desired
+        try:
+            seed += int(self.cfg.get("harq_rng_seed_offset", 0) or 0)
+        except Exception:
+            pass
+        self._rng = np.random.default_rng(seed)
         # Stats
         self._ack_count = 0
         self._nack_count = 0
@@ -328,7 +339,7 @@ class HarqManagerFull:
             # Force drop outcome with probability 1 (treat as NACK final -> drop)
             return False
         # Stochastic decision
-        return (np.random.random() > p)
+        return (float(self._rng.random()) > p)
 
     def get_retx_requirements(self) -> Dict[int, Tuple[int, int]]:
         """Return desired PRB block (li,ri) for UEs pending retransmission to keep resource consistency."""

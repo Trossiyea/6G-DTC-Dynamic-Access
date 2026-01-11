@@ -73,6 +73,22 @@ python run_resolution_comparison.py --all --save-report
 python code/main.py
 ```
 
+### 方式5: NS-GBS benchmark（heuristic/MLP/ISAB）
+用于论文对比：三种 RadioMap 调度策略（启发式、MLP、ISAB）**统一对比同一个 3GPP-like baseline（CQI/CSI+delay）**，并可输出推理开销统计。
+```bash
+python tools/run_nsgbs_bench.py \
+  --scenario toronto_single \
+  --N_UE 100 --T 2000 --num-seeds 3 \
+  --modes heuristic,mlp,isab \
+  --model-mlp output/models/nsgbs_scorer.pt \
+  --model-isab output/models/nsgbs_isab_tau0.1.pt \
+  --collect-stats --no-progress
+```
+说明：
+- `--model-mlp` 对应 `train_nsgbs.py` 输出（`output/models/nsgbs_scorer.pt` + 同名 `.json` meta）。
+- `--model-isab` 对应 `train_nsgbs_isab.py` 输出（`output/models/nsgbs_isab_*.pt` + 同名 `.json` meta）。
+- 若 CSV 中 `score_calls=0` 或终端提示 `[WARN] ... score_calls=0`，表示模型未参与打分（通常是 PyTorch/权重/meta 缺失或特征维度不匹配）。
+
 详细使用说明请参考 [QUICKSTART.md](QUICKSTART.md) 和 [TEST_SCENARIOS.md](TEST_SCENARIOS.md)。
 
 
@@ -174,6 +190,10 @@ Troubleshooting
 - **Matplotlib 缓存**：在受限环境下可 `export MPLCONFIGDIR=$(mktemp -d)`。
 - **TLE/轨道**：星座模式需要有效 TLE catalog；单星启用 `enable_orbit_dynamics` 时推荐提供 `tle_lines/tle_path`。
 - **Radio Map 格式**：支持传统 MAT 和 HDF5 (v7.3) 格式；Z 维度必须与配置的 PRB 数匹配。
+- **NS-GBS 模型未生效**：`tools/run_nsgbs_bench.py` 中若看到 `[WARN] ... score_calls=0`，请检查：
+  - 是否安装 PyTorch；
+  - 权重文件与 `.json` meta 是否存在（同名）；
+  - `--model-mlp/--model-isab` 路径是否正确。
 - **导入错误**：如遇 `ModuleNotFoundError`，请确保从项目根目录运行命令，详见 [VERIFICATION.md](VERIFICATION.md)。
 
 
@@ -185,7 +205,7 @@ Repository Layout
 - `radio_map/`: Radio Map 数据文件（Toronto 和 Shanghai，支持 MAT/HDF5 格式）。
 - `test/`: 测试场景配置文件（`config_toronto_single.py`, `config_shanghai_constellation.py` 等）。
 - `tles/`: TLE 轨道数据文件（Starlink 和 Satnet 星座）。
-- `tools/`: 辅助工具脚本（`find_best_satellite.py`, `diagnose_zero_se.py` 等）。
+- `tools/`: 辅助工具脚本（`run_nsgbs_bench.py`, `exp_runner.py`, `find_best_satellite.py`, `diagnose_zero_se.py` 等）。
 - `output/`: 生成的报告和图表（按需创建）。
 - `run_test.py`: 多场景测试运行脚本。
 - `run_resolution_comparison.py`: Radio Map 分辨率对比测试脚本。
@@ -194,6 +214,7 @@ Repository Layout
 - `QUICKSTART.md`: 快速开始指南。
 - `TEST_SCENARIOS.md`: 测试场景详细说明。
 - `VERIFICATION.md`: 验证和故障排查指南。
+- `exp.md`: 面向论文（如 IEEE TMC）实验设计大纲与 Figure 规划。
 
 
 Roadmap (indicative)

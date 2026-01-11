@@ -146,6 +146,13 @@ def main():
 
                     out = run_once(cfg)
                     stats = out.get("nsgbs_stats") if args.collect_stats else None
+                    if args.collect_stats and mode in ("mlp", "isab"):
+                        try:
+                            sc = float(stats.get("score_calls", 0.0)) if isinstance(stats, dict) else 0.0
+                            if sc <= 0.0:
+                                print(f"[WARN] {scenario} | {mode} | seed={s}: model scoring did not run (score_calls=0). Check model/meta/feature_dim.")
+                        except Exception:
+                            pass
 
                     row = {
                         "scenario": scenario,

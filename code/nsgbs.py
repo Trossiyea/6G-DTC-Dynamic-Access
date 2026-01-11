@@ -188,6 +188,11 @@ def load_nsgbs_scorer(cfg: dict) -> Optional[NSGBSScorer]:
         meta_path = next((p for p in meta_candidates if os.path.exists(p)), None)
         if meta_path is not None:
             meta = _load_meta(meta_path)
+            # Expose expected feature dimension to the scheduler (for backward compatible feature sets)
+            try:
+                cfg["nsgbs_feature_dim"] = int(meta.get("feature_dim")) if meta.get("feature_dim") is not None else None
+            except Exception:
+                pass
             if "add_z" in meta:
                 cfg["nsgbs_add_z"] = bool(meta.get("add_z"))
             if "add_step" in meta:
@@ -209,6 +214,8 @@ def load_nsgbs_scorer(cfg: dict) -> Optional[NSGBSScorer]:
         if "add_step" in meta:
             cfg["nsgbs_add_step"] = bool(meta.get("add_step"))
         feat_dim = int(meta["feature_dim"])
+        # Expose expected feature dimension to the scheduler (for backward compatible feature sets)
+        cfg["nsgbs_feature_dim"] = int(feat_dim)
         if model_kind == "isab":
             d_model = int(meta.get("d_model", 128))
             heads = int(meta.get("heads", 4))
