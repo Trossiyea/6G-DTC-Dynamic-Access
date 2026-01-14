@@ -69,7 +69,7 @@ def run_constellation_experiment(cfg, method, model_mlp, model_isab):
     Returns:
         Dict with experiment results including HO and outage metrics
     """
-    from main import run_once_constellation
+    from main import run_constellation
 
     if method == "B1_3GPP":
         cfg["scheduler_kind"] = "heuristic"
@@ -83,7 +83,7 @@ def run_constellation_experiment(cfg, method, model_mlp, model_isab):
     else:
         raise ValueError(f"Unknown method: {method}")
 
-    result = run_once_constellation(cfg)
+    result = run_constellation(cfg)
 
     # Extract HO and outage metrics
     ho_counts = result.get("handover_count_per_ue", [])

@@ -227,20 +227,34 @@ def se_metric_strategy(use_mcs: bool,
         return cap_shannon
     raise ValueError("se_metric_strategy requires snr_lin or (cap_shannon with use_mcs=False)")
 
-def select_radio_map(config: Dict) -> Tuple[np.ndarray, int, int, int]:
+def select_radio_map(config: Dict, use_cache: bool = True) -> Tuple[np.ndarray, int, int, int]:
     """
     Load Radio Map from a MATLAB .mat file. The map's Z dimension must match the PRB count.
     Returns (R_xyz_dbm, X, Y, Z).
+
+    Args:
+        config: Configuration dict with radio_map_mat_path, radio_map_mat_var, radio_map_units
+        use_cache: If True, use RadioMapCache to avoid repeated disk I/O (default: True)
     """
     expected_Z = int(config["Z"]) if ("Z" in config and config["Z"] is not None) else None
     path = config.get("radio_map_mat_path")
     if not path:
         raise ValueError("radio_map_mat_path must be provided (MAT file with 3D Radio Map)")
-    R_xyz_dbm = load_radio_map_from_mat(
-        path,
-        var_name=config.get("radio_map_mat_var", "X_true"),
-        units=config.get("radio_map_units", "mW")
-    )
+
+    var_name = config.get("radio_map_mat_var", "X_true")
+    units = config.get("radio_map_units", "mW")
+
+    if use_cache:
+        try:
+            from resource_cache import RadioMapCache
+            cache = RadioMapCache.get_instance()
+            R_xyz_dbm = cache.get_or_load(path, var_name, units, load_radio_map_from_mat)
+        except ImportError:
+            # Fallback if cache module not available
+            R_xyz_dbm = load_radio_map_from_mat(path, var_name=var_name, units=units)
+    else:
+        R_xyz_dbm = load_radio_map_from_mat(path, var_name=var_name, units=units)
+
     if R_xyz_dbm.ndim != 3:
         raise ValueError(f"Loaded Radio Map must be 3D, got shape {R_xyz_dbm.shape}")
     X, Y, Z = R_xyz_dbm.shape
@@ -577,7 +591,19 @@ def pf_schedule_baseline(cap_wb: np.ndarray,
     if use_nsgbs:
         try:
             from nsgbs import load_nsgbs_scorer
-            nsgbs_scorer = load_nsgbs_scorer(cfg)
+            # Use cache if available and enabled
+            use_model_cache = cfg.get("use_model_cache", True)
+            if use_model_cache:
+                try:
+                    from resource_cache import ModelCache
+                    model_path = cfg.get("nsgbs_model_path")
+                    device = cfg.get("nsgbs_device") or ("cuda" if __import__("torch").cuda.is_available() else "cpu")
+                    cache = ModelCache.get_instance()
+                    nsgbs_scorer = cache.get_or_load(model_path, device, load_nsgbs_scorer, cfg)
+                except ImportError:
+                    nsgbs_scorer = load_nsgbs_scorer(cfg)
+            else:
+                nsgbs_scorer = load_nsgbs_scorer(cfg)
             if nsgbs_scorer is None:
                 print("[NS-GBS] No model loaded; falling back to heuristic scoring.")
                 use_nsgbs = False
@@ -799,7 +825,19 @@ def pf_schedule_radiomap_blocks(
     if use_nsgbs:
         try:
             from nsgbs import load_nsgbs_scorer
-            nsgbs_scorer = load_nsgbs_scorer(cfg)
+            # Use cache if available and enabled
+            use_model_cache = cfg.get("use_model_cache", True)
+            if use_model_cache:
+                try:
+                    from resource_cache import ModelCache
+                    model_path = cfg.get("nsgbs_model_path")
+                    device = cfg.get("nsgbs_device") or ("cuda" if __import__("torch").cuda.is_available() else "cpu")
+                    cache = ModelCache.get_instance()
+                    nsgbs_scorer = cache.get_or_load(model_path, device, load_nsgbs_scorer, cfg)
+                except ImportError:
+                    nsgbs_scorer = load_nsgbs_scorer(cfg)
+            else:
+                nsgbs_scorer = load_nsgbs_scorer(cfg)
             if nsgbs_scorer is None:
                 print("[NS-GBS] No model loaded; falling back to heuristic scoring.")
                 use_nsgbs = False
