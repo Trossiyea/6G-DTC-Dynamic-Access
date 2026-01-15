@@ -1,0 +1,15 @@
+{
+  "source_mat": "/Users/kwz/works/AI_RAN/6G_DTC/project/DL/radio_map/Toronto/RadioMap/RM_toronto125.mat",
+  "mat_format": "v7.3",
+  "data_key": "XdB_recon_tensor",
+  "units": "dBW",
+  "shape": [
+    40,
+    40,
+    51
+  ],
+  "dtype": "float64",
+  "min": -195.43504110432198,
+  "max": -56.81859867900769,
+  "nan_count": 0
+}
