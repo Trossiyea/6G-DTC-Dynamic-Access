@@ -1220,14 +1220,32 @@ def pf_schedule_radiomap_blocks(
                 li, ri = int(l_idx[ue]), int(r_idx[ue])
                 snr_vec = snr_scaled[ue, li:ri + 1]
                 se_per_prb = _block_se_from_snr_vec(snr_vec, 1 if (str(dl_power_model).lower() in ('equal_prb','waterfill')) else (k0 if power_split else 1), use_mcs, mcs_params, eesm_beta_db)
+                
+                if abs(beta) < 1e-9 and t_idx % 500 == 0 and k0 > 0:
+                     print(f"DEBUG [MR Detail]: UE={ue}, k0={k0}, snr_vec_mean={np.mean(snr_vec):.4e}, snr_vec_max={np.max(snr_vec):.4e}, se={se_per_prb}")
+
                 thr_i[ue] = (ri - li + 1) * se_per_prb * overhead_eff
+            
             if record_ue_thr and ue_thr_out is not None:
                 try:
                     ue_thr_out.append(np.array(thr_i, copy=True))
                 except Exception:
                     pass
+            
+            # DEBUG
+            if t_idx % 500 == 0 and abs(beta) < 1e-9:
+                 print(f"DEBUG [MR]: t={t_idx}, k_assigned_sum={k_assigned.sum()}, thr_sum={thr_i.sum()}, winners_count={int(np.sum(winners >= 0))}")
+                 # Print first nonzero throughput if exists
+                 nz = np.flatnonzero(thr_i > 0)
+                 if nz.size > 0:
+                     print(f"   Sample UE={nz[0]}, k={k_assigned[nz[0]]}, thr={thr_i[nz[0]]}")
+                 else:
+                     print(f"   NO UEs with throughput > 0. Winners: {winners[:10]}")
+
             sum_rate += thr_i.sum()
-            Rbar = (1 - beta) * Rbar + beta * thr_i
+            # Update Rbar for PF. For MR (beta=0), keep it constant.
+            if abs(beta) > 1e-9:
+                Rbar = (1 - beta) * Rbar + beta * thr_i
             if harq_mgr is not None and hasattr(harq_mgr, 'on_scheduled'):
                 scheduled = np.flatnonzero(k_assigned > 0)
                 harq_mgr.on_scheduled(scheduled)
@@ -1448,7 +1466,7 @@ def pf_schedule_baseline_subband(
         elif snr_lin_prb is not None:
             snr_true = np.asarray(snr_lin_prb, dtype=float)
         else:
-            # Invert Shannon
+            # Invert Shannon as fallback (subband scheduler uses cap_prb parameter)
             gamma = np.maximum(0.0, np.power(2.0, np.asarray(cap_prb)) - 1.0)
             snr_true = gamma
 
@@ -1629,6 +1647,12 @@ def run_once(config: Dict) -> Dict:
                 ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
                 config=config,
             )
+            harq_mgr_mr = HarqManagerFull(
+                num_ue=N_UE,
+                num_procs=int(config.get("harq_max_procs", 16)),
+                ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                config=config,
+            )
         elif bool(config.get("enable_harq_deferral", False)):
             harq_mgr_base = HarqManager(
                 num_ue=N_UE,
@@ -1636,6 +1660,11 @@ def run_once(config: Dict) -> Dict:
                 ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
             )
             harq_mgr_map = HarqManager(
+                num_ue=N_UE,
+                num_procs=int(config.get("harq_max_procs", 16)),
+                ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+            )
+            harq_mgr_mr = HarqManager(
                 num_ue=N_UE,
                 num_procs=int(config.get("harq_max_procs", 16)),
                 ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
@@ -1673,6 +1702,38 @@ def run_once(config: Dict) -> Dict:
                 config=config,
             )
         
+        # Max Rate Baseline (beta=0.0)
+        _rec_mr = bool(config.get("record_assignments", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("mr", "base", "both", "all"))
+        _rec_mr_thr = bool(config.get("record_ue_thr", False)) and (str(config.get("record_assignments_target", "rm")).lower() in ("mr", "base", "both", "all"))
+        assignments_mr = [] if _rec_mr else None
+        ue_thr_mr = [] if _rec_mr_thr else None
+        base_se_mr = pf_schedule_radiomap_blocks(
+            cap, T, beta=0.0,
+            snr_lin=snr_lin,
+            overhead_eff=config.get("overhead_eff", 1.0),
+            use_mcs=config.get("use_mcs", False),
+            power_split=config.get("power_split", False),
+            se_metric_override=None,
+            max_prbs_per_ue=config.get("baseline_max_prbs_per_ue", config.get("max_prbs_per_ue")),
+            mcs_params=mcs_params,
+            se_metric_time=se_time_base, # Same aged CSI
+            snr_lin_time=time_series["snr_time"],
+            eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
+            require_contiguous=bool(config.get("sched_require_contiguous", True)),
+            rng=rng,
+            ue_mask_time=None,
+            harq_mgr=harq_mgr_mr, # MR with HARQ to prevent zero-SE starvation
+            dl_power_model=str(config.get("baseline_dl_power_model", "equal_prb")),
+            P_tot_dbm=config.get("baseline_P_tot_dbm", None),
+            P_ref_dbm=config.get("P_tx_dbm"),
+            p_min_dbm=config.get("baseline_p_min_dbm", None),
+            p_max_dbm=config.get("baseline_p_max_dbm", None),
+            record_assignments=_rec_mr,
+            assignments_out=assignments_mr,
+            record_ue_thr=_rec_mr_thr,
+            ue_thr_out=ue_thr_mr,
+            config=config,
+        )
 
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
@@ -1745,6 +1806,29 @@ def run_once(config: Dict) -> Dict:
             p_max_dbm=config.get("baseline_p_max_dbm", None),
             config=config,
         )
+
+        # Baseline: Max Rate (beta=0.0) for snapshot (static mode - no time_series)
+        base_se_mr = pf_schedule_radiomap_blocks(
+            cap, T, beta=0.0,
+            snr_lin=snr_lin,
+            overhead_eff=config.get("overhead_eff", 1.0),
+            use_mcs=config.get("use_mcs", False),
+            power_split=config.get("power_split", False),
+            se_metric_override=None,
+            max_prbs_per_ue=config.get("baseline_max_prbs_per_ue", config.get("max_prbs_per_ue")),
+            mcs_params=mcs_params,
+            se_metric_time=None,  # Static mode: no time-varying CSI
+            snr_lin_time=None,    # Static mode: use snr_lin instead
+            eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
+            require_contiguous=bool(config.get("sched_require_contiguous", True)),
+            rng=rng,
+            dl_power_model=str(config.get("baseline_dl_power_model", "equal_prb")),
+            P_tot_dbm=config.get("baseline_P_tot_dbm", None),
+            P_ref_dbm=config.get("P_tx_dbm"),
+            p_min_dbm=config.get("baseline_p_min_dbm", None),
+            p_max_dbm=config.get("baseline_p_max_dbm", None),
+            config=config,
+        )
         
         base_se_subband = None
         # RadioMap: contiguous-block PF with per-PRB metric
@@ -1760,7 +1844,7 @@ def run_once(config: Dict) -> Dict:
             max_prbs_per_ue=config.get("rm_max_prbs_per_ue", config.get("max_prbs_per_ue")),
             mcs_params=mcs_params,
             se_metric_time=None,
-            snr_lin_time=None,
+            snr_lin_time=time_series["snr_time"] if time_series is not None else None,
             eesm_beta_db=float(config.get("rm_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
             require_contiguous=bool(config.get("sched_require_contiguous", True)),
             rng=rng,
@@ -1787,6 +1871,7 @@ def run_once(config: Dict) -> Dict:
 
     report = {
         "avg_se_baseline_default": base_se_default,
+        "avg_se_baseline_mr": float(base_se_mr),
         "avg_se_radiomap": map_se,
         "improvement_vs_default_pct": (map_se - base_se_default) / max(1e-9, base_se_default) * 100.0,
         "R_xyz_dbm": R_xyz_dbm,
@@ -1814,6 +1899,8 @@ def run_once(config: Dict) -> Dict:
             report["assignments_rm"] = np.stack(assignments_rm, axis=0)
         if 'assignments_base' in locals() and assignments_base is not None and len(assignments_base) > 0:
             report["assignments_base"] = np.stack(assignments_base, axis=0)
+        if 'assignments_mr' in locals() and assignments_mr is not None and len(assignments_mr) > 0:
+            report["assignments_mr"] = np.stack(assignments_mr, axis=0)
         if 'ue_thr_rm' in locals() and ue_thr_rm is not None and len(ue_thr_rm) > 0:
             thr_mat = np.stack(ue_thr_rm, axis=0)  # [T,UE]
             report["ue_thr_time_rm"] = thr_mat
@@ -1823,6 +1910,10 @@ def run_once(config: Dict) -> Dict:
             thr_mat_b = np.stack(ue_thr_base, axis=0)
             report["ue_thr_time_base"] = thr_mat_b
             report["per_ue_se_base_avg"] = (np.sum(thr_mat_b, axis=0) / float(max(1, config.get("T", T)) * cap.shape[1])).tolist()
+        if 'ue_thr_mr' in locals() and ue_thr_mr is not None and len(ue_thr_mr) > 0:
+            thr_mat_mr = np.stack(ue_thr_mr, axis=0)
+            report["ue_thr_time_mr"] = thr_mat_mr
+            report["per_ue_se_mr_avg"] = (np.sum(thr_mat_mr, axis=0) / float(max(1, config.get("T", T)) * cap.shape[1])).tolist()
     except Exception:
         pass
 
@@ -1988,6 +2079,7 @@ def run_constellation(config: Dict) -> Dict:
     # KPI accumulators
     sum_rate_rm = 0.0
     sum_rate_base_def = 0.0
+    sum_rate_base_mr = 0.0
     kpi_per_sat: Dict[int, Dict] = {}
     # Per-satellite HARQ managers (persist across TTIs)
     harq_base_by_sat: Dict[int, HarqManagerFull] = {}
@@ -2199,6 +2291,8 @@ def run_constellation(config: Dict) -> Dict:
 
             # Disable tail flush in streaming mode (we call per TTI)
             _cfg_base = dict(config); _cfg_base['harq_flush_tail'] = False
+            _cfg_base['show_progress'] = False  # Suppress inner progress bar
+            # Baseline 1: Proportional Fair (beta from config, usually > 0)
             base = pf_schedule_radiomap_blocks(
                 cap, 1, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -2226,7 +2320,53 @@ def run_constellation(config: Dict) -> Dict:
                 ue_thr_out=None,
                 config=_cfg_base,
             )
+            # Baseline 2: Max Rate (beta=0.0, ignores history)
+            # Initialize MR HARQ manager if enabled (prevents zero-SE starvation)
+            harq_mr = None
+            if bool(config.get("enable_harq_full", False)):
+                # Use a per-satellite MR HARQ manager keyed differently
+                harq_mr_key = f"mr_{si}"
+                harq_mr = harq_base_by_sat.get(harq_mr_key)
+                if harq_mr is None:
+                    harq_mr = HarqManagerFull(
+                        num_ue=N_UE,
+                        num_procs=int(config.get("harq_max_procs", 16)),
+                        ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
+                        config=config,
+                    )
+                    harq_base_by_sat[harq_mr_key] = harq_mr
+            _cfg_mr = dict(config); _cfg_mr['harq_flush_tail'] = False
+            _cfg_mr['show_progress'] = False
+            base_mr = pf_schedule_radiomap_blocks(
+                cap, 1, beta=0.0,
+                snr_lin=snr_lin,
+                overhead_eff=config.get("overhead_eff", 1.0),
+                use_mcs=config.get("use_mcs", False),
+                power_split=config.get("power_split", False),
+                se_metric_override=None,
+                max_prbs_per_ue=prb_cap_unified,
+                mcs_params=mcs_params,
+                se_metric_time=se_base_prb[None, ...], # Uses same aged CSI as PF Baseline
+                snr_lin_time=None,
+                eesm_beta_db=float(config.get("baseline_sched_eesm_beta_db", config.get("sched_eesm_beta_db", 1.0))),
+                require_contiguous=bool(config.get("sched_require_contiguous", True)),
+                rng=rng,
+                ue_mask_time=ue_mask,
+                harq_mgr=harq_mr, # 原先是None,会导致吞吐为0,MR with HARQ to prevent zero-SE starvation
+                dl_power_model=dlpm,
+                P_tot_dbm=Ptot,
+                P_ref_dbm=config.get("P_tx_dbm"),
+                p_min_dbm=pmin,
+                p_max_dbm=pmax,
+                record_assignments=False,
+                assignments_out=None,
+                record_ue_thr=False,
+                ue_thr_out=None,
+                config=_cfg_mr,
+            )
+
             _cfg_rm = dict(config); _cfg_rm['harq_flush_tail'] = False
+            _cfg_rm['show_progress'] = False  # Suppress inner progress bar
             rm = pf_schedule_radiomap_blocks(
                 cap, 1, beta=config["pf_beta"],
                 snr_lin=snr_lin,
@@ -2255,6 +2395,7 @@ def run_constellation(config: Dict) -> Dict:
                 config=_cfg_rm,
             )
             sum_rate_base_def += base * Z
+            sum_rate_base_mr += base_mr * Z
             sum_rate_rm += rm * Z
             # Update per-satellite KPI
             k = kpi_per_sat.get(si)
@@ -2265,6 +2406,7 @@ def run_constellation(config: Dict) -> Dict:
                     "served_ue_sum": 0,
                     "served_ue_max": 0,
                     "sum_se_base_def": 0.0,
+                    "sum_se_base_mr": 0.0,
                     "sum_se_rm": 0.0,
                 }
                 kpi_per_sat[si] = k
@@ -2272,6 +2414,7 @@ def run_constellation(config: Dict) -> Dict:
             k["served_ue_sum"] += int(ue_idx.size)
             k["served_ue_max"] = max(int(k["served_ue_max"]), int(ue_idx.size))
             k["sum_se_base_def"] += float(base * Z)
+            k["sum_se_base_mr"] += float(base_mr * Z)
             k["sum_se_rm"] += float(rm * Z)
 
         # Initialize kpi dict if first time
@@ -2280,6 +2423,7 @@ def run_constellation(config: Dict) -> Dict:
 
     # Average across T and PRBs (per original convention): divide by T and Z
     avg_se_base_def = sum_rate_base_def / max(1, T) / max(1, Z)
+    avg_se_base_mr = sum_rate_base_mr / max(1, T) / max(1, Z)
     avg_se_rm = sum_rate_rm / max(1, T) / max(1, Z)
 
     # Summarize per-satellite KPI
@@ -2292,6 +2436,7 @@ def run_constellation(config: Dict) -> Dict:
             "ttis_active": int(k["ttis_active"]),
             "avg_served_ue": float(k["served_ue_sum"]) / float(tt),
             "max_served_ue": int(k["served_ue_max"]),
+            "avg_se_base_mr_per_prb": float(k["sum_se_base_mr"]) / float(tt * max(1, Z)),
             "avg_se_base_default_per_prb": float(k["sum_se_base_def"]) / float(tt * max(1, Z)),
             "avg_se_rm_per_prb": float(k["sum_se_rm"]) / float(tt * max(1, Z)),
         })
@@ -2340,6 +2485,7 @@ def run_constellation(config: Dict) -> Dict:
     harq_stats_map = _aggregate_harq(harq_rm_by_sat)
 
     report = {
+        "avg_se_baseline_mr": avg_se_base_mr,
         "avg_se_baseline_default": avg_se_base_def,
         "avg_se_radiomap": avg_se_rm,
         "improvement_vs_default_pct": imp_pct,

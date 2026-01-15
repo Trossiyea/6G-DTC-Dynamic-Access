@@ -187,6 +187,10 @@ CONFIG.update({
     # Per-path PRB caps
     "baseline_max_prbs_per_ue": 20,
     "rm_max_prbs_per_ue": 20,
+    # Recording options for analysis
+    "record_assignments": True,           # 记录 PRB 分配
+    "record_ue_thr": True,                # 记录每 UE 吞吐量
+    "record_assignments_target": "all",   # 记录目标: "base", "mr", "rm", "both", "all"
 })
 
 # Constellation (multi-satellite) options
