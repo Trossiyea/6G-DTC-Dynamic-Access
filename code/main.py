@@ -13,7 +13,7 @@ This repository has been simplified to DL only:
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-from typing import Tuple, Dict, Optional, Union
+from typing import Tuple, Dict, Optional, Union, List
 import os
 import json
 from scipy.io import loadmat
@@ -1783,6 +1783,13 @@ def run_once(config: Dict) -> Dict:
                 harq_stats_map = harq_mgr_map.get_stats()
             except Exception:
                 harq_stats_map = None
+        # MAX RATE stats
+        harq_stats_mr = None
+        if harq_mgr_mr is not None and hasattr(harq_mgr_mr, 'get_stats'):
+            try:
+                harq_stats_mr = harq_mgr_mr.get_stats()
+            except Exception:
+                harq_stats_mr = None
     else:
         # Baseline: contiguous-block PF using per-PRB metric
         base_se_default = pf_schedule_radiomap_blocks(
@@ -1938,8 +1945,10 @@ def run_once(config: Dict) -> Dict:
             return (bits / float(max(1, re_per_prb) * T_total * Z_total)).tolist()
         se_ue_base = per_ue_avg_se(harq_stats_base)
         se_ue_map = per_ue_avg_se(harq_stats_map)
+        se_ue_mr = per_ue_avg_se(harq_stats_mr)
         report["per_ue_avg_se_base"] = se_ue_base
         report["per_ue_avg_se_map"] = se_ue_map
+        report["per_ue_avg_se_mr"] = se_ue_mr
         # Map per-UE SE to throughput (bps) using system bandwidth
         if se_ue_base is not None:
             report["per_ue_throughput_baseline_bps"] = (np.asarray(se_ue_base, dtype=float) * sys_bw_hz).tolist()
@@ -1980,6 +1989,7 @@ def run_once(config: Dict) -> Dict:
             return float((s * s) / max(1e-12, n * s2)) if s2 > 0 else 0.0
         report["fairness_jain_base"] = jain(se_ue_base) if se_ue_base is not None else None
         report["fairness_jain_map"] = jain(se_ue_map) if se_ue_map is not None else None
+        report["fairness_jain_mr"] = jain(se_ue_mr) if se_ue_mr is not None else None
     except Exception:
         pass
 
@@ -2084,6 +2094,7 @@ def run_constellation(config: Dict) -> Dict:
     # Per-satellite HARQ managers (persist across TTIs)
     harq_base_by_sat: Dict[int, HarqManagerFull] = {}
     harq_rm_by_sat: Dict[int, HarqManagerFull] = {}
+    harq_mr_by_sat: Dict[int, HarqManagerFull] = {}
 
     # For optional per-UE throughput (debug): not recording HARQ here
     # Progress bar for constellation TTI loop
@@ -2324,9 +2335,8 @@ def run_constellation(config: Dict) -> Dict:
             # Initialize MR HARQ manager if enabled (prevents zero-SE starvation)
             harq_mr = None
             if bool(config.get("enable_harq_full", False)):
-                # Use a per-satellite MR HARQ manager keyed differently
-                harq_mr_key = f"mr_{si}"
-                harq_mr = harq_base_by_sat.get(harq_mr_key)
+                # Use a per-satellite MR HARQ manager
+                harq_mr = harq_mr_by_sat.get(si)
                 if harq_mr is None:
                     harq_mr = HarqManagerFull(
                         num_ue=N_UE,
@@ -2334,7 +2344,7 @@ def run_constellation(config: Dict) -> Dict:
                         ack_delay_ttis=int(config.get("harq_ack_delay_ttis", 10)),
                         config=config,
                     )
-                    harq_base_by_sat[harq_mr_key] = harq_mr
+                    harq_mr_by_sat[si] = harq_mr
             _cfg_mr = dict(config); _cfg_mr['harq_flush_tail'] = False
             _cfg_mr['show_progress'] = False
             base_mr = pf_schedule_radiomap_blocks(
@@ -2483,6 +2493,43 @@ def run_constellation(config: Dict) -> Dict:
 
     harq_stats_base = _aggregate_harq(harq_base_by_sat)
     harq_stats_map = _aggregate_harq(harq_rm_by_sat)
+    harq_stats_mr = _aggregate_harq(harq_mr_by_sat)
+
+    # Helper: aggregate per-UE bits for fairness
+    def _agg_per_ue_bits(hdict: Dict[int, HarqManagerFull]) -> Optional[List[float]]:
+        if not hdict: return None
+        # sum acked_bits_per_ue across all sats
+        total_bits = np.zeros(N_UE, dtype=float)
+        any_found = False
+        for mgr in hdict.values():
+            if mgr is None: continue
+            hs = mgr.get_stats()
+            if 'acked_bits_per_ue' in hs:
+                total_bits += np.asarray(hs['acked_bits_per_ue'], dtype=float)
+                any_found = True
+        if not any_found: return None
+        # Convert to SE: bits / (T * Z * REs)
+        # Assuming REs per PRB factor is roughly constant or we use config default
+        re_per_prb = re_per_prb_from_config(config)
+        denom = float(max(1, re_per_prb) * max(1, T) * max(1, Z))
+        return (total_bits / denom).tolist()
+
+    se_ue_base = _agg_per_ue_bits(harq_base_by_sat)
+    se_ue_mr = _agg_per_ue_bits(harq_mr_by_sat)
+    se_ue_rm = _agg_per_ue_bits(harq_rm_by_sat)
+
+    # Compute Jain
+    def jain(x):
+        if not x: return None
+        arr = np.asarray(x, dtype=float)
+        s = np.sum(arr)
+        s2 = np.sum(arr * arr)
+        n = arr.size
+        return float((s * s) / max(1e-12, n * s2)) if s2 > 0 else 0.0
+
+    jain_base = jain(se_ue_base)
+    jain_mr = jain(se_ue_mr)
+    jain_rm = jain(se_ue_rm)
 
     report = {
         "avg_se_baseline_mr": avg_se_base_mr,
@@ -2508,6 +2555,13 @@ def run_constellation(config: Dict) -> Dict:
         "sat_index_to_name": {int(i): getattr(orbit.sats[i], 'name', f"SAT-{int(i)}") for i in range(len(orbit.sats))},
         "harq_stats_base": harq_stats_base,
         "harq_stats_map": harq_stats_map,
+        "harq_stats_mr": harq_stats_mr,
+        "per_ue_avg_se_base": se_ue_base,
+        "per_ue_avg_se_mr": se_ue_mr,
+        "per_ue_avg_se_rm": se_ue_rm,
+        "fairness_jain_base": jain_base,
+        "fairness_jain_mr": jain_mr,
+        "fairness_jain_map": jain_rm,
     }
     if include_trace and serving_trace is not None:
         report["serving_trace"] = np.stack(serving_trace, axis=0)

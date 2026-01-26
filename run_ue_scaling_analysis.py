@@ -64,6 +64,12 @@ except ImportError as e:
     logger.error(f"Error loading project modules: {e}")
     sys.exit(1)
 
+# ==========================================
+# 2.1 全局仿真参数 (与 plot_kpis_vs_nue.py 保持一致以确保公平性)
+# ==========================================
+BASE_SEED = 101    # 默认基础种子
+N_SEEDS = 1        # 默认重复运行次数 (如果对方脚本用了多次，这里也要改为对应次数)
+
 def load_scenario_config(scenario_name):
     """加载特定场景的配置文件"""
     config_path = SCRIPT_DIR / "test" / f"config_{scenario_name}.py"
@@ -78,16 +84,17 @@ def load_scenario_config(scenario_name):
 # ==========================================
 # 3. 仿真运行
 # ==========================================
-def run_simulation_with_ue_count(scenario_key: str, n_ue: int):
-    """运行指定 UE 数量的仿真"""
-    logger.info(f"[{scenario_key}] Running with N_UE={n_ue}...")
+def run_simulation_with_ue_count(scenario_key: str, n_ue: int, seed: int):
+    """运行指定 UE 数量和种子的单次仿真"""
+    logger.info(f"[{scenario_key}] Running with N_UE={n_ue}, Seed={seed}...")
     try:
         scenario_cfg = load_scenario_config(scenario_key)
         
-        # 合并配置并覆盖 N_UE
+        # 合并配置并覆盖 N_UE 和 seed
         run_config = BASE_CONFIG.copy()
         run_config.update(scenario_cfg)
         run_config["N_UE"] = n_ue
+        run_config["seed"] = seed  # 显式设置种子
         run_config["show_plots"] = False
         run_config["save_plots"] = False
         run_config["show_progress"] = True
@@ -95,7 +102,7 @@ def run_simulation_with_ue_count(scenario_key: str, n_ue: int):
         run_config["record_assignments"] = False
         run_config["record_ue_thr"] = False
         
-        logger.info(f"  > T={run_config.get('T')} TTIs, N_UE={n_ue}")
+        logger.info(f"  > T={run_config.get('T')} TTIs, N_UE={n_ue}, Seed={seed}")
         
         # 根据是否为星座模式选择运行函数
         if run_config.get("enable_constellation", False):
@@ -105,13 +112,14 @@ def run_simulation_with_ue_count(scenario_key: str, n_ue: int):
             logger.info(f"  > Mode: Single Satellite")
             results = run_once(run_config)
         
-        baseline_pf = results['avg_se_baseline_default']
+        baseline_pf = results.get('avg_se_baseline_default', 0.0)
         baseline_mr = results.get('avg_se_baseline_mr', 0.0)
-        radiomap = results['avg_se_radiomap']
+        radiomap = results.get('avg_se_radiomap', 0.0)
         
-        logger.info(f"  > Baseline PF: {baseline_pf:.4f} bps/Hz")
-        logger.info(f"  > Baseline MR: {baseline_mr:.4f} bps/Hz")
-        logger.info(f"  > RadioMap:    {radiomap:.4f} bps/Hz")
+        # 仅在调试时打印详细信息，避免刷屏
+        # logger.info(f"  > Baseline PF: {baseline_pf:.4f} bps/Hz")
+        # logger.info(f"  > Baseline MR: {baseline_mr:.4f} bps/Hz")
+        # logger.info(f"  > RadioMap:    {radiomap:.4f} bps/Hz")
         
         return baseline_pf, baseline_mr, radiomap
         
@@ -184,39 +192,59 @@ def plot_ue_scaling(ue_counts, pf_results, mr_results, rm_results, scenario_labe
 # 5. 主程序
 # ==========================================
 def run_scenario_analysis(scenario_key: str, scenario_label: str, ue_counts: list, output_filename: str):
-    """运行单个场景的 UE 数量分析"""
+    """运行单个场景的 UE 数量分析 (支持多种子平均)"""
     logger.info(f"\n{'#'*60}")
     logger.info(f"# Scenario: {scenario_label}")
+    logger.info(f"# Seeds: {N_SEEDS}, Base Seed: {BASE_SEED}")
     logger.info(f"{'#'*60}")
     
-    pf_results = []
-    mr_results = []
-    rm_results = []
+    pf_means = []
+    mr_means = []
+    rm_means = []
     
     for n_ue in ue_counts:
         logger.info(f"\n{'='*50}")
-        logger.info(f"Testing with N_UE = {n_ue}")
+        logger.info(f"Testing with N_UE = {n_ue} (Averaging over {N_SEEDS} seeds)")
         logger.info('='*50)
         
-        pf, mr, rm = run_simulation_with_ue_count(scenario_key, n_ue)
-        pf_results.append(pf)
-        mr_results.append(mr)
-        rm_results.append(rm)
+        # 累加器
+        pf_acc = []
+        mr_acc = []
+        rm_acc = []
+        
+        # 循环运行多个种子
+        for i in range(N_SEEDS):
+            current_seed = BASE_SEED + i
+            pf, mr, rm = run_simulation_with_ue_count(scenario_key, n_ue, current_seed)
+            pf_acc.append(pf)
+            mr_acc.append(mr)
+            rm_acc.append(rm)
+        
+        # 计算平均值
+        pf_avg = float(np.mean(pf_acc))
+        mr_avg = float(np.mean(mr_acc))
+        rm_avg = float(np.mean(rm_acc))
+        
+        pf_means.append(pf_avg)
+        mr_means.append(mr_avg)
+        rm_means.append(rm_avg)
+        
+        logger.info(f"  [Average] PF: {pf_avg:.4f} | MR: {mr_avg:.4f} | RM: {rm_avg:.4f}")
     
     # 汇总结果
     logger.info(f"\n{'='*50}")
-    logger.info(f"Summary Results - {scenario_label}:")
+    logger.info(f"Summary Results (Avg over {N_SEEDS} seeds) - {scenario_label}:")
     logger.info('='*50)
     logger.info(f"{'N_UE':<10} {'PF':<12} {'MR':<12} {'Proposed':<12}")
     logger.info('-'*46)
     for i, n_ue in enumerate(ue_counts):
-        logger.info(f"{n_ue:<10} {pf_results[i]:<12.4f} {mr_results[i]:<12.4f} {rm_results[i]:<12.4f}")
+        logger.info(f"{n_ue:<10} {pf_means[i]:<12.4f} {mr_means[i]:<12.4f} {rm_means[i]:<12.4f}")
     
-    # 绘图
+    # 绘图 使用平均值
     output_file = OUTPUT_DIR / output_filename
-    plot_ue_scaling(ue_counts, pf_results, mr_results, rm_results, scenario_label, output_file)
+    plot_ue_scaling(ue_counts, pf_means, mr_means, rm_means, scenario_label, output_file)
     
-    return pf_results, mr_results, rm_results
+    return pf_means, mr_means, rm_means
 
 if __name__ == "__main__":
     logger.info("=== UE Scaling Analysis ===\n")
