@@ -1,0 +1,7 @@
+# Timestamp,20260126_201626
+# Scenario,constellation
+# Seeds,1
+# Base Seed,101
+
+N_UE,SE_3GPP_PF,SE_3GPP_MR,SE_RadioMap,Jain_3GPP_PF,Jain_3GPP_MR,Jain_RadioMap
+25,0.058872,0.071169,0.153280,0.072729,0.058682,0.114512

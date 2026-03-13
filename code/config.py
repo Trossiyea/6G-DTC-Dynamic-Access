@@ -61,7 +61,7 @@ CONFIG = {
     "enable_cqi_periodicity_rm": False,
     "cqi_period_ttis": 5,
     "cqi_offset_ttis": 0,
-    "radiomap_est_error_db": 1.5,
+    "radiomap_est_error_db": 1.5, # 原本 1.5
     "radiomap_blur_sigma": 1.0,
 
     # --- Geometry / beam ---

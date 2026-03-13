@@ -1,0 +1,7 @@
+# Timestamp,20260126_202502
+# Scenario,single
+# Seeds,1
+# Base Seed,101
+
+N_UE,SE_3GPP_PF,SE_3GPP_MR,SE_RadioMap,Jain_3GPP_PF,Jain_3GPP_MR,Jain_RadioMap
+25,0.070462,0.249915,0.103113,0.249890,0.100595,0.282882

@@ -1,0 +1,18 @@
+2026-01-14 22:27:02 | [toronto_single] Loading configuration...
+2026-01-14 22:27:02 | [toronto_single] Running simulation (T=2000 TTIs)...
+2026-01-14 22:27:02 |   > Mode: Single Satellite
+2026-01-14 22:30:41 | [toronto_single] Done.
+2026-01-14 22:30:41 |   > Baseline PF SE: 0.1140 bps/Hz
+2026-01-14 22:30:41 |   > Baseline MR SE: 0.3202 bps/Hz
+2026-01-14 22:30:41 |   > RadioMap SE:    0.1501 bps/Hz
+2026-01-14 22:30:41 |   > Gain (vs PF):   31.61%
+2026-01-14 22:30:41 |   > Gain (vs MR):   -53.13%
+2026-01-14 22:30:41 | [toronto_constellation] Loading configuration...
+2026-01-14 22:30:41 | [toronto_constellation] Running simulation (T=2000 TTIs)...
+2026-01-14 22:30:41 |   > Mode: Constellation
+2026-01-14 22:40:00 | [toronto_constellation] Done.
+2026-01-14 22:40:00 |   > Baseline PF SE: 0.3225 bps/Hz
+2026-01-14 22:40:00 |   > Baseline MR SE: 0.3616 bps/Hz
+2026-01-14 22:40:00 |   > RadioMap SE:    0.4383 bps/Hz
+2026-01-14 22:40:00 |   > Gain (vs PF):   35.91%
+2026-01-14 22:40:00 |   > Gain (vs MR):   21.21%
