@@ -3,11 +3,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+from pathlib import Path
+
+# 基于跑的csv数据文件，绘图代码（绘制SE、Jain对比的柱状图）
+
+# Compute PROJECT_ROOT dynamically
+_script_dir = Path(__file__).resolve().parent
+# Auto-detect if script is nested in output_toronto/jain or flat in tools/scripts
+if _script_dir.name == 'jain' and _script_dir.parent.name.startswith('output'):
+    PROJECT_ROOT = _script_dir.parent.parent
+else:
+    PROJECT_ROOT = _script_dir.parent if _script_dir.name in ['tools', 'scripts'] else _script_dir
 
 # 配置
-single_csv = "output_toronto/jain/output_images_v1_radiomap_est_error_db_1.5/single_kpis_vs_nue_data_20260126_210635.csv"
-const_csv = "output_toronto/jain/output_images_v1_radiomap_est_error_db_1.5/constellation_kpis_vs_nue_data_20260126_215321.csv"
-output_dir = "output_toronto/jain/output_images"
+single_csv = str(PROJECT_ROOT / "output_toronto/jain/output_images_v1_radiomap_est_error_db_1.5/single_kpis_vs_nue_data_20260126_210635.csv")
+const_csv = str(PROJECT_ROOT / "output_toronto/jain/output_images_v1_radiomap_est_error_db_1.5/constellation_kpis_vs_nue_data_20260126_215321.csv")
+output_dir = str(PROJECT_ROOT / "output_toronto/jain/output_images")
 
 # 确保输出目录存在
 os.makedirs(output_dir, exist_ok=True)

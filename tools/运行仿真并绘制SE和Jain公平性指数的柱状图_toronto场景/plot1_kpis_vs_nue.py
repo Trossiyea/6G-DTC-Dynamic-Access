@@ -28,14 +28,19 @@ import time
 import importlib.util
 from typing import Dict, List, Tuple
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Compute PROJECT_ROOT dynamically
+_script_dir = Path(__file__).resolve().parent
+PROJECT_ROOT = _script_dir.parent if _script_dir.name in ['tools', 'scripts'] else _script_dir
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 # Mapping of scenario names to their config patch files
 SCENARIOS = {
-    'single': 'test/config_toronto_single.py',
-    'constellation': 'test/config_toronto_constellation.py'
+    'single': str(PROJECT_ROOT / 'test' / 'config_toronto_single.py'),
+    'constellation': str(PROJECT_ROOT / 'test' / 'config_toronto_constellation.py')
 }
 
 def load_config_patch(path: str) -> Dict:
@@ -147,7 +152,7 @@ def resolve_constellation_satellite(cfg: Dict) -> Dict:
 
 def _run_once_with(cfg_base: Dict, N_UE: int, seed: int, T_override: int | None) -> Tuple[float, float, float, float, float, float]:
     # Ensure local code directory is prioritized
-    code_path = os.path.abspath('code')
+    code_path = str(PROJECT_ROOT / 'code')
     if code_path not in sys.path:
         sys.path.insert(0, code_path)
         
@@ -228,7 +233,7 @@ def run_scenario_sweep(scenario_name: str, cfg_base: Dict, args: argparse.Namesp
     print(f"\n=== Running Scenario: {scenario_name} ===")
     
     # Prepare output directories
-    out_dir = cfg_base.get('plot_dir', 'output')
+    out_dir = cfg_base.get('plot_dir', str(PROJECT_ROOT / 'output'))
     out_dir_jain = os.path.join(out_dir, 'jain')
     os.makedirs(out_dir_jain, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
@@ -351,7 +356,7 @@ def main() -> None:
     args = parse_args()
     
     # Ensure local code directory is prioritized
-    code_path = os.path.abspath('code')
+    code_path = str(PROJECT_ROOT / 'code')
     if code_path not in sys.path:
         sys.path.insert(0, code_path)
         

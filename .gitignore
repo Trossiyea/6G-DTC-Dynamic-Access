@@ -6,7 +6,12 @@ __pycache__/
 *.pyc
 
 radio_map/*.png
+radio_map/
 
-output/
+output_toronto/
+
+tles/
+
+
 
 WARP.md

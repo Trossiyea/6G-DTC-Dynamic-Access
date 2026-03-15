@@ -21,7 +21,7 @@ from datetime import datetime
 # ==========================================
 # 1. 环境配置
 # ==========================================
-SCRIPT_DIR = Path(__file__).parent.absolute()
+SCRIPT_DIR = Path(__file__).parent.parent.absolute()
 CODE_DIR = SCRIPT_DIR / "code"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
